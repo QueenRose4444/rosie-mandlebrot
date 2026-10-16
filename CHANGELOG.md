@@ -4,12 +4,12 @@
 
 - **Videos are made from keyframes.** A run now renders the zoom once, as a log-polar strip that
   holds every depth, and assembles the video from it instead of rendering every frame. Measured on
-  `seahorse_deep` from 3 to 1e-12 at 1920×1080: 7.2× less GPU time, a fifth of the disk (339 MB
-  against 1.7 GB of PNG frames), and frames closer to a supersampled ideal (32.5 dB against 25.2 dB
+  `seahorse_deep` from 3 to 1e-12 at 1920×1080: 6.4× less GPU time, a fifth of the disk (335 MB
+  against 1.7 GB of PNG frames), and frames closer to a supersampled ideal (32.4 dB against 25.1 dB
   for frame-by-frame), because every output pixel averages 2×2 samples.
 - **No more brightness pumping.** Colour belongs to the location, not the frame: a point keeps its
   colour from frame to frame. On that run the largest frame-to-frame jump in mean brightness fell
-  from 16.9 to 3.5 levels. `--tone per-frame` brings back the 0.1 colouring.
+  from 15.8 to 3.5 levels. `--tone per-frame` brings back the 0.1 colouring.
 - **`--assemble`** makes the video again from the strip, with another `--palette`, `--video-fps`,
   `--zoom-factor` or size, in seconds and without rendering anything.
 - **`--per-frame`** keeps the 0.1 behaviour (every frame saved as a PNG, then stitched). A run that

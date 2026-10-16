@@ -2,7 +2,7 @@
 
 Deep zooms into the Mandelbrot set, rendered on your GPU, made into a video. It renders the zoom
 once, as a log-polar "keyframe" strip that holds every depth, and assembles the video from it:
-about seven times less GPU work than drawing every frame, smoother (antialiased, with no colour
+about six times less GPU work than drawing every frame, smoother (antialiased, with no colour
 pumping), and a different palette, speed or frame rate later costs seconds instead of a re-render.
 It can keep going for days and picks up where it left off after a crash or a reboot.
 

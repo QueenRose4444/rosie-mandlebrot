@@ -187,7 +187,7 @@ time for the high-precision reference). `--quiet` drops the progress lines.
 
 A keyframe run stores the strip, not frames: raw iteration values for every depth once, about
 9–21 MB per tenfold zoom at 1080p (busier locations compress less) and about twelve times that at
-4096×4096 (measured for `seahorse` from 3 to 1e-15: 167 MB at 1080×1080, 1.98 GB at 4096×4096). The strip is about five times smaller than the PNG frames of the same zoom (measured: 339 MB
+4096×4096 (measured for `seahorse` from 3 to 1e-15: 167 MB at 1080×1080, 1.98 GB at 4096×4096). The strip is about five times smaller than the PNG frames of the same zoom (measured: 335 MB
 against 1,719 MB for `seahorse_deep` from 3 to 1e-12 at 1920×1080) and keeps the raw values, so any
 palette can be applied later.
 
