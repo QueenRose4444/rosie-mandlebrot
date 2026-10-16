@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1 — 2026-10-17
+
+Fixes from an outside test of 0.2.0 with nothing but the repository's URL:
+
+- `--assemble` no longer replaces the video: it writes `zoom-2.mkv`, `zoom-3.mkv` … beside it.
+- The README's whole-dive command has its own `--run-dir`, so it is not refused after the first one.
+- One span for the end of a run: the log's last line and `progress.json` give the span of the video's
+  last frame. The log no longer names a checkpoint file that keyframe runs do not use.
+- The per-frame brightness log of an assembly moved next to the strip (`out/keyframes/`).
+- README links that pointed at files not in the zips now point at GitHub; minisign path and the
+  image tag example corrected.
+
 ## 0.2.0 — 2026-10-17
 
 - **Videos are made from keyframes.** A run now renders the zoom once, as a log-polar strip that

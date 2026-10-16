@@ -46,6 +46,10 @@ pub(crate) struct Options {
     pub compare: Vec<u64>,
     /// Encode a video (false: only the PNGs and the per-frame log).
     pub video: bool,
+    /// Write `zoom-2`, `zoom-3` ... instead of replacing an existing
+    /// `zoom.<container>` (true for `--assemble`; the run's own video is
+    /// replaced, because a resumed run's video covers more).
+    pub keep_existing: bool,
 }
 
 impl Options {
@@ -69,6 +73,7 @@ impl Options {
             frames_png: cli.frames_png.clone(),
             compare: cli.compare_frames.clone(),
             video: !(cfg.no_video || cfg.video_codec == "none"),
+            keep_existing: cli.assemble,
         })
     }
 }
@@ -212,6 +217,16 @@ impl BlockCache<'_> {
     }
 }
 
+/// `zoom.<container>`, or with `keep_existing` the first of `zoom-2`, `zoom-3`
+/// ... that does not exist yet.
+fn video_name(output: &Path, container: &str, keep_existing: bool) -> std::path::PathBuf {
+    let first = output.join(format!("zoom.{container}"));
+    if !keep_existing || !first.exists() {
+        return first;
+    }
+    (2..).map(|n| output.join(format!("zoom-{n}.{container}"))).find(|p| !p.exists()).expect("an unused name")
+}
+
 /// [`run`] for a command line: logs the outcome and returns the exit code (0,
 /// 3 when ffmpeg failed, 1 for anything else).
 pub(crate) fn run_logged(gpu: &GpuCtx, output: &Path, size: Option<(u32, u32)>, opt: &Options, stop: &AtomicBool) -> i32 {
@@ -267,7 +282,7 @@ pub(crate) fn run(
         if plan.groups.len() > 1 { format!(", then {} thinner groups", plan.groups.len() - 1) } else { String::new() }
     );
 
-    let video_path = output.join(format!("zoom.{}", opt.container));
+    let video_path = video_name(output, &opt.container, opt.keep_existing);
     let mut ffmpeg = if opt.video {
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-y", "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pix_fmt", "rgba"])
@@ -383,7 +398,7 @@ pub(crate) fn run(
             tracing::info!("assembled frame {k}/{frames} (span {span:.3e})");
         }
     }
-    let csv = output.join("assemble_frames.csv");
+    let csv = dir.join("assemble_frames.csv");
     std::fs::write(&csv, stats_csv).map_err(|e| MbError::io(&csv, e))?;
     if let Some(mut p) = ffmpeg {
         drop(p.stdin.take());
@@ -573,4 +588,18 @@ mod tests {
             assert!(f64::from(gr.ring_rows) >= b.1 - b.0 + f64::from(SLACK_ROWS));
         }
     }
+
+    #[test]
+    fn assemble_never_replaces_a_video() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+        assert_eq!(video_name(out, "mkv", true), out.join("zoom.mkv"));
+        std::fs::write(out.join("zoom.mkv"), b"x").unwrap();
+        assert_eq!(video_name(out, "mkv", true), out.join("zoom-2.mkv"));
+        std::fs::write(out.join("zoom-2.mkv"), b"x").unwrap();
+        assert_eq!(video_name(out, "mkv", true), out.join("zoom-3.mkv"));
+        // The run's own video is the one name, replaced on a resume.
+        assert_eq!(video_name(out, "mkv", false), out.join("zoom.mkv"));
+    }
+
 }

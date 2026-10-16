@@ -7,9 +7,9 @@ pumping), and a different palette, speed or frame rate later costs seconds inste
 It can keep going for days and picks up where it left off after a crash or a reboot.
 
 This page describes the latest release. Each release's zip carries the README for that version,
-and [CHANGELOG.md](CHANGELOG.md) lists what changed in each.
+and [CHANGELOG.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/CHANGELOG.md) lists what changed in each.
 
-![Three frames: a Seahorse Valley spiral at 3e-9, an embedded Julia set at 4e-21, Seahorse Valley at 1e-25](docs/hero.jpg)
+![Three frames: a Seahorse Valley spiral at 3e-9, an embedded Julia set at 4e-21, Seahorse Valley at 1e-25](https://raw.githubusercontent.com/QueenRose4444/rosie-mandlebrot/main/docs/hero.jpg)
 
 **Get started:** [Windows](#windows) · [Linux with Docker](#linux-with-docker) ·
 [Linux without Docker](#linux-without-docker) · [Choosing a location](#choosing-a-location) ·
@@ -35,7 +35,7 @@ and [CHANGELOG.md](CHANGELOG.md) lists what changed in each.
    *Checking it first (optional):* `Get-FileHash` on the zip in PowerShell should match its line in
    the release's `SHA256SUMS` (PowerShell prints the hash in capitals). To check that `SHA256SUMS`
    came from this project, get [minisign](https://jedisct1.github.io/minisign/) (minisign's own Windows zip has
-   `minisign.exe` in `x86_64\`) and run
+   `minisign.exe` in `minisign-win64\x86_64\`) and run
    `minisign -Vm SHA256SUMS -P RWQbNDTjNM+Dir3G6eU5L/mhi8lbXOi9B2qCfSXYunoNS6JX6DWCC3IH`.
 2. Open PowerShell in the unzipped folder and run:
 
@@ -45,9 +45,15 @@ and [CHANGELOG.md](CHANGELOG.md) lists what changed in each.
    ```
 
    300 frames at the default pace only reach a span of about 7e-3, the outer spirals: at the default
-   `--zoom-factor 0.98` each tenfold zoom takes 114 frames (at 0.9, 22). For the whole dive add
-   `--zoom-factor 0.9 --zoom-end 1e-15` and drop `--max-frames`: 339 frames down to `seahorse`'s
-   depth (measured on an RTX 3060 Ti: 24–27 seconds from start to finished video).
+   `--zoom-factor 0.98` each tenfold zoom takes 114 frames (at 0.9, 22). For the whole dive, in its
+   own folder:
+
+   ```powershell
+   .\rosie_mandlebrot.exe --preset seahorse --res 1080p --zoom-factor 0.9 --zoom-end 1e-15 --run-dir dive
+   ```
+
+   339 frames down to `seahorse`'s depth (measured on an RTX 3060 Ti: 23–27 seconds from start to
+   finished video, in `dive\out\zoom.mkv`).
 
 3. **You should see your GPU** near the top of the output:
 
@@ -92,15 +98,15 @@ docker run --rm -it --gpus all --user "$(id -u):$(id -g)" \
 ```
 
 **You should see your GPU** in the first lines of output. If it says `llvmpipe` or "CPU software
-rasterizer", the container cannot see the driver and stops; [DEPLOY.md](DEPLOY.md) explains why
+rasterizer", the container cannot see the driver and stops; [DEPLOY.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/DEPLOY.md) explains why
 and how to fix it. `--user` makes the files yours rather than the image's user 10001. Type `stop`
 and Enter to end a run early (the video is made from what was rendered). The video
 (`zoom.mkv`), the strip (`keyframes/`) and `progress.json` land in `out/`; the log in `state/`.
 Run the same command again to carry on; use new folders for a new run.
-`:latest` is the newest release; each release is also tagged by version (`:v0.1.3`).
+`:latest` is the newest release; each release is also tagged by version (`:v0.2.1`).
 
-For a long unattended run with automatic restarts, see [`docker-compose.yml`](docker-compose.yml)
-and [DEPLOY.md](DEPLOY.md).
+For a long unattended run with automatic restarts, see [`docker-compose.yml`](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/docker-compose.yml)
+and [DEPLOY.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/DEPLOY.md).
 
 ## Linux without Docker
 
@@ -167,11 +173,12 @@ and `--ladder` says so.
 Stop a run with Ctrl+C (or type `stop` and Enter); the video is made from what was rendered so
 far, and `--resume` carries on from there. Exit codes: 0 finished or stopped, 1 failed, 2 bad input,
 3 rendered but the video step failed. Every option: `rosie_mandlebrot --help` and
-[COMMANDS.md](COMMANDS.md).
+[COMMANDS.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/COMMANDS.md).
 
 **Another look without re-rendering:** the strip keeps the raw iteration counts, so
 `rosie_mandlebrot --run-dir NAME --assemble --palette electric --zoom-factor 0.95 --video-fps 60`
-makes a new video from the same run in seconds. `--tone per-frame` gives the 0.1 colouring, where
+makes a new video from the same run in seconds, as `zoom-2.mkv` (then `zoom-3.mkv` …), so the
+first one is kept. `--tone per-frame` gives the 0.1 colouring, where
 each frame stretches its own colours (it pumps brighter and darker as the zoom goes on); the default
 keeps every point's colour fixed.
 

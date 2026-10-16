@@ -135,7 +135,7 @@ Otherwise two featureless checks in a row end it.
 | `--video-codec` | `h264` | `h264`, `h265`, `vp9`, `none` |
 | `--video-container` | `mkv` | `mkv`, `mp4` |
 | `--no-video` | | render only (the strip, or the frames with `--per-frame`) |
-| `--assemble` | | make the video again from the strip in `--run-dir` / `--output`; `--palette`, `--video-fps`, `--zoom-factor`, `--width`/`--height`, `--tone` and the codec options all apply, and nothing is re-rendered |
+| `--assemble` | | make the video again from the strip in `--run-dir` / `--output`, as `zoom-2.mkv`, `zoom-3.mkv` … (an existing video is never replaced); `--palette`, `--video-fps`, `--zoom-factor`, `--width`/`--height`, `--tone` and the codec options all apply, and nothing is re-rendered |
 | `--tone` | `location` | `location`: every point keeps its colour from frame to frame; `per-frame`: each frame stretches its own range across the palette, as 0.1 did (it pumps brighter and darker during a zoom; `--tone-smoothing` eases it) |
 | `--per-frame` | | render and save every frame as a PNG, then stitch them |
 | `--encode-only --run ID` | | `--per-frame`: make the video for an existing run |

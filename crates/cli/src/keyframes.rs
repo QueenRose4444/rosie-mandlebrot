@@ -74,6 +74,15 @@ pub(crate) fn deepest_frame_span(m: &Manifest) -> f64 {
     ln_r_last.exp() / MIN_RADIUS_PX * f64::from(g.height)
 }
 
+/// The span of the video's last frame: the deepest the strip can serve, or an
+/// earlier end (`--zoom-end`, `--max-frames`, a stop rule), whichever is wider.
+pub(crate) fn video_end(m: &Manifest) -> f64 {
+    if m.chunks.is_empty() {
+        return m.initial_span;
+    }
+    deepest_frame_span(m).max(m.video_end_span.unwrap_or(0.0))
+}
+
 /// `progress.json` for a keyframe run, in the frame run's format so the
 /// container's entrypoint and anything watching it read it the same way:
 /// "frames" are the video frames the strip can already serve.
@@ -192,7 +201,7 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
     if cfg.blank_stop_interval > 0 {
         if let Some(b) = rosie_mandlebrot_ref::exterior::exterior_distance_log10(&manifest.center_re, &manifest.center_im, cfg.sequence.iter_cap) {
             let s = span_with_corner_at(&g, 10f64.powf(b));
-            tracing::info!("the centre is outside the set, at least 1e{b:.2} from it: the video ends near span {s:.3e}");
+            tracing::info!("the centre is outside the set, at least 1e{b:.2} from it: no frame deeper than span {s:.3e} shows any of it");
             if cap_end(&mut end_span, s) {
                 end_reason = StopReason::OutsideSet;
             }
@@ -315,7 +324,7 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
         manifest.elapsed_secs = elapsed_before + process_started.elapsed().as_secs_f64();
         manifest.video_end_span = end_span;
         write_manifest(&dir, &manifest)?;
-        write_progress(cfg, &manifest, "running", None, span_eq, max_iter, started_unix);
+        write_progress(cfg, &manifest, "running", None, video_end(&manifest), max_iter, started_unix);
         let _ = sys.memory();
         tracing::info!(
             "chunk {index} done | radius {:.3e}..{:.3e} (frame span {:.3e}) | {} iter, {:.1}% interior | {engine} {:.0} ms shader, {:.0} ms total | {:.1} MB",
@@ -362,19 +371,18 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
     manifest.video_end_span = end_span;
     manifest.elapsed_secs = elapsed_before + process_started.elapsed().as_secs_f64();
     write_manifest(&dir, &manifest)?;
-    let last_span = manifest.chunks.last().map_or(cfg.sequence.initial_span, |c| span_with_corner_at(&g, g.ln_radius(c.row0 as f64).exp()));
     let last_iter = manifest.chunks.last().map_or(0, |c| c.max_iter);
-    write_progress(cfg, &manifest, stop_reason.status(), Some(stop_reason.to_string()), last_span, last_iter, started_unix);
+    write_progress(cfg, &manifest, stop_reason.status(), Some(stop_reason.to_string()), video_end(&manifest), last_iter, started_unix);
     if let Some((now, peak)) = sys.memory() {
         tracing::info!("strip peak RAM {:.0} MB (now {:.0} MB)", peak as f64 / 1048576.0, now as f64 / 1048576.0);
     }
     tracing::info!(
-        "strip {}: {} chunks, {} rows, {:.1} MB, deepest frame span {:.3e} ({stop_reason})",
+        "strip {}: {} chunks, {} rows, {:.1} MB; the video ends at span {:.3e} ({stop_reason})",
         manifest.status,
         manifest.chunks.len(),
         manifest.next_row(),
         manifest.total_bytes() as f64 / 1e6,
-        deepest_frame_span(&manifest)
+        video_end(&manifest)
     );
     if stop_reason.is_failure() {
         tracing::error!("the strip stopped: {stop_reason}");

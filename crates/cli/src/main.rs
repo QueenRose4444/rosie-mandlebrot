@@ -226,13 +226,7 @@ fn run() -> anyhow::Result<()> {
     let _log_guard = init_tracing(cli.quiet, cli.live, log_file, cli.default_log_path(), &argv);
     let layout = cli.layout();
     if !quick {
-        tracing::info!(
-            "layout: {} ({}); output {}, state {}",
-            layout.name(),
-            layout.root().display(),
-            cli.resolved_output().display(),
-            cli.resolved_state().display()
-        );
+        tracing::info!("layout: {} ({}); output {}", layout.name(), layout.root().display(), cli.resolved_output().display());
     }
 
     if cli.encode_only {
@@ -310,6 +304,7 @@ fn run() -> anyhow::Result<()> {
         std::process::exit(code);
     }
 
+    tracing::info!("frame-by-frame run; checkpoint {}", state_path.display());
     let state = StateStore::open(&state_path)?;
     let existing = state.latest_run()?;
     let resuming = cli.resume && !cli.new_run && existing.is_some();
