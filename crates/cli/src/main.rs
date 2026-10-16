@@ -93,7 +93,9 @@ fn init_tracing(
         let layer = tracing_subscriber::fmt::layer()
             .with_writer(std::io::stdout)
             .with_timer(local_timer())
-            .with_target(false);
+            .with_target(false)
+            // Colour only on a terminal: redirected to a file it is escape codes.
+            .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()));
         let filter = EnvFilter::try_new(&filter_string)
             .unwrap_or_else(|_| EnvFilter::new("info"));
         Some(layer.with_filter(filter))

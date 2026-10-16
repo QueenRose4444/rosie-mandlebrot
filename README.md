@@ -36,9 +36,10 @@ picks up where it left off after a crash or a reboot.
    .\rosie_mandlebrot.exe --preset seahorse --res 1080p --max-frames 300
    ```
 
-   300 frames at the default pace only reach a span of about 7e-3, the outer spirals. For the
-   whole dive add `--zoom-factor 0.9` and drop `--max-frames`: the run goes until the picture turns
-   featureless and stops by itself (measured: 457 frames, 28 seconds on an RTX 3060 Ti).
+   300 frames at the default pace only reach a span of about 7e-3, the outer spirals: at the default
+   `--zoom-factor 0.98` each tenfold zoom takes 114 frames (at 0.9, 22). For the whole dive add
+   `--zoom-factor 0.9 --zoom-end 1e-15` and drop `--max-frames`: 339 frames down to `seahorse`'s
+   depth (measured: 18 seconds plus 14 for the video on an RTX 3060 Ti).
 
 3. **You should see your GPU** near the top of the output:
 
@@ -88,6 +89,7 @@ rasterizer", the container cannot see the driver and stops; [DEPLOY.md](DEPLOY.m
 and how to fix it. `--user` makes the frames yours rather than the image's user 10001. Type `stop`
 and Enter to end a run early. Frames, `progress.json` and the video land in `out/`; the checkpoint
 and the log in `state/`. Run the same command again to carry on; use new folders for a new run.
+`:latest` is the newest release; each release is also tagged by version (`:v0.1.3`).
 
 For a long unattended run with automatic restarts, see [`docker-compose.yml`](docker-compose.yml)
 and [DEPLOY.md](DEPLOY.md).
@@ -119,8 +121,9 @@ hand-picked place. Some to start with:
 | `misiurewicz_deep` | repeats itself every 4.2 decades | 1e-158 |
 
 A location's depth is honest: every centre was derived from its defining equation and is re-checked
-by the test suite. Past that depth there is nothing new to see, and the run stops by itself when
-the frames go featureless.
+by the test suite. Past that depth there is nothing new to see. Without a stop limit the run keeps
+going until a frame is almost one flat colour, which can be a hundred frames or more of smooth
+gradients past the depth; add `--zoom-end` with the listed depth to stop there.
 
 Your own location: `--center="-0.7453,0.1127" --initial-span 0.01`. Write the centre with one digit
 per decade of zoom you want, and check it first with `--ladder`, which prints the minibrots near

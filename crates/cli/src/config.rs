@@ -48,12 +48,9 @@ pub struct Cli {
     #[arg(long)]
     pub max_frames: Option<u64>,
 
-    /// Recycle the process after rendering this many frames in one process:
-    /// cleanly drain the encode queue and exit(0) WITHOUT finishing the run, so
-    /// `restart: unless-stopped` + `--resume` relaunches a fresh, zero-leak
-    /// process that continues the same run. Bounds memory on very long runs
-    /// (wgpu accumulates a small amount of host memory per 4K frame, which would
-    /// otherwise creep toward a tight container cap). 0/unset = never recycle.
+    /// Exit cleanly after this many frames without finishing the run, so a
+    /// restarting container (or a loop) resumes it in a fresh process. Keeps
+    /// memory bounded over runs of many thousands of frames. Unset = never.
     #[arg(long)]
     pub recycle_after: Option<u64>,
 
@@ -182,10 +179,9 @@ pub struct Cli {
     #[arg(long)]
     pub resume: bool,
 
-    /// Force a new run; refuse to clobber an existing state DB unless this is set.
-    /// If both --resume and --new-run are given, --new-run wins (handy when the
-    /// Dockerfile entrypoint bakes in --resume for auto-restart, and you want
-    /// to override for a fresh run).
+    /// Start a new run in a folder whose checkpoint has an earlier one. Refused
+    /// while that folder still holds the earlier run's frames; use --run-dir to
+    /// keep runs apart. Wins over --resume.
     #[arg(long)]
     pub new_run: bool,
 

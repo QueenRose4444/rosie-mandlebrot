@@ -61,7 +61,7 @@ pub enum MbError {
     #[error("ffmpeg invocation failed: {0}")]
     Ffmpeg(String),
 
-    #[error("run already exists at {0:?} — pass --resume or --new-run")]
+    #[error("a run already exists at {0:?}. Add --resume to carry on with it, or give this run its own folder with --run-dir NAME")]
     RunCollision(PathBuf),
 
     /// A command-line argument that parsed as text but not as a value.
@@ -88,5 +88,19 @@ pub type MbResult<T> = Result<T, MbError>;
 impl MbError {
     pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io { path: path.into(), source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_collision_points_at_a_separate_folder() {
+        // The obvious way out must not be the one that touches the existing run.
+        let msg = MbError::RunCollision(PathBuf::from("state/state.db")).to_string();
+        assert!(msg.contains("--resume"), "{msg}");
+        assert!(msg.contains("--run-dir"), "{msg}");
+        assert!(!msg.contains("--new-run"), "{msg}");
     }
 }

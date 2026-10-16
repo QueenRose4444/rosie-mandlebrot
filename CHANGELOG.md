@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3 — 2026-10-16
+
+Fixes from re-running the outside test on 0.1.0 itself.
+
+- Output redirected to a file no longer carries colour escape codes.
+- "A run already exists" now suggests `--resume` or `--run-dir NAME`, not `--new-run`.
+- README: how many frames a tenfold zoom takes, the full seahorse dive with `--zoom-end`
+  (measured), and an honest account of when a run without a stop limit ends: only once a frame is
+  almost one flat colour, which can be well past the listed depth.
+- Each release's notes name its container image tag; the README says `:latest` is the newest.
+- Plainer `--help` for `--recycle-after` and `--new-run`.
+
 ## 0.1.2 — 2026-10-16
 
 Fixes from a second outside test.
