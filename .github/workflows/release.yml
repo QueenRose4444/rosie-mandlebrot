@@ -120,9 +120,7 @@ jobs:
         run: |
           awk -v v="## ${GITHUB_REF_NAME#v}" '$0 ~ "^## " {p = (index($0, v) == 1)} p' CHANGELOG.md > notes.md
           test -s notes.md
-          printf '
-Container image: `ghcr.io/queenrose4444/rosie-mandlebrot:%s`
-' "$GITHUB_REF_NAME" >> notes.md
+          printf '\nContainer image: `ghcr.io/queenrose4444/rosie-mandlebrot:%s`\n' "$GITHUB_REF_NAME" >> notes.md
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
