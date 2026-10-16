@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5 — 2026-10-16
+
+README fixes from a third outside test, of 0.1.0 with nothing but the repository's URL:
+
+- Says that the page describes the latest release, and that each zip carries its own README.
+- The minisign hint names minisign's own Windows zip, not this project's.
+- The full seahorse dive's timing is the measured range (18–24 s plus 14–21 s for the video), not
+  the fastest single run.
+
 ## 0.1.4 — 2026-10-16
 
 - **A run ends where the picture does.** When the centre lies outside the set, the program works out

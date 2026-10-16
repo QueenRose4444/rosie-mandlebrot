@@ -4,6 +4,9 @@ Deep zooms into the Mandelbrot set, rendered on your GPU. It renders a sequence 
 each a little deeper than the last, and turns them into a video. It can keep going for days and
 picks up where it left off after a crash or a reboot.
 
+This page describes the latest release. Each release's zip carries the README for that version,
+and [CHANGELOG.md](CHANGELOG.md) lists what changed in each.
+
 ![Three frames: a Seahorse Valley spiral at 3e-9, an embedded Julia set at 4e-21, Seahorse Valley at 1e-25](docs/hero.jpg)
 
 **Get started:** [Windows](#windows) · [Linux with Docker](#linux-with-docker) ·
@@ -26,7 +29,7 @@ picks up where it left off after a crash or a reboot.
 
    *Checking it first (optional):* `Get-FileHash` on the zip in PowerShell should match its line in
    the release's `SHA256SUMS` (PowerShell prints the hash in capitals). To check that `SHA256SUMS`
-   came from this project, get [minisign](https://jedisct1.github.io/minisign/) (the Windows zip has
+   came from this project, get [minisign](https://jedisct1.github.io/minisign/) (minisign's own Windows zip has
    `minisign.exe` in `x86_64\`) and run
    `minisign -Vm SHA256SUMS -P RWQbNDTjNM+Dir3G6eU5L/mhi8lbXOi9B2qCfSXYunoNS6JX6DWCC3IH`.
 2. Open PowerShell in the unzipped folder and run:
@@ -39,7 +42,7 @@ picks up where it left off after a crash or a reboot.
    300 frames at the default pace only reach a span of about 7e-3, the outer spirals: at the default
    `--zoom-factor 0.98` each tenfold zoom takes 114 frames (at 0.9, 22). For the whole dive add
    `--zoom-factor 0.9 --zoom-end 1e-15` and drop `--max-frames`: 339 frames down to `seahorse`'s
-   depth (measured: 18 seconds plus 14 for the video on an RTX 3060 Ti).
+   depth (measured on an RTX 3060 Ti: 18–24 seconds, plus 14–21 for the video).
 
 3. **You should see your GPU** near the top of the output:
 
