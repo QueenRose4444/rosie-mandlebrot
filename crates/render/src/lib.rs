@@ -12,6 +12,7 @@
 
 pub mod gpu;
 
+mod bla_policy;
 mod cpu_path;
 mod frame;
 mod gpu_path;

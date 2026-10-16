@@ -26,6 +26,9 @@ pub struct Pipelines {
     /// have interior to skip.
     pub deep_ds_interior: wgpu::ComputePipeline,
     pub deep_fe_interior: wgpu::ComputePipeline,
+    /// The same four with BLA skips compiled in, indexed `[interior as usize]`.
+    pub deep_ds_bla: [wgpu::ComputePipeline; 2],
+    pub deep_fe_bla: [wgpu::ComputePipeline; 2],
     /// f64 variant of the deep tier; only present when SHADER_F64 is available.
     /// Uses the same bgl_perturb layout but a different reference orbit format
     /// (32 bytes/entry vs 16) — the storage buffer size differs but the binding
@@ -116,6 +119,12 @@ impl Pipelines {
                     },
                     count: None,
                 },
+                // BLA entries and per-level (offset, count). Only the DS and
+                // SE3 kernels declare them; a layout may hold bindings a shader
+                // does not use.
+                storage_ro(4),
+                storage_ro(5),
+                storage_ro(6),
             ],
         });
 
@@ -154,23 +163,32 @@ impl Pipelines {
             compilation_options: Default::default(),
             cache: None,
         });
-        let deep_variant = |label: &str, module: &wgpu::ShaderModule, interior: bool| {
+        let deep_variant = |label: &str, module: &wgpu::ShaderModule, interior: bool, bla: bool| {
+            let flag = |on: bool| if on { 1.0 } else { 0.0 };
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pl_perturb),
                 module,
                 entry_point: Some("cs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[("INTERIOR_EXIT", if interior { 1.0 } else { 0.0 })],
+                    constants: &[("INTERIOR_EXIT", flag(interior)), ("BLA", flag(bla))],
                     ..Default::default()
                 },
                 cache: None,
             })
         };
-        let deep_ds = deep_variant("pipeline-deep-ds", &mod_perturb_ds, false);
-        let deep_ds_interior = deep_variant("pipeline-deep-ds-interior", &mod_perturb_ds, true);
-        let deep_fe = deep_variant("pipeline-deep-fe", &mod_perturb_fe, false);
-        let deep_fe_interior = deep_variant("pipeline-deep-fe-interior", &mod_perturb_fe, true);
+        let deep_ds = deep_variant("pipeline-deep-ds", &mod_perturb_ds, false, false);
+        let deep_ds_interior = deep_variant("pipeline-deep-ds-interior", &mod_perturb_ds, true, false);
+        let deep_fe = deep_variant("pipeline-deep-fe", &mod_perturb_fe, false, false);
+        let deep_fe_interior = deep_variant("pipeline-deep-fe-interior", &mod_perturb_fe, true, false);
+        let deep_ds_bla = [
+            deep_variant("pipeline-deep-ds-bla", &mod_perturb_ds, false, true),
+            deep_variant("pipeline-deep-ds-interior-bla", &mod_perturb_ds, true, true),
+        ];
+        let deep_fe_bla = [
+            deep_variant("pipeline-deep-fe-bla", &mod_perturb_fe, false, true),
+            deep_variant("pipeline-deep-fe-interior-bla", &mod_perturb_fe, true, true),
+        ];
 
         // Compile the f64 deep tier only if SHADER_F64 is supported. We attempt
         // the shader compile and capture any naga/Vulkan error, downgrading
@@ -204,14 +222,18 @@ impl Pipelines {
             deep_ds_interior,
             deep_fe,
             deep_fe_interior,
+            deep_ds_bla,
+            deep_fe_bla,
             deep_f64,
         })
     }
 
     /// Pick the deep-tier pipeline for the selected engine. `gpu-ds` → DS;
     /// `gpu-f64` → hardware f64 if compiled, else f32; everything else → f32.
-    pub fn deep_for_engine(&self, engine: DeepEngine, interior_exit: bool) -> &wgpu::ComputePipeline {
+    pub fn deep_for_engine(&self, engine: DeepEngine, interior_exit: bool, bla: bool) -> &wgpu::ComputePipeline {
         match engine {
+            DeepEngine::GpuDs if bla => &self.deep_ds_bla[interior_exit as usize],
+            DeepEngine::GpuFe if bla => &self.deep_fe_bla[interior_exit as usize],
             DeepEngine::GpuDs if interior_exit => &self.deep_ds_interior,
             DeepEngine::GpuDs => &self.deep_ds,
             DeepEngine::GpuFe if interior_exit => &self.deep_fe_interior,
@@ -290,3 +312,15 @@ fn shader_module(device: &wgpu::Device, label: &str, src: std::borrow::Cow<'stat
     unsafe { device.create_shader_module_trusted(desc, checks) }
 }
 
+fn storage_ro(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}

@@ -42,7 +42,9 @@ pub(crate) fn render_deep_cpu_bla(req: &FrameRequest) -> MbResult<FrameResult> {
         max_delta: req.span.max(1e-300),
     });
     let orbit = std::sync::Arc::new(reference.orbit_f64);
-    let table = build_bla_table(&orbit, req.span.max(1e-300), BLA_EPSILON);
+    // |dc| never exceeds the frame's half-diagonal.
+    let max_delta = 0.5 * (req.span * aspect).hypot(req.span);
+    let table = build_bla_table(&orbit, max_delta.max(1e-300), BLA_EPSILON);
 
     // First pass: BLA walk over every pixel.
     let stop = req.stop_flag.clone();

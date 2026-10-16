@@ -31,10 +31,30 @@ struct PixelOut {
 @group(0) @binding(2) var<storage, read>      sa_coeffs : array<vec2<f32>>; // unused in DS, bound for layout compat
 @group(0) @binding(3) var<storage, read_write> out_buf  : array<PixelOut>;
 
+// BLA table (see crates/ref/src/bla.rs): every level's entries back to back,
+// and (offset, count) per level. A and B are DS mantissas times 2^ae / 2^be.
+struct BlaEntry {
+    a      : vec4<f32>,
+    b      : vec4<f32>,
+    ae     : i32,
+    be     : i32,
+    r_log2 : f32,
+    len    : u32,
+}
+@group(0) @binding(4) var<storage, read> bla        : array<BlaEntry>;
+@group(0) @binding(5) var<storage, read> bla_levels : array<vec2<u32>>;
+// log2 of each entry's radius, indexed like `bla`: a lookup that misses reads
+// these 4 bytes and nothing else. This kernel is paced by memory traffic, and
+// reading the whole 48-byte entry on every attempt made BLA a net loss at
+// shallow depth.
+@group(0) @binding(6) var<storage, read> bla_r      : array<f32>;
+
 const BAILOUT_SQ : f32 = 4.0;
 // Interior exit is compiled in or out per pipeline, so a frame without
 // interior pays nothing for it.
 override INTERIOR_EXIT : bool = false;
+// BLA skips, likewise compiled in or out per pipeline.
+override BLA : bool = false;
 
 // ---- DS (double-single) primitives. A DS value is vec2<f32> = (hi, lo). ----
 
@@ -117,6 +137,42 @@ fn ds_mul_f32(a: vec2<f32>, b: f32) -> vec2<f32> {
 fn exp2i(p: i32) -> f32 {
     return bitcast<f32>(u32(clamp(127 + p, 1, 254)) << 23u);
 }
+fn ds_scale2(a: vec2<f32>, p: i32) -> vec2<f32> {
+    if (p < -126) { return vec2<f32>(0.0, 0.0); }
+    let s = exp2i(min(p, 127));
+    return vec2<f32>(a.x * s, a.y * s);
+}
+
+// Index + 1 of the longest BLA skip of two or more steps from reference index
+// n for a delta of log2-size dzl, or 0. The entry starting at n exists on
+// level L only when 2^L divides n - 1, and a level's radius never exceeds the
+// radius of the level below it, so the climb starts at level 1 (a one-step
+// entry is never applied: the exact step costs the same) and stops at the
+// first miss. Odd n - 1 starts nothing above level 0 and costs no read.
+fn bla_find(n: u32, dzl: f32, ref_len: u32, budget: u32) -> u32 {
+    let ix = n - 1u;
+    if ((ix & 1u) != 0u) { return 0u; }
+    let nlev = arrayLength(&bla_levels);
+    var best = 0u;
+    var lvl = 1u;
+    loop {
+        if (lvl >= nlev) { break; }
+        if ((ix & ((1u << lvl) - 1u)) != 0u) { break; }
+        let li = bla_levels[lvl];
+        let j = ix >> lvl;
+        if (j >= li.y) { break; }
+        let k = li.x + j;
+        let len = 1u << lvl;
+        if (dzl < bla_r[k] && n + len < ref_len - 1u && len <= budget) {
+            best = k + 1u;
+        } else {
+            break;
+        }
+        lvl = lvl + 1u;
+    }
+    return best;
+}
+
 // floor(log2(|x|)); zero maps far below everything.
 fn ilog2f(x: f32) -> i32 {
     let b = bitcast<u32>(abs(x)) >> 23u;
@@ -188,22 +244,50 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     loop {
         if (iter >= U.max_iter) { break; } // inside-set
 
-        // One perturbation step from reference index n. `e.xy` is the DS pair
-        // for Re(Z_n), `e.zw` for Im(Z_n) — one vector load, where a 32-byte
-        // struct would cost four scalar loads at twice the stride.
-        let e = ref_orbit[n];
-        let z_re = e.xy;
-        let z_im = e.zw;
-        let two_z_re = ds_mul2(z_re);
-        let two_z_im = ds_mul2(z_im);
-        let t_re = ds_sub(ds_mul(two_z_re, dz_re), ds_mul(two_z_im, dz_im));
-        let t_im = ds_add(ds_mul(two_z_re, dz_im), ds_mul(two_z_im, dz_re));
-        let dz2_re = ds_sub(ds_mul(dz_re, dz_re), ds_mul(dz_im, dz_im));
-        let dz2_im = ds_mul2(ds_mul(dz_re, dz_im));
-        dz_re = ds_add(ds_add(t_re, dz2_re), dc_re);
-        dz_im = ds_add(ds_add(t_im, dz2_im), dc_im);
-        n = n + 1u;
-        iter = iter + 1u;
+        // A BLA skip of two or more steps when one is valid: dz <- A*dz + B*dc
+        // over `len` reference steps. |dz| is bounded by sqrt(2) times its
+        // infinity norm, hence the +0.5 in log2.
+        var skipped = false;
+        var skip_d2 : f32 = 1.0;
+        var skip_de : i32 = 0;
+        if (BLA && n >= 1u) {
+            let dzl = log2(max(abs(dz_re.x), abs(dz_im.x))) + 0.5;
+            let k = bla_find(n, dzl, ref_len, U.max_iter - iter);
+            if (k > 0u) {
+                let b = bla[k - 1u];
+                let p_re = ds_sub(ds_mul(b.a.xy, dz_re), ds_mul(b.a.zw, dz_im));
+                let p_im = ds_add(ds_mul(b.a.xy, dz_im), ds_mul(b.a.zw, dz_re));
+                let q_re = ds_sub(ds_mul(b.b.xy, dc_re), ds_mul(b.b.zw, dc_im));
+                let q_im = ds_add(ds_mul(b.b.xy, dc_im), ds_mul(b.b.zw, dc_re));
+                dz_re = ds_add(ds_scale2(p_re, b.ae), ds_scale2(q_re, b.be));
+                dz_im = ds_add(ds_scale2(p_im, b.ae), ds_scale2(q_im, b.be));
+                n = n + b.len;
+                iter = iter + b.len;
+                // The orbit's derivative over the skip is A (a product of 2Z).
+                skip_d2 = b.a.x * b.a.x + b.a.z * b.a.z;
+                skip_de = 2 * b.ae;
+                skipped = true;
+            }
+        }
+
+        if (!skipped) {
+            // One perturbation step from reference index n. `e.xy` is the DS pair
+            // for Re(Z_n), `e.zw` for Im(Z_n) — one vector load, where a 32-byte
+            // struct would cost four scalar loads at twice the stride.
+            let e = ref_orbit[n];
+            let z_re = e.xy;
+            let z_im = e.zw;
+            let two_z_re = ds_mul2(z_re);
+            let two_z_im = ds_mul2(z_im);
+            let t_re = ds_sub(ds_mul(two_z_re, dz_re), ds_mul(two_z_im, dz_im));
+            let t_im = ds_add(ds_mul(two_z_re, dz_im), ds_mul(two_z_im, dz_re));
+            let dz2_re = ds_sub(ds_mul(dz_re, dz_re), ds_mul(dz_im, dz_im));
+            let dz2_im = ds_mul2(ds_mul(dz_re, dz_im));
+            dz_re = ds_add(ds_add(t_re, dz2_re), dc_re);
+            dz_im = ds_add(ds_add(t_im, dz2_im), dc_im);
+            n = n + 1u;
+            iter = iter + 1u;
+        }
 
         // Full value w = Z[n] + dz at the new reference index (n <= ref_len-1).
         let en = ref_orbit[n];
@@ -218,8 +302,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (mag_sq > BAILOUT_SQ) { escaped = true; break; }
 
         if (INTERIOR_EXIT) {
-            d_m = d_m * (4.0 * mag_sq);
-            if (d_m < 9.5367432e-7 || d_m > 1.0995116e12) {
+            if (skipped) {
+                d_m = d_m * skip_d2;
+                d_e = d_e + skip_de;
+            } else {
+                d_m = d_m * (4.0 * mag_sq);
+            }
+            if (skipped || d_m < 9.5367432e-7 || d_m > 1.0995116e12) {
                 let k = ilog2f(d_m);
                 d_e = d_e + k;
                 d_m = d_m * exp2i(clamp(-k, -126, 127));

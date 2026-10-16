@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 — unreleased
+
+- **Deep frames are much faster.** The deep kernels can now skip thousands of iterations at a time
+  (bivariate linear approximation). Measured on an RTX 3060 Ti: 2.1× faster at 1e-31, 2.75× at 1e-60
+  and 16× on an interior-heavy frame at 1e-32. It switches itself on only where a quick probe measures
+  it faster, so shallower frames are byte-identical to 0.1.5. Where it is on, colours can change
+  slightly; checked against exact arithmetic, those frames are as accurate or more.
+- The reference orbit skips series-approximation work no engine uses: 14% less orbit time on a
+  100,000-iteration orbit.
+
 ## 0.1.5 — 2026-10-16
 
 README fixes from a third outside test, of 0.1.0 with nothing but the repository's URL:

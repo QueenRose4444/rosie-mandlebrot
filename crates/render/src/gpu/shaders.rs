@@ -33,7 +33,7 @@ pub fn source(dir: Option<&Path>, name: &str) -> MbResult<Cow<'static, str>> {
 #[cfg(test)]
 mod tests {
     use super::EMBEDDED;
-    use rosie_mandlebrot_core::types::{PixelOut, RefOrbitEntry, RefOrbitEntryDs, RefOrbitEntryF64, Uniforms};
+    use rosie_mandlebrot_core::types::{BlaEntryGpu, PixelOut, RefOrbitEntry, RefOrbitEntryDs, RefOrbitEntryF64, Uniforms};
     use naga::valid::{Capabilities, ValidationFlags, Validator};
     use std::mem::{offset_of, size_of};
 
@@ -101,6 +101,12 @@ mod tests {
             ("RefOrbitEntryF64", "z_im") => offset_of!(RefOrbitEntryF64, z_im),
             ("RefOrbitEntryF64", "z_mag_sq") => offset_of!(RefOrbitEntryF64, z_mag_sq),
             ("RefOrbitEntryF64", "pad") => offset_of!(RefOrbitEntryF64, _pad),
+            ("BlaEntry", "a") => offset_of!(BlaEntryGpu, a),
+            ("BlaEntry", "b") => offset_of!(BlaEntryGpu, b),
+            ("BlaEntry", "ae") => offset_of!(BlaEntryGpu, ae),
+            ("BlaEntry", "be") => offset_of!(BlaEntryGpu, be),
+            ("BlaEntry", "r_log2") => offset_of!(BlaEntryGpu, r_log2),
+            ("BlaEntry", "len") => offset_of!(BlaEntryGpu, len),
             _ => panic!("{strukt}.{field} exists in WGSL but not in the Rust struct"),
         }
     }
@@ -116,12 +122,13 @@ mod tests {
             "PixelOut" => size_of::<PixelOut>(),
             "RefOrbitEntry" => size_of::<RefOrbitEntry>(),
             "RefOrbitEntryF64" => size_of::<RefOrbitEntryF64>(),
+            "BlaEntry" => size_of::<BlaEntryGpu>(),
             _ => unreachable!(),
         };
         let mut checked = 0;
         for (name, src) in EMBEDDED {
             let module = parse(name, src);
-            for strukt in ["Uniforms", "PixelOut", "RefOrbitEntry", "RefOrbitEntryF64"] {
+            for strukt in ["Uniforms", "PixelOut", "RefOrbitEntry", "RefOrbitEntryF64", "BlaEntry"] {
                 let Some((span, members)) = wgsl_struct(&module, strukt) else { continue };
                 for (field, off) in &members {
                     assert_eq!(*off as usize, rust_offset(strukt, field), "{name}: {strukt}.{field} offset");
@@ -135,8 +142,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // Six kernels each declare Uniforms and PixelOut, two declare an orbit entry.
-        assert_eq!(checked, 14);
+        // Six kernels each declare Uniforms and PixelOut, two declare an orbit
+        // entry, and the DS and SE3 kernels declare BlaEntry.
+        assert_eq!(checked, 16);
     }
 
     /// The DS and floatexp kernels bind the orbit as `array<vec4<f32>>`: one

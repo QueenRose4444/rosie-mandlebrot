@@ -7,12 +7,12 @@ use rosie_mandlebrot_core::error::{MbError, MbResult};
 use rosie_mandlebrot_core::precision::Tier;
 use rosie_mandlebrot_core::tiling::tiles_for;
 use rosie_mandlebrot_core::types::{
-    f64_to_ds, f64_to_fe, PixelOut, RefOrbitEntry, RefOrbitEntryDs, RefOrbitEntryF64, SaCoeff,
-    Uniforms, WORKGROUP,
+    f64_to_ds, f64_to_fe, BlaEntryGpu, PixelOut, RefOrbitEntry, RefOrbitEntryDs, RefOrbitEntryF64,
+    SaCoeff, Uniforms, WORKGROUP,
 };
 use rosie_mandlebrot_ref::{
-    compute_reference,
-    sa_as_gpu_coeffs, RefRequest, ReferenceData,
+    build_bla_table, compute_reference,
+    sa_as_gpu_coeffs, BlaGpu, RefRequest, ReferenceData, BLA_EPSILON_DS,
 };
 use crate::gpu::{readback, GpuCtx};
 use crate::{frame::*, perturb::*};
@@ -128,6 +128,19 @@ pub(crate) fn dispatch_pass(
     ref_re: &str,
     ref_im: &str,
 ) -> MbResult<Vec<PixelOut>> {
+    dispatch_pass_with(gpu, req, tier, ref_re, ref_im, None)
+}
+
+/// [`dispatch_pass`] with BLA forced on or off (`Some`), or left to
+/// [`crate::bla_policy`] (`None`).
+pub(crate) fn dispatch_pass_with(
+    gpu: &GpuCtx,
+    req: &FrameRequest,
+    tier: Tier,
+    ref_re: &str,
+    ref_im: &str,
+    bla: Option<bool>,
+) -> MbResult<Vec<PixelOut>> {
     let aspect = req.width as f64 / req.height as f64;
     let span_y = req.span;
     let span_x = req.span * aspect;
@@ -210,6 +223,11 @@ pub(crate) fn dispatch_pass(
     // through unchanged. Span is constant across tiles, so resolve once here.
     let eff_engine = rosie_mandlebrot_core::precision::effective_deep_engine(req.span, req.deep_engine);
 
+    // Decided before the timer starts: a calibration probe is not this frame's work.
+    let use_bla = tier == Tier::DeepPerturb
+        && matches!(eff_engine, rosie_mandlebrot_core::config::DeepEngine::GpuDs | rosie_mandlebrot_core::config::DeepEngine::GpuFe)
+        && bla.unwrap_or_else(|| crate::bla_policy::choose(gpu, req));
+
     // Time only the GPU tile loop (submit + blocking readback) for the CPU-vs-GPU
     // work split; the CPU reference orbit above is deliberately excluded.
     let gpu_t0 = std::time::Instant::now();
@@ -270,6 +288,14 @@ pub(crate) fn dispatch_pass(
     } else {
         (None, None)
     };
+
+    // BLA table for the DS and SE3 kernels. Every |dc| in the frame is at most
+    // its half-diagonal plus any shift of the reference.
+    let bla_buf = (tier == Tier::DeepPerturb).then(|| {
+        let r = reference.as_ref().expect("reference computed for deep tier");
+        let max_delta = 0.5 * span_x.hypot(span_y) + ref_offset_x.hypot(ref_offset_y);
+        bla_buffers(gpu, req, r, ref_re, ref_im, use_bla.then_some(max_delta))
+    });
 
     for tile in &tiles {
         let tile_pixel_count = (tile.width * tile.height) as u64;
@@ -400,6 +426,7 @@ pub(crate) fn dispatch_pass(
             Tier::DeepPerturb => {
                 let ref_buf = frame_ref_buf.as_ref().expect("deep tier built a ref buffer");
                 let sa_buf = frame_sa_buf.as_ref().expect("deep tier built an SA buffer");
+                let [bla_entries_buf, bla_levels_buf, bla_radii_buf] = &**bla_buf.as_ref().expect("deep tier built BLA buffers");
                 gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("bg-perturb"),
                     layout: gpu.pipelines.bgl_for_tier(tier),
@@ -408,6 +435,9 @@ pub(crate) fn dispatch_pass(
                         wgpu::BindGroupEntry { binding: 1, resource: ref_buf.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 2, resource: sa_buf.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 3, resource: out_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 4, resource: bla_entries_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 5, resource: bla_levels_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 6, resource: bla_radii_buf.as_entire_binding() },
                     ],
                 })
             }
@@ -435,7 +465,7 @@ pub(crate) fn dispatch_pass(
             // Deep tier picks its pipeline from the selected engine; other
             // tiers map straight from the tier.
             let pipeline = if tier == Tier::DeepPerturb {
-                gpu.pipelines.deep_for_engine(eff_engine, req.interior_exit)
+                gpu.pipelines.deep_for_engine(eff_engine, req.interior_exit, use_bla)
             } else {
                 gpu.pipelines.for_tier(tier)
             };
@@ -499,4 +529,67 @@ pub(crate) fn dispatch_pass(
 
     add_gpu_ms(gpu_t0.elapsed().as_secs_f64() * 1000.0);
     Ok(out_pixels)
+}
+
+/// The BLA table's three GPU buffers (entries, levels, radii) for `max_delta`,
+/// or the one-empty-level stand-in when `max_delta` is `None`.
+///
+/// A table is valid for any frame whose largest |dc| is at most the one it was
+/// built for (every radius shrinks as |c|max grows), so one table serves a run
+/// of shrinking frames, merely a little conservative, until the frame has
+/// shrunk 4x or the orbit changes. Building and uploading it every frame cost
+/// 40-70 ms at 120k-200k iterations, as much as the shader time BLA saves.
+fn bla_buffers(
+    gpu: &GpuCtx,
+    req: &FrameRequest,
+    r: &ReferenceData,
+    ref_re: &str,
+    ref_im: &str,
+    max_delta: Option<f64>,
+) -> std::sync::Arc<[wgpu::Buffer; 3]> {
+    use std::sync::{Arc, Mutex};
+    struct Cached {
+        key: (String, String, usize),
+        built_for: f64,
+        buffers: Arc<[wgpu::Buffer; 3]>,
+    }
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+    static EMPTY: Mutex<Option<Arc<[wgpu::Buffer; 3]>>> = Mutex::new(None);
+
+    let upload = |bla: &BlaGpu| {
+        let storage = |label: &str, contents: &[u8]| {
+            gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage: wgpu::BufferUsages::STORAGE,
+            })
+        };
+        Arc::new([
+            storage("bla-entries", cast_slice::<BlaEntryGpu, u8>(&bla.entries)),
+            storage("bla-levels", cast_slice::<[u32; 2], u8>(&bla.levels)),
+            storage("bla-radii", cast_slice::<f32, u8>(&bla.radii)),
+        ])
+    };
+    let Some(max_delta) = max_delta else {
+        return EMPTY.lock().expect("BLA cache poisoned").get_or_insert_with(|| upload(&BlaGpu::empty())).clone();
+    };
+    let key = (ref_re.to_string(), ref_im.to_string(), r.orbit_f64.len());
+    let mut cache = CACHE.lock().expect("BLA cache poisoned");
+    if let Some(c) = cache.as_ref() {
+        if c.key == key && max_delta <= c.built_for && max_delta * 4.0 > c.built_for {
+            return c.buffers.clone();
+        }
+    }
+    let t0 = std::time::Instant::now();
+    let bla = build_bla_table(&r.orbit_f64, max_delta, BLA_EPSILON_DS).to_gpu();
+    let buffers = upload(&bla);
+    tracing::debug!(
+        "frame {} bla: {} entries in {} levels, {:.2} ms",
+        req.frame_idx,
+        bla.entries.len(),
+        bla.levels.len(),
+        t0.elapsed().as_secs_f64() * 1000.0
+    );
+    *cache = Some(Cached { key, built_for: max_delta, buffers: buffers.clone() });
+    buffers
 }

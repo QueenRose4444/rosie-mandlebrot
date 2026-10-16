@@ -94,6 +94,25 @@ pub struct RefOrbitEntryDs {
     pub z_im_lo: f32,
 }
 
+/// One BLA table entry as the deep kernels read it: `dz' = A·dz + B·dc`,
+/// valid while `|dz| < 2^r_log2`, advancing `len` reference steps.
+///
+/// A and B are complex numbers kept as a double-single mantissa per component
+/// (`a = (re_hi, re_lo, im_hi, im_lo)`) times `2^ae`: over a long skip A is the
+/// product of thousands of `2Z` factors and leaves f32's range far behind,
+/// while the kernels need DS accuracy from it. The radius is a log2 so it can
+/// sit below f32's smallest normal at depths the SE3 kernel reaches.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Debug, Default, PartialEq)]
+pub struct BlaEntryGpu {
+    pub a: [f32; 4],
+    pub b: [f32; 4],
+    pub ae: i32,
+    pub be: i32,
+    pub r_log2: f32,
+    pub len: u32,
+}
+
 /// Is this pixel interior — i.e. painted from the top of the palette rather
 /// than coloured by its escape value?
 ///

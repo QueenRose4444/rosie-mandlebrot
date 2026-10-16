@@ -55,6 +55,18 @@ pub(crate) fn reset_gpu_timer() {
     FRAME_ORBIT_MS.with(|c| c.set(0.0));
 }
 
+/// This frame's three timers, so a side measurement (the BLA calibration
+/// probe) can run without being billed to the frame.
+pub(crate) fn save_gpu_timers() -> [f64; 3] {
+    [FRAME_GPU_MS.with(|c| c.get()), FRAME_SHADER_MS.with(|c| c.get()), FRAME_ORBIT_MS.with(|c| c.get())]
+}
+
+pub(crate) fn restore_gpu_timers([gpu, shader, orbit]: [f64; 3]) {
+    FRAME_GPU_MS.with(|c| c.set(gpu));
+    FRAME_SHADER_MS.with(|c| c.set(shader));
+    FRAME_ORBIT_MS.with(|c| c.set(orbit));
+}
+
 /// Time a reference-orbit computation into this frame's orbit total.
 pub(crate) fn timed_orbit<T>(f: impl FnOnce() -> T) -> T {
     let t = std::time::Instant::now();
@@ -107,15 +119,9 @@ pub(crate) use rosie_mandlebrot_core::frame::{FrameRequest, FrameResult};
 /// encoder paints any remaining ones as inside-set.
 pub(crate) const GLITCH_THRESHOLD_FRACTION: f64 = 0.0001;
 
-/// BLA level-0 validity radius factor (`r = BLA_EPSILON·|Z|`, also capped by
-/// escape proximity in `build_bla_table`). 1e-10 is the value that stays exact
-/// vs plain perturbation at realistic iteration depths (max_iter ~6000) — see
-/// the `bla_matches_plain_perturbation` test. Looser values (1e-8) skip more
-/// but accumulate enough error over thousands of iterations to false-escape
-/// inside-set pixels (visible white-blob artifacts). At this conservative
-/// radius the skip is modest (~1.3× at span 1e-13); meaningful BLA speedups
-/// need periodicity detection + the full Zhuoran radius (future work).
-pub(crate) const BLA_EPSILON: f64 = 1e-10;
+/// BLA radius factor for the CPU engine, which applies skips in f64. The
+/// radius has to match the arithmetic doing the skipping (research/17 §4.1).
+pub(crate) const BLA_EPSILON: f64 = rosie_mandlebrot_ref::BLA_EPSILON_F64;
 /// Only apply BLA below this span. Above it BLA gives no benefit (dz isn't
 /// small enough relative to the radius to skip) and can overshoot an escape;
 /// the non-BLA deep path is already fast there.
