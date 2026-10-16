@@ -373,8 +373,7 @@ pub(crate) fn render_deep_cpu(req: &FrameRequest, glitch_threshold: usize) -> Mb
         // chunks of 4 pixels. Most pixels resolve here.
         // Retry passes: scalar over just the unresolved pixels (small set,
         // not worth batching).
-        let resolved_this_pass;
-        if retry == 0 {
+        let resolved_this_pass = if retry == 0 {
             // SIMD path: process all pixels in 4-lane chunks.
             let chunks = total.div_ceil(4);
             let stop = req.stop_flag.clone();
@@ -445,7 +444,7 @@ pub(crate) fn render_deep_cpu(req: &FrameRequest, glitch_threshold: usize) -> Mb
                     }
                 }
             }
-            resolved_this_pass = count;
+            count
         } else {
             // Retry path: scalar perturbation for just the unresolved pixels.
             let needs_more_snapshot = needs_more.clone();
@@ -481,8 +480,8 @@ pub(crate) fn render_deep_cpu(req: &FrameRequest, glitch_threshold: usize) -> Mb
                 needs_more[i] = still_glitched;
                 if !still_glitched { count += 1; }
             }
-            resolved_this_pass = count;
-        }
+            count
+        };
 
         let remaining = needs_more.iter().filter(|&&b| b).count();
         tracing::debug!(
