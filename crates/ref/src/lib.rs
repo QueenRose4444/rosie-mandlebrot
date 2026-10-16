@@ -2,7 +2,7 @@
 //! 5-term Series Approximation coefficients in f64 (num_complex).
 //!
 //! The orbit is iterated at chosen rug precision until |Z| > 2 or `max_iter`.
-//! At each step we also iterate the SA coefficients:
+//! With `want_sa` set, each step also iterates the SA coefficients:
 //!     A_{n+1} = 2 Z A + 1
 //!     B_{n+1} = 2 Z B + A^2
 //!     C_{n+1} = 2 Z C + 2 A B
@@ -186,29 +186,32 @@ fn compute_reference_at_prec(req: &RefRequest, prec: u32) -> ReferenceData {
             break;
         }
 
-        // Compute next SA coefficients before updating Z.
-        let two_z = Complex64::new(2.0 * z_re_f, 2.0 * z_im_f);
-        let new_a = two_z * a + Complex64::new(1.0, 0.0);
-        let new_b = two_z * b + a * a;
-        let new_c = two_z * c + 2.0 * a * b;
-        let new_d = two_z * d + 2.0 * a * c + b * b;
-        let new_e = two_z * e + 2.0 * a * d + 2.0 * b * c;
+        // SA coefficients, only when the engine reads them: at low precision
+        // these five complex recurrences are 15-20% of this loop.
+        if req.want_sa {
+            let two_z = Complex64::new(2.0 * z_re_f, 2.0 * z_im_f);
+            let new_a = two_z * a + Complex64::new(1.0, 0.0);
+            let new_b = two_z * b + a * a;
+            let new_c = two_z * c + 2.0 * a * b;
+            let new_d = two_z * d + 2.0 * a * c + b * b;
+            let new_e = two_z * e + 2.0 * a * d + 2.0 * b * c;
 
-        // skip_n test (use *current* coefficients which represent dz at iter n).
-        if n > 0 {
-            let lead = a.norm() * delta_abs;
-            let tail = e.norm() * delta_abs_5;
-            if tail < tail_tol * lead.max(1e-30) {
-                skip_n = n;
-                sa_at_skip = [a, b, c, d, e];
+            // skip_n test (use *current* coefficients which represent dz at iter n).
+            if n > 0 {
+                let lead = a.norm() * delta_abs;
+                let tail = e.norm() * delta_abs_5;
+                if tail < tail_tol * lead.max(1e-30) {
+                    skip_n = n;
+                    sa_at_skip = [a, b, c, d, e];
+                }
             }
-        }
 
-        a = new_a;
-        b = new_b;
-        c = new_c;
-        d = new_d;
-        e = new_e;
+            a = new_a;
+            b = new_b;
+            c = new_c;
+            d = new_d;
+            e = new_e;
+        }
 
         // Z_{n+1} = Z^2 + C, computed in rug
         let z_re_sq = (&z_re * &z_re).complete(prec);
@@ -728,6 +731,24 @@ mod tests {
         });
         assert_eq!(r.orbit.len(), 100);
         assert!(r.orbit.iter().all(|e| e.z_re == 0.0 && e.z_im == 0.0));
+    }
+
+    #[test]
+    fn series_coefficients_only_when_asked_for() {
+        let req = |want_sa| RefRequest {
+            want_sa,
+            center_re: "-0.743643887037151".into(),
+            center_im: "0.131825904205330".into(),
+            max_iter: 2000,
+            max_delta: 1e-12,
+        };
+        let with = compute_reference(&req(true));
+        let without = compute_reference(&req(false));
+        let bits = |r: &ReferenceData| r.orbit_f64.iter().map(|e| (e.z_re.to_bits(), e.z_im.to_bits())).collect::<Vec<_>>();
+        assert_eq!(bits(&with), bits(&without), "the orbit must not depend on want_sa");
+        assert!(with.skip_n > 0 && with.sa[0].norm() > 0.0, "want_sa = true must still fill the coefficients");
+        assert_eq!(without.skip_n, 0);
+        assert!(without.sa.iter().all(|c| c.norm() == 0.0), "want_sa = false must skip the recurrences");
     }
 
     #[test]
