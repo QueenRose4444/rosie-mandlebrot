@@ -10,7 +10,7 @@ pub enum MbError {
         source: std::io::Error,
     },
 
-    #[error("preset '{0}' not found")]
+    #[error("preset '{0}' not found (--list-presets shows them all)")]
     PresetMissing(String),
 
     #[error("palette '{0}' not recognised")]
@@ -73,6 +73,10 @@ pub enum MbError {
 
     #[error("frame cancelled by user")]
     Cancelled,
+
+    /// A new run was asked for in a folder that already holds another run's frames.
+    #[error("{0}")]
+    OutputInUse(String),
 
     /// The frame is past what the GPU kernels can render correctly.
     #[error("beyond the renderer's range: {0}")]

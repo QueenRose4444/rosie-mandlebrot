@@ -20,8 +20,7 @@ use std::time::Duration;
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "cli", clap(rename_all = "kebab-case"))]
 pub enum DeepEngine {
-    /// GPU double-single (2×f32, ~48-bit). Accurate enough to avoid the f32
-    /// glitch→rug grind, runs at full f32 speed. The intended default.
+    /// GPU double-single (about 48 bits): accurate and fast. The default.
     #[default]
     GpuDs,
     /// GPU double-single with one shared exponent per pixel. The same pixels
@@ -29,18 +28,14 @@ pub enum DeepEngine {
     /// default `gpu-ds` engine switches to this below 1e-24; pass `gpu-fe` to
     /// force it everywhere (about 1.6× the cost of DS).
     GpuFe,
-    /// GPU f32 perturbation. Fast but glitches at deep zoom → heavy rug fallback.
+    /// GPU single precision. Fast, but deep frames need slow CPU repairs. Testing only.
     GpuF32,
-    /// CPU f64 SIMD perturbation. Accurate reference/fallback; uses CPU cores.
+    /// CPU double precision. Accurate but slow; a reference for testing.
     CpuF64,
-    /// GPU hardware f64. Gated behind driver support; crashes on some NVIDIA
-    /// drivers (naga f64 SPIR-V → device lost). Test-only.
+    /// GPU hardware double precision, where the driver supports it. Some
+    /// drivers crash with it. Testing only.
     GpuF64,
-    /// CPU BLA (Bivariate Linear Approximation) with rebasing. Experimental —
-    /// correct, but largely superseded by gpu-ds, since rebasing makes the GPU
-    /// deep tier glitch-free and fast. BLA's iteration-skip is small for orbits
-    /// that rebase often (e.g. seahorse ~1.3×), and this runs on the CPU. Kept
-    /// for centers where BLA skips more and for reference.
+    /// CPU bilinear approximation (skips iterations). Experimental; testing only.
     CpuBla,
 }
 

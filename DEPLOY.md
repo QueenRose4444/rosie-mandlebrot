@@ -46,8 +46,9 @@ Change the render in the compose file's `command:` (for example
 in `mandelbrot_out/`; the checkpoint in `mandelbrot_state/` and the log in
 `mandelbrot_state/rosie-mandlebrot/logs/`.
 
-When a run finishes, the container idles instead of starting over. To start a new run, empty both
-folders and `docker compose up -d` again. A run that failed is resumed on restart.
+When a run finishes, the container idles instead of starting over. A run that was stopped (`stop`,
+`docker stop`, a reboot) or that failed is resumed on the next start. To start a new run, empty
+both folders and `docker compose up -d` again.
 
 ## 3. Check it is on the GPU
 
@@ -82,7 +83,7 @@ toolkit mounts the Vulkan driver.
 
 ## 4. Sizing
 
-- **RAM:** measured peak 355 MB at 4K on Windows. Each PNG encoder thread holds one frame, so
+- **RAM:** measured peak 754 MB for a deep 4K run in the container (2 encoders). Each PNG encoder thread holds one frame, so
   `--encode-threads` (default: half the cores, at most 4) is the setting that moves memory.
 - **CPU:** the GPU does the pixel work; the CPU computes one reference orbit per frame and encodes
   PNGs. `--cpu-percent 50` (or the compose `cpus:` limit) caps it.

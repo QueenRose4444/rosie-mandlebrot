@@ -20,7 +20,8 @@ In Docker, put the same options after the image name. The entrypoint supplies
 its run:
 
 ```bash
-docker run --rm -it --gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
+docker run --rm -it --gpus all --user "$(id -u):$(id -g)" \
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
   -v "$PWD/out:/out" -v "$PWD/state:/state" \
   ghcr.io/queenrose4444/rosie-mandlebrot:latest --preset seahorse --res 1080p --max-frames 300
 ```
@@ -42,8 +43,8 @@ on Linux. The first lines of the log say which, and every path. `--output`, `--s
 ## Watching a run
 
 `progress.json` in the output folder is rewritten every 10 seconds: frame, span, iterations,
-frames per second, RAM (`ram_mb`, `peak_ram_mb`), bytes written, GPU load (NVIDIA) and CPU load
-(Linux), and at the end `status` and `stop_reason`. The log prints a line every 10 seconds; `--live` shows a progress bar and a line per frame in a terminal
+frames per second, RAM (`ram_mb`, `peak_ram_mb`), bytes written, GPU and CPU load (on Linux with
+NVIDIA), and at the end `status` and `stop_reason`. The log prints a line every 10 seconds; `--live` shows a progress bar and a line per frame in a terminal
 instead (not useful in `docker logs`).
 
 A new run in an output folder that already holds frames is refused; `--resume` keeps the size,
@@ -108,7 +109,7 @@ two featureless checks in a row end it.
 
 | option | |
 |---|---|
-| `--run-dir DIR` | one folder for frames, checkpoint and log |
+| `--run-dir DIR` | one folder for frames, checkpoint and log, relative to the current folder |
 | `--resume` | continue the last run in that checkpoint |
 | `--new-run` | start a new run even if the checkpoint has one |
 | `--output DIR` / `--state FILE` / `--log-file FILE` | set one path; `--log-file ""` turns the log file off |

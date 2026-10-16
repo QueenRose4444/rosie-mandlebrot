@@ -24,7 +24,7 @@ use std::time::Duration;
     version
 )]
 pub struct Cli {
-    /// Preset name (e.g. seahorse, seahorse_spiral, misiurewicz_deep). See --list-presets.
+    /// Preset name [default: seahorse], e.g. seahorse_spiral or misiurewicz_deep. See --list-presets.
     #[arg(long)]
     pub preset: Option<String>,
 
@@ -36,7 +36,7 @@ pub struct Cli {
     #[arg(long)]
     pub initial_span: Option<f64>,
 
-    /// Run for a wall-clock duration of GPU time (e.g. "30d", "2h", "45m", "90s").
+    /// Stop after this much rendering time (e.g. "30d", "2h", "45m", "90s"); it adds up across resumes.
     #[arg(long, value_parser = parse_humantime)]
     pub duration: Option<Duration>,
 
@@ -130,14 +130,12 @@ pub struct Cli {
     #[arg(long)]
     pub blank_stop_after: Option<f64>,
 
-    /// Color palette: hot / grayscale / electric / rainbow / ember.
+    /// Colour palette: hot, grayscale, electric, rainbow or ember [default: the preset's].
     #[arg(long)]
     pub palette: Option<String>,
 
-    /// Deep-tier (perturbation) backend: gpu-ds (double-single, default),
-    /// gpu-f32 (fast but glitchy at deep zoom), cpu-f64 (accurate CPU
-    /// reference), gpu-f64 (gated hardware f64; may crash some NVIDIA drivers),
-    /// cpu-bla (CPU BLA — skips iterations at deep zoom, fastest deep tail).
+    /// The engine for deep frames. Leave it at gpu-ds: it switches to gpu-fe
+    /// below 1e-24 by itself. The others exist for testing.
     #[arg(long, value_enum, default_value_t = DeepEngine::GpuDs)]
     pub deep_engine: DeepEngine,
 
@@ -145,9 +143,8 @@ pub struct Cli {
     #[arg(long)]
     pub width: Option<u32>,
 
-    /// Output frame height. 1:1 aspect is the natural
-    /// shape for Mandelbrot zooms (the set itself is ~square in the complex
-    /// plane; deep-zoom features have rotational symmetry around the center).
+    /// Output frame height [default: 4096]. Square suits the set: it is roughly
+    /// square, and deep features are symmetric about the centre.
     #[arg(long)]
     pub height: Option<u32>,
 
@@ -398,7 +395,7 @@ pub fn refuse_used_output(out: &std::path::Path) -> Result<(), String> {
         .unwrap_or(0);
     if frames > 0 {
         return Err(format!(
-            "{} already holds {frames} frames from an earlier run. Give this run its own folder with --run-dir NAME, or move those frames away first",
+            "{} already holds {frames} frames from an earlier run. Add --resume to carry on with it, or give this run its own folder with --run-dir NAME",
             out.display()
         ));
     }

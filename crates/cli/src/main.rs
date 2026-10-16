@@ -205,6 +205,7 @@ fn main() -> std::process::ExitCode {
                         | MbError::UnknownPalette(_)
                         | MbError::TomlParse { .. }
                         | MbError::RunCollision(_)
+                        | MbError::OutputInUse(_)
                 )
             });
             std::process::ExitCode::from(if bad_input { 2 } else { 1 })
@@ -291,7 +292,14 @@ fn run() -> anyhow::Result<()> {
     }
     if !resuming {
         crate::config::refuse_used_output(&run_cfg.output)
-            .map_err(|reason| MbError::InvalidArg { flag: "--new-run", reason })?;
+            .map_err(MbError::OutputInUse)?;
+    }
+    if !(run_cfg.no_video || run_cfg.video_codec == "none")
+        && std::process::Command::new("ffmpeg").arg("-version").output().is_err()
+    {
+        tracing::warn!(
+            "ffmpeg is not on PATH: every frame will be saved, but the video step at the end will fail. Install ffmpeg, or pass --no-video"
+        );
     }
 
     // Precedence: --new-run > --resume > (collision error). The Dockerfile
@@ -1234,7 +1242,7 @@ fn run() -> anyhow::Result<()> {
     let last_seq = current_frame.saturating_sub(2);
     let mut final_snap = progress.snapshot(
         run_id,
-        0,
+        session_started_unix,
         clock.total_elapsed().as_secs(),
         run_cfg.duration_secs,
         frames_done.load(Ordering::SeqCst),
@@ -1337,9 +1345,9 @@ fn list_presets(cli: &Cli) -> MbResult<()> {
 fn print_ladder(cfg: &RunConfig, kind: Option<rosie_mandlebrot_core::presets::Kind>) {
     use rosie_mandlebrot_ref::ladder::{atom_ladder, depth_floor_log10, Rung, DS_MAX};
     let rungs = atom_ladder(&cfg.center_re, &cfg.center_im, cfg.sequence.iter_cap);
-    println!("Minibrots near this centre, largest first. size: how wide each one is, the depth at");
-    println!("which it fills the frame. distance: how far the centre is from its middle. A dist/size");
-    println!("below about {DS_MAX} means the zoom passes through it.
+    println!("Minibrots near this centre, in the order its orbit reaches them. size: how wide each");
+    println!("one is, about the depth at which it fills the frame. distance: how far the centre is");
+    println!("from its middle. A dist/size below about {DS_MAX} means the zoom passes through it.
 ");
     println!("{:>9}  {:>10}  {:>10}  {:>10}", "period", "size", "distance", "dist/size");
     for r in &rungs {

@@ -23,12 +23,22 @@ picks up where it left off after a crash or a reboot.
 
 1. Download `rosie_mandlebrot-<version>-windows-x86_64.zip` from the
    [latest release](https://github.com/QueenRose4444/rosie-mandlebrot/releases/latest) and unzip it.
+
+   *Checking it first (optional):* `Get-FileHash` on the zip in PowerShell should match its line in
+   the release's `SHA256SUMS` (PowerShell prints the hash in capitals). To check that `SHA256SUMS`
+   came from this project, get [minisign](https://jedisct1.github.io/minisign/) (the Windows zip has
+   `minisign.exe` in `x86_64\`) and run
+   `minisign -Vm SHA256SUMS -P RWQbNDTjNM+Dir3G6eU5L/mhi8lbXOi9B2qCfSXYunoNS6JX6DWCC3IH`.
 2. Open PowerShell in the unzipped folder and run:
 
    ```powershell
    .\rosie_mandlebrot.exe --list-presets
    .\rosie_mandlebrot.exe --preset seahorse --res 1080p --max-frames 300
    ```
+
+   300 frames at the default pace only reach a span of about 7e-3, the outer spirals. For the
+   whole dive add `--zoom-factor 0.9` and drop `--max-frames`: the run goes until the picture turns
+   featureless and stops by itself (measured: 457 frames, 28 seconds on an RTX 3060 Ti).
 
 3. **You should see your GPU** near the top of the output:
 
@@ -42,7 +52,7 @@ Frames go to `out\` next to the exe, along with `progress.json`, and the video a
 the run ends (`out\run_1.mkv`). The zip contains a `portable.txt`, which keeps everything beside
 the exe; delete it to use `%LOCALAPPDATA%\Rosie_Mandlebrot` instead.
 
-**Give each render its own folder** with `--run-dir NAME`, for example
+**Give each render its own folder** with `--run-dir NAME` (relative to the folder you run it from), for example
 `--preset seahorse_spiral --res 1080p --run-dir spiral`. Running again in a folder that already has
 a run needs `--resume` (carry on with the same size and palette); starting a different run there is
 refused, so two runs never mix their frames.
@@ -51,16 +61,12 @@ refused, so two runs never mix their frames.
 4096×4096. For another shape use `--width 1920 --height 1080`.
 
 If ffmpeg was missing, the frames are still saved: install it and run
-`.\rosie_mandlebrot.exe --encode-only --run 1 --run-dir NAME` to make the video.
+`.\rosie_mandlebrot.exe --encode-only --run 1` to make the video, adding the same `--run-dir` if
+you used one. The program warns at the start if it cannot find ffmpeg.
 
 The exe is not code-signed yet, so Windows SmartScreen may warn the first time: choose
 **More info → Run anyway**. For ffmpeg, `winget install Gyan.FFmpeg` works.
 
-**Checking the download (optional).** `SHA256SUMS` on the release page lists each archive's hash;
-compare it with `Get-FileHash rosie_mandlebrot-<version>-windows-x86_64.zip` in PowerShell. To check
-that `SHA256SUMS` itself came from this project, use [minisign](https://jedisct1.github.io/minisign/)
-with the `minisign.pub` attached to the release (key
-`RWQbNDTjNM+Dir3G6eU5L/mhi8lbXOi9B2qCfSXYunoNS6JX6DWCC3IH`): `minisign -Vm SHA256SUMS -p minisign.pub`.
 
 ## Linux with Docker
 
@@ -99,7 +105,10 @@ portable: frames, checkpoints and logs go beside the binary, under `out/`, `stat
 rosie_mandlebrot --list-presets
 ```
 
-lists 39 locations with how deep each one stays interesting. Some to start with:
+lists 39 locations with how deep each one stays interesting. Their kinds: a **nucleus** is the
+centre of a minibrot (detail down to its size), a **misiurewicz** point repeats itself at every
+scale, a **landmark** is an exact spot such as a bulb root (shallow), and a **view** is a
+hand-picked place. Some to start with:
 
 | preset | what it is | goes to |
 |---|---|---|
@@ -132,7 +141,7 @@ and `--ladder` says so.
 | `--preset NAME` | `seahorse` | a location from `--list-presets` |
 | `--res 1080p` | 4096×4096 | `720p`, `1080p`, `2k`, `4k`, `8k`… (square); or `--width` / `--height` |
 | `--max-frames N` / `--duration 2h` / `--zoom-end 1e-20` | none | when to stop; without any of them it runs until the location runs out |
-| `--zoom-factor 0.98` | 0.98 | how much each frame zooms in; smaller is faster |
+| `--zoom-factor 0.98` | 0.98 | each frame's width relative to the last: 0.9 dives quickly, 0.98 smoothly |
 | `--palette hot` | per preset | `hot`, `grayscale`, `electric`, `rainbow`, `ember` |
 | `--run-dir DIR` | | keep this run's frames, state and log together in `DIR` |
 | `--resume` / `--new-run` | | continue the last run in that directory, or start over |

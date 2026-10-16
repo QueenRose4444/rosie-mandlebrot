@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.2 — 2026-10-16
+
+Fixes from a second outside test.
+
+- Docker: a run stopped early (`stop`, `docker stop`, a host reboot) now resumes when the container
+  starts again, instead of idling as if it had finished.
+- `progress.json` really has `started_at_unix` now (0.1.1 set it everywhere but the final write).
+- Starting over in a folder that already has a run says to add `--resume`, without blaming a flag
+  you did not pass. An unknown preset points at `--list-presets`.
+- A missing ffmpeg is reported at the start of a run, not only at the end.
+- `--ladder` lists minibrots in the order the orbit meets them, as it always did, and says so.
+- Plainer `--help` for the engines, `--duration`, `--palette` and the frame size.
+- README: checking the download moved before unzipping (with `minisign -P`), how far the first
+  render goes, what the preset kinds mean; DEPLOY's RAM figure and COMMANDS' Docker command fixed.
+
 ## 0.1.1 — 2026-10-16
 
 Fixes from the first outside test of 0.1.0.

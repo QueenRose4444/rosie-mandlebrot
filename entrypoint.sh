@@ -17,8 +17,11 @@ case " $* " in
     *) explicit=0 ;;
 esac
 
+# A run stopped by `stop`, Ctrl+C, `docker stop` or a host shutdown
+# (stop_reason "stdin/signal") is interrupted, not finished: resume it.
 if [ "$explicit" = 0 ] && [ -f /out/progress.json ] \
-   && grep -Eq '"status"[[:space:]]*:[[:space:]]*"stopped"' /out/progress.json; then
+   && grep -Eq '"status"[[:space:]]*:[[:space:]]*"stopped"' /out/progress.json \
+   && ! grep -Eq '"stop_reason"[[:space:]]*:[[:space:]]*"stdin/signal"' /out/progress.json; then
     echo "[entrypoint] run already complete (progress.json status=stopped) — idling."
     echo "[entrypoint] clear /state and /out to start a new run, then recreate this container."
     exec sleep infinity
