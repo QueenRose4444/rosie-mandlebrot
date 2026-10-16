@@ -161,8 +161,10 @@ fn archive_previous_latest_log(path: &std::path::Path) {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
+            let local = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
             let dt = time::OffsetDateTime::from_unix_timestamp(secs)
-                .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+                .unwrap_or_else(|_| time::OffsetDateTime::now_utc())
+                .to_offset(local);
             format!(
                 "{:04}{:02}{:02}-{:02}{:02}{:02}",
                 dt.year(),
@@ -213,15 +215,20 @@ fn main() -> std::process::ExitCode {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let argv: Vec<String> = std::env::args().collect();
-    let _log_guard = init_tracing(cli.quiet, cli.live, cli.log_file.as_deref(), cli.default_log_path(), &argv);
+    // Quick look-ups write no log file, so they do not push a render's log into logs/old/.
+    let quick = cli.list_presets || cli.ladder;
+    let log_file = if quick { Some(std::path::Path::new("")) } else { cli.log_file.as_deref() };
+    let _log_guard = init_tracing(cli.quiet, cli.live, log_file, cli.default_log_path(), &argv);
     let layout = cli.layout();
-    tracing::info!(
-        "layout: {} ({}); output {}, state {}",
-        layout.name(),
-        layout.root().display(),
-        cli.resolved_output().display(),
-        cli.resolved_state().display()
-    );
+    if !quick {
+        tracing::info!(
+            "layout: {} ({}); output {}, state {}",
+            layout.name(),
+            layout.root().display(),
+            cli.resolved_output().display(),
+            cli.resolved_state().display()
+        );
+    }
 
     if cli.encode_only {
         return encode_only_mode(&cli).map_err(Into::into);
@@ -232,7 +239,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let run_cfg = crate::config::run_config_from_cli(&cli)?;
+    let mut run_cfg = crate::config::run_config_from_cli(&cli)?;
     // Resolve the state DB path once (explicit --state > --run-dir/state.db >
     // default). Needed before the DB opens, so it lives on Cli, not RunConfig.
     let state_path = cli.resolved_state();
@@ -243,7 +250,14 @@ fn run() -> anyhow::Result<()> {
     let shader_dir = shader_dir.as_deref();
 
     if cli.ladder {
-        print_ladder(&run_cfg);
+        let kind = match &cli.center {
+            Some(_) => None,
+            None => rosie_mandlebrot_core::presets::load_presets(cli.presets.as_deref())
+                .ok()
+                .and_then(|ps| ps.into_iter().find(|p| p.name.eq_ignore_ascii_case(cli.preset.as_deref().unwrap_or("seahorse"))))
+                .and_then(|p| p.kind),
+        };
+        print_ladder(&run_cfg, kind);
         return Ok(());
     }
 
@@ -270,6 +284,15 @@ fn run() -> anyhow::Result<()> {
 
     let state = StateStore::open(&state_path)?;
     let existing = state.latest_run()?;
+    let resuming = cli.resume && !cli.new_run && existing.is_some();
+    if let (true, Some(row)) = (resuming, &existing) {
+        crate::config::adopt_saved_look(&cli, &mut run_cfg, &row.config)
+            .map_err(|reason| MbError::InvalidArg { flag: "--resume", reason })?;
+    }
+    if !resuming {
+        crate::config::refuse_used_output(&run_cfg.output)
+            .map_err(|reason| MbError::InvalidArg { flag: "--new-run", reason })?;
+    }
 
     // Precedence: --new-run > --resume > (collision error). The Dockerfile
     // bakes in --resume for auto-restart, so we let an explicit --new-run
@@ -507,6 +530,10 @@ fn run() -> anyhow::Result<()> {
     // cpus limit); 0 ⇒ all cores. Sampled at each progress write.
     let cpu_budget = if cli.cpu_threads > 0 { cli.cpu_threads } else { num_cpus::get() };
     let mut sysstats = sysstats::SysStats::new(cpu_budget);
+    let session_started_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     // Latest frame's CPU-vs-GPU work split (% of wall time), carried to the
     // periodic progress write.
     let mut latest_gpu_work_pct: Option<f64> = None;
@@ -1120,7 +1147,7 @@ fn run() -> anyhow::Result<()> {
             let elapsed = clock.total_elapsed().as_secs();
             let mut snap = progress.snapshot(
                 run_id,
-                /*started_at_unix*/ 0,
+                session_started_unix,
                 elapsed,
                 run_cfg.duration_secs,
                 frames_done.load(Ordering::SeqCst),
@@ -1274,7 +1301,9 @@ fn run() -> anyhow::Result<()> {
         ) {
             Ok(p) => tracing::info!("wrote video {}", p.display()),
             Err(e) => {
-                tracing::error!("video encode failed: {e}");
+                tracing::error!(
+                    "video encode failed: {e}. The frames are saved: install ffmpeg (https://ffmpeg.org) and run again with --encode-only --run {run_id} and the same --run-dir or --output"
+                );
                 if exit_code == 0 {
                     exit_code = 3;
                 }
@@ -1305,9 +1334,13 @@ fn list_presets(cli: &Cli) -> MbResult<()> {
     Ok(())
 }
 
-fn print_ladder(cfg: &RunConfig) {
-    use rosie_mandlebrot_ref::ladder::{atom_ladder, depth_floor_log10, DS_MAX};
+fn print_ladder(cfg: &RunConfig, kind: Option<rosie_mandlebrot_core::presets::Kind>) {
+    use rosie_mandlebrot_ref::ladder::{atom_ladder, depth_floor_log10, Rung, DS_MAX};
     let rungs = atom_ladder(&cfg.center_re, &cfg.center_im, cfg.sequence.iter_cap);
+    println!("Minibrots near this centre, largest first. size: how wide each one is, the depth at");
+    println!("which it fills the frame. distance: how far the centre is from its middle. A dist/size");
+    println!("below about {DS_MAX} means the zoom passes through it.
+");
     println!("{:>9}  {:>10}  {:>10}  {:>10}", "period", "size", "distance", "dist/size");
     for r in &rungs {
         println!(
@@ -1318,14 +1351,25 @@ fn print_ladder(cfg: &RunConfig) {
             fmt_log10(r.ds_log10())
         );
     }
+    // The main cardioid and the period-2 disc contain everything nearby; they
+    // say nothing about depth.
+    let small: Vec<Rung> = rungs.iter().copied().filter(|r| r.size_log10 < -1.0).collect();
     let digits = rosie_mandlebrot_core::precision::coordinate_span_floor(&cfg.center_re, &cfg.center_im);
-    match depth_floor_log10(&rungs) {
-        Some(f) => println!("
-new structure stops near span {} (deepest minibrot within {DS_MAX} of its size)", fmt_log10(f)),
-        None => println!("
-no minibrot within {DS_MAX} sizes of this centre"),
+    println!();
+    if kind == Some(rosie_mandlebrot_core::presets::Kind::Misiurewicz) {
+        println!("This is a Misiurewicz point: it repeats itself at every scale, so no minibrot");
+        println!("limits it. It goes as deep as its digits allow (about {digits:.0e}).");
+        return;
     }
-    println!("the centre's digits run out near span {digits:.0e}");
+    match depth_floor_log10(&small) {
+        Some(f) => println!("New structure stops near span {}.", fmt_log10(f)),
+        None => {
+            println!("No minibrot near this centre. It is either a Misiurewicz-type point, which");
+            println!("repeats itself as deep as its digits allow, or a point that turns featureless;");
+            println!("render one deep frame with --probe-span to see which.");
+        }
+    }
+    println!("The centre's digits run out near span {digits:.0e}.");
 }
 
 /// A number given as its log10, printed like `1.25e-32` even past f64's range.

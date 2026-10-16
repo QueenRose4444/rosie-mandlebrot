@@ -11,7 +11,14 @@ set -e
 # a render error, a dead encode pipeline, or persistent save failures — those are
 # worth retrying, and resuming costs nothing because every frame is checkpointed.
 # Idling on them would retire the container permanently on one transient fault.
-if [ -f /out/progress.json ] && grep -Eq '"status"[[:space:]]*:[[:space:]]*"stopped"' /out/progress.json; then
+# Re-encoding a finished run, or asking for a new one, is not a restart loop.
+case " $* " in
+    *" --encode-only "*|*" --new-run "*) explicit=1 ;;
+    *) explicit=0 ;;
+esac
+
+if [ "$explicit" = 0 ] && [ -f /out/progress.json ] \
+   && grep -Eq '"status"[[:space:]]*:[[:space:]]*"stopped"' /out/progress.json; then
     echo "[entrypoint] run already complete (progress.json status=stopped) — idling."
     echo "[entrypoint] clear /state and /out to start a new run, then recreate this container."
     exec sleep infinity

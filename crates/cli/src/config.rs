@@ -85,13 +85,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 200_000)]
     pub iter_cap: u32,
 
-    /// How many extra iterations per "depth unit" (ln(initial_span/span)).
-    /// Scales iter count with zoom depth, so the same depth always gets
-    /// the same iter count regardless of how many frames it took to get
-    /// there. 500 gives clean boundaries at most depths; reduce to 200-300
-    /// if you want faster frames and accept some "white speckle" artifacts
-    /// near boundaries at deep zoom (pixels needing more iter to escape
-    /// than max_iter gets reported as inside-set).
+    /// Iterations added per unit of depth, depth = ln(initial span / span)
+    /// [default: 200; a preset may set its own]. The same depth always gets the
+    /// same iterations however fast the zoom. Higher gives cleaner boundaries
+    /// deep down; lower renders faster.
     #[arg(long)]
     pub iter_per_depth: Option<f64>,
 
@@ -102,16 +99,13 @@ pub struct Cli {
     #[arg(long)]
     pub iter_exponent: Option<f64>,
 
-    /// Legacy frame-based iter growth factor. Unused — the iteration count
-    /// follows the depth-based formula (see `--iter-per-depth`). Kept for
-    /// state.db backward compatibility.
-    #[arg(long, default_value_t = 1.02)]
+    /// Unused; kept so old checkpoints still load.
+    #[arg(long, default_value_t = 1.02, hide = true)]
     pub iter_growth: f64,
 
-    /// Max retry passes for the deep tier (perturbation glitch correction).
-    /// Each retry re-renders the frame with a new reference orbit picked from
-    /// the glitched cluster. More retries → fewer remaining glitches but
-    /// slower worst-case frame time. 8 is a good compromise for most zooms.
+    /// Extra passes for pixels the deep tier could not resolve, each with a new
+    /// reference orbit taken from among them. The default deep engines resolve
+    /// every pixel in one pass; this matters only for the test engines.
     #[arg(long, default_value_t = 1)]
     pub max_retries: u32,
 
@@ -147,15 +141,15 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = DeepEngine::GpuDs)]
     pub deep_engine: DeepEngine,
 
-    /// Output frame width.
-    #[arg(long, default_value_t = 4096)]
-    pub width: u32,
+    /// Output frame width [default: 4096].
+    #[arg(long)]
+    pub width: Option<u32>,
 
     /// Output frame height. 1:1 aspect is the natural
     /// shape for Mandelbrot zooms (the set itself is ~square in the complex
     /// plane; deep-zoom features have rotational symmetry around the center).
-    #[arg(long, default_value_t = 4096)]
-    pub height: u32,
+    #[arg(long)]
+    pub height: Option<u32>,
 
     /// Named resolution preset that sets --width and --height to a 1:1 square.
     /// One of: 240p, 360p, 512p, 720p, 1080p, 1k, 2k, 3k, 4k, 6k, 8k.
@@ -291,28 +285,15 @@ pub struct Cli {
     #[arg(long)]
     pub quiet: bool,
 
-    /// Log every frame as it finishes with per-frame timing + a progress bar,
-    /// Useful for interactively monitoring a short test run. Overrides the
-    /// normal 10-second log throttle for the duration of the run.
+    /// In a terminal: a progress bar and one line per finished frame, instead of
+    /// a log line every 10 seconds. The log file still gets everything.
     #[arg(long)]
     pub live: bool,
 
-    /// How fast the brightness normalization follows the frame. `1.0` (the
-    /// default) means each frame is normalized on its own.
-    ///
-    /// **Lower values currently make the picture worse, and the default is 1.0
-    /// for that reason.** Smoothing does reduce frame-to-frame brightness steps
-    /// — measured on a 623-frame zoom to 1e-28, the worst jump fell from 52.9 to
-    /// 15.6 at 0.15 — but it does so by mapping each frame through a range that
-    /// no longer fits it, and contrast collapses. On the same run, 4 of 7
-    /// sampled frames lost contrast, two of them close to half (frame 623:
-    /// std-dev 31.0 -> 15.8), reproducing the washed-out flat red that the
-    /// 99.5th-percentile clamp exists to prevent.
-    ///
-    /// The two goals are in real tension: one global range cannot both fit every
-    /// frame and stay still between frames. A proper fix has to derive the range
-    /// from something inherently smooth (zoom depth, say) rather than lag the
-    /// measured one. Kept as a flag so that work can be measured against it.
+    /// How fast brightness normalisation follows the frame: 1.0 normalises each
+    /// frame on its own. Lower values steady frame-to-frame brightness but wash
+    /// out contrast (measured: the worst brightness jump fell 52.9 -> 15.6 at
+    /// 0.15, while some frames lost half their contrast), so 1.0 is the default.
     #[arg(long, default_value_t = 1.0)]
     pub tone_smoothing: f32,
 
@@ -375,6 +356,55 @@ impl Cli {
     }
 }
 
+/// A resumed run keeps the look it was started with: frame size, palette and
+/// save cadence come from the checkpoint, so the frames and the video stay
+/// consistent. Asking explicitly for a different one is an error rather than a
+/// silent change halfway through a run.
+pub fn adopt_saved_look(cli: &Cli, current: &mut RunConfig, saved: &RunConfig) -> Result<(), String> {
+    let size_given = cli.res.is_some() || cli.width.is_some() || cli.height.is_some();
+    if size_given && (current.width, current.height) != (saved.width, saved.height) {
+        return Err(format!(
+            "this run was rendered at {}x{}; a resume keeps that size (start a new run in another --run-dir for {}x{})",
+            saved.width, saved.height, current.width, current.height
+        ));
+    }
+    if cli.palette.is_some() && current.palette != saved.palette {
+        return Err(format!(
+            "this run uses the {:?} palette; a resume keeps it (start a new run to change it)",
+            saved.palette
+        ));
+    }
+    current.width = saved.width;
+    current.height = saved.height;
+    current.palette = saved.palette;
+    current.save_every = saved.save_every;
+    Ok(())
+}
+
+/// A new run must not share its output folder with an earlier one: frames are
+/// named by index, so it would overwrite some of them and the video would mix
+/// both runs.
+pub fn refuse_used_output(out: &std::path::Path) -> Result<(), String> {
+    let frames = std::fs::read_dir(out)
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .filter(|e| {
+                    let n = e.file_name();
+                    let n = n.to_string_lossy();
+                    n.starts_with("frame_") && n.ends_with(".png")
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    if frames > 0 {
+        return Err(format!(
+            "{} already holds {frames} frames from an earlier run. Give this run its own folder with --run-dir NAME, or move those frames away first",
+            out.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Merge CLI flags, an optional `--config` profile, the chosen preset and the
 /// built-in defaults into the `RunConfig` the rest of the program reads.
 ///
@@ -416,7 +446,7 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
     let (width, height) = cli
         .res
         .or_else(|| profile.res.as_deref().and_then(|s| parse_resolution(s).ok()))
-        .unwrap_or((cli.width, cli.height));
+        .unwrap_or((cli.width.unwrap_or(4096), cli.height.unwrap_or(4096)));
 
     let preset_span = |s: rosie_mandlebrot_core::span::Span, what: &'static str| {
         s.to_f64().ok_or_else(|| MbError::InvalidArg {
@@ -611,6 +641,33 @@ mod tests {
         assert!(encode <= render);
         assert!(Cli::try_parse_from(["rosie_mandlebrot", "--cpu-percent", "0"]).is_err());
         assert!(Cli::try_parse_from(["rosie_mandlebrot", "--cpu-percent", "101"]).is_err());
+    }
+
+    #[test]
+    fn a_resume_keeps_the_size_and_palette_it_was_started_with() {
+        let saved = run_config_from_cli(&cli(&["--res", "720p", "--palette", "ember"])).unwrap();
+        // `--resume` alone: the defaults (4096, the preset's palette) must not win.
+        let plain = cli(&["--resume"]);
+        let mut current = run_config_from_cli(&plain).unwrap();
+        adopt_saved_look(&plain, &mut current, &saved).unwrap();
+        assert_eq!((current.width, current.height, current.palette), (720, 720, ColorScheme::Ember));
+        // Asking for another size on resume is refused, not applied halfway.
+        let resized = cli(&["--resume", "--res", "4k"]);
+        let mut current = run_config_from_cli(&resized).unwrap();
+        assert!(adopt_saved_look(&resized, &mut current, &saved).is_err());
+    }
+
+    #[test]
+    fn a_new_run_refuses_a_folder_with_frames_in_it() {
+        let dir = std::env::temp_dir().join("mb-cli-used-output");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(refuse_used_output(&dir).is_ok(), "a missing folder is fine");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("progress.json"), "{}").unwrap();
+        assert!(refuse_used_output(&dir).is_ok(), "no frames yet");
+        std::fs::write(dir.join("frame_000001.png"), "").unwrap();
+        assert!(refuse_used_output(&dir).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

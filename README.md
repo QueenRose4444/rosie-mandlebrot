@@ -14,8 +14,8 @@ picks up where it left off after a crash or a reboot.
 
 - A GPU with up-to-date drivers that supports Vulkan or DirectX 12. It is tested on NVIDIA cards;
   AMD and Intel should work but have not been tried. There is no CPU fallback worth waiting for.
-- 200–400 MB of RAM (measured: 184 MB at 1080p, 355 MB at 4K), and 0.3–1 MB of disk per 1080p
-  frame — deep frames are busier and compress less.
+- 200–800 MB of RAM (measured peaks: 184 MB at 1080p on Windows, 754 MB for a deep 4K run on
+  Linux), and 0.3–1 MB of disk per 1080p frame — deep frames are busier and compress less.
 - [ffmpeg](https://ffmpeg.org/) on your `PATH` if you want the video made for you. Without it you
   still get every frame as a PNG; add `--no-video` to skip the attempt.
 
@@ -42,8 +42,25 @@ Frames go to `out\` next to the exe, along with `progress.json`, and the video a
 the run ends (`out\run_1.mkv`). The zip contains a `portable.txt`, which keeps everything beside
 the exe; delete it to use `%LOCALAPPDATA%\Rosie_Mandlebrot` instead.
 
+**Give each render its own folder** with `--run-dir NAME`, for example
+`--preset seahorse_spiral --res 1080p --run-dir spiral`. Running again in a folder that already has
+a run needs `--resume` (carry on with the same size and palette); starting a different run there is
+refused, so two runs never mix their frames.
+
+`--res 1080p` means 1080×1080: every size is square, because the set is. Without `--res` you get
+4096×4096. For another shape use `--width 1920 --height 1080`.
+
+If ffmpeg was missing, the frames are still saved: install it and run
+`.\rosie_mandlebrot.exe --encode-only --run 1 --run-dir NAME` to make the video.
+
 The exe is not code-signed yet, so Windows SmartScreen may warn the first time: choose
 **More info → Run anyway**. For ffmpeg, `winget install Gyan.FFmpeg` works.
+
+**Checking the download (optional).** `SHA256SUMS` on the release page lists each archive's hash;
+compare it with `Get-FileHash rosie_mandlebrot-<version>-windows-x86_64.zip` in PowerShell. To check
+that `SHA256SUMS` itself came from this project, use [minisign](https://jedisct1.github.io/minisign/)
+with the `minisign.pub` attached to the release (key
+`RWQbNDTjNM+Dir3G6eU5L/mhi8lbXOi9B2qCfSXYunoNS6JX6DWCC3IH`): `minisign -Vm SHA256SUMS -p minisign.pub`.
 
 ## Linux with Docker
 
@@ -53,7 +70,7 @@ on the host. With another GPU, use the [Linux binary](#linux-without-docker) ins
 
 ```bash
 mkdir -p out state
-docker run --rm --gpus all \
+docker run --rm -it --gpus all --user "$(id -u):$(id -g)" \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
   -v "$PWD/out:/out" -v "$PWD/state:/state" \
   ghcr.io/queenrose4444/rosie-mandlebrot:latest \
@@ -61,9 +78,10 @@ docker run --rm --gpus all \
 ```
 
 **You should see your GPU** in the first lines of output. If it says `llvmpipe` or "CPU software
-rasterizer", the container cannot see the driver; [DEPLOY.md](DEPLOY.md) explains why and how to
-fix it. The image runs as user 10001, so the `out` and `state` folders must be writable by it, or
-add `--user "$(id -u):$(id -g)"`.
+rasterizer", the container cannot see the driver and stops; [DEPLOY.md](DEPLOY.md) explains why
+and how to fix it. `--user` makes the frames yours rather than the image's user 10001. Type `stop`
+and Enter to end a run early. Frames, `progress.json` and the video land in `out/`; the checkpoint
+and the log in `state/`. Run the same command again to carry on; use new folders for a new run.
 
 For a long unattended run with automatic restarts, see [`docker-compose.yml`](docker-compose.yml)
 and [DEPLOY.md](DEPLOY.md).
@@ -72,7 +90,8 @@ and [DEPLOY.md](DEPLOY.md).
 
 Download `rosie_mandlebrot-<version>-linux-x86_64.tar.xz` (built on Debian 12, so glibc 2.36 or
 newer), unpack it and run `./rosie_mandlebrot --list-presets`. It needs the Vulkan loader
-(`libvulkan1` on Debian and Ubuntu) and your GPU's Vulkan driver.
+(`libvulkan1` on Debian and Ubuntu) and your GPU's Vulkan driver. Like the Windows zip it is
+portable: frames, checkpoints and logs go beside the binary, under `out/`, `state/` and `logs/`.
 
 ## Choosing a location
 
@@ -102,6 +121,10 @@ the centre and the depth where new structure stops, in milliseconds and without 
 rosie_mandlebrot --center="-0.743643887037151,0.131825904205330" --ladder
 ```
 
+It lists the minibrots near the centre (period, size, how far the centre is from each) and says
+where new structure stops. A Misiurewicz point has no such limit: it repeats itself at every scale,
+and `--ladder` says so.
+
 ## Common options
 
 | option | default | |
@@ -115,7 +138,7 @@ rosie_mandlebrot --center="-0.743643887037151,0.131825904205330" --ladder
 | `--resume` / `--new-run` | | continue the last run in that directory, or start over |
 | `--cpu-percent 50` | | use at most that share of the CPU |
 | `--no-video` | | keep the frames, skip ffmpeg |
-| `--live` | | a progress bar instead of log lines |
+| `--live` | | in a terminal: a progress bar and a line per frame instead of a log line every 10 s |
 
 Stop a run with Ctrl+C (or type `stop` and Enter); it finishes the frame in hand and writes the
 video. `--resume` carries on from the last saved frame. Exit codes: 0 finished or stopped, 1 failed,

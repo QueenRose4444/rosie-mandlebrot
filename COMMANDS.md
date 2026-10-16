@@ -1,6 +1,7 @@
 # Command reference
 
-Every option, with recipes. `rosie_mandlebrot --help` prints the same list.
+Every option, with recipes. `rosie_mandlebrot --help` lists the options themselves, including a
+few test-only ones not covered here.
 
 ## Recipes
 
@@ -42,8 +43,11 @@ on Linux. The first lines of the log say which, and every path. `--output`, `--s
 
 `progress.json` in the output folder is rewritten every 10 seconds: frame, span, iterations,
 frames per second, RAM (`ram_mb`, `peak_ram_mb`), bytes written, GPU load (NVIDIA) and CPU load
-(Linux), and at the end `status` and `stop_reason`. The log prints a line every 10 seconds; `--live` prints every frame
-under a progress bar instead (best for a terminal, not for `docker logs`).
+(Linux), and at the end `status` and `stop_reason`. The log prints a line every 10 seconds; `--live` shows a progress bar and a line per frame in a terminal
+instead (not useful in `docker logs`).
+
+A new run in an output folder that already holds frames is refused; `--resume` keeps the size,
+palette and save cadence the run started with.
 
 While a run is going, type into its terminal (`docker attach` for a container):
 

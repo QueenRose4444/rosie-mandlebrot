@@ -79,7 +79,7 @@ impl GpuCtx {
         );
         if matches!(info.device_type, wgpu::DeviceType::Cpu) && !allow_software {
             return Err(MbError::GpuInit(format!(
-                "the only adapter is a CPU software renderer ({}), about a hundred times                  slower than a GPU. Update the graphics driver; in Docker, check --gpus all                  and NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics (see DEPLOY.md).                  --allow-software-gpu renders anyway.",
+                "the only adapter is a CPU software renderer ({}), about a hundred times slower than a GPU. Update the graphics driver; in Docker, check --gpus all and NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics (see DEPLOY.md). --allow-software-gpu renders anyway.",
                 info.name
             )));
         }

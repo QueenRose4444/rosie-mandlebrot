@@ -1323,7 +1323,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "rosie_mandlebrot"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytemuck",
  "clap",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_ref"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gmp-mpfr-sys",
  "num-complex",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytemuck",
  "naga",
@@ -1391,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "image",
  "rosie_mandlebrot_core",

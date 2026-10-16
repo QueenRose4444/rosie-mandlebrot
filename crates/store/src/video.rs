@@ -20,7 +20,8 @@ pub fn encode_run(
     let out_path = out_dir.join(format!("run_{}.{}", run_id, container));
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-y").arg("-framerate").arg(fps.to_string());
+    cmd.arg("-y").arg("-hide_banner").arg("-loglevel").arg("warning").arg("-stats");
+    cmd.arg("-framerate").arg(fps.to_string());
     // Input frames. On Linux/Docker use ffmpeg's glob demuxer so a decimated
     // set (--save-every > 1) or any gaps still encode in sorted order. Windows
     // ffmpeg builds (gyan.dev) lack glob support, so fall back to the sprintf

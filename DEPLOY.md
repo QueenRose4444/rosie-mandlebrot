@@ -6,7 +6,7 @@ For a render that runs for days, restarts itself and resumes. The quick one-off 
 ## 1. The host: driver and container toolkit
 
 ```bash
-# Ubuntu / Debian. Use your distribution's recommended NVIDIA driver.
+# Ubuntu shown; on other distributions install their recommended NVIDIA driver.
 sudo apt update && sudo apt install -y nvidia-driver-580
 sudo reboot
 nvidia-smi        # lists your GPU and the driver version
@@ -30,9 +30,11 @@ or reload the module with nothing using the GPU
 ## 2. Run it
 
 [`docker-compose.yml`](docker-compose.yml) runs one render with a 2 GB memory cap, restarting on
-failure and resuming from the last saved frame:
+failure and resuming from the last saved frame. It and the optional gallery live in the repository,
+so start from a clone:
 
 ```bash
+git clone https://github.com/QueenRose4444/rosie-mandlebrot && cd rosie-mandlebrot
 mkdir -p mandelbrot_out mandelbrot_state
 sudo chown 10001:10001 mandelbrot_out mandelbrot_state   # the image runs as user 10001
 docker compose up -d
@@ -41,7 +43,8 @@ docker compose logs -f
 
 Change the render in the compose file's `command:` (for example
 `--preset seahorse_deep --res 4k --max-storage 100GB`). Frames, `progress.json` and the video land
-in `mandelbrot_out/`; the checkpoint and the log in `mandelbrot_state/`.
+in `mandelbrot_out/`; the checkpoint in `mandelbrot_state/` and the log in
+`mandelbrot_state/rosie-mandlebrot/logs/`.
 
 When a run finishes, the container idles instead of starting over. To start a new run, empty both
 folders and `docker compose up -d` again. A run that failed is resumed on restart.
