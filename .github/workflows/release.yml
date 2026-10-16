@@ -111,7 +111,8 @@ jobs:
           sudo apt-get install -y minisign
           python3 tools/release_manifest.py "${{ github.ref_name }}"
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/key"
-          minisign -S -s "$RUNNER_TEMP/key" -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig \
+          # The key has an empty password; minisign still asks for it on stdin.
+          echo | minisign -S -s "$RUNNER_TEMP/key" -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig \
             -t "Rosie_Mandlebrot ${{ github.ref_name }}"
           rm -f "$RUNNER_TEMP/key"
           minisign -V -p minisign.pub -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig
