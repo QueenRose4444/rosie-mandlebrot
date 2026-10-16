@@ -128,11 +128,37 @@ pub(crate) fn dispatch_pass(
     ref_re: &str,
     ref_im: &str,
 ) -> MbResult<Vec<PixelOut>> {
-    dispatch_pass_with(gpu, req, tier, ref_re, ref_im, None)
+    dispatch_pass_with(gpu, req, tier, ref_re, ref_im, None, None)
+}
+
+/// One chunk of an exponential-map strip: `req.width` columns by `req.height`
+/// rows, column `x` the ray at angle `x·d` from the centre and row `y` the
+/// circle of radius `exp(ln_r_top − y·d)`.
+pub struct StripSpec<'a> {
+    pub ln_r_top: f64,
+    pub d: f64,
+    /// `(cos, sin)` of every column's angle, at least `req.width` of them.
+    pub col_dir: &'a [[f32; 2]],
+}
+
+impl StripSpec<'_> {
+    /// `exp(ln_r)` as an f32 mantissa in [1, 2) and a power of two.
+    fn radius_parts(ln_r: f64) -> (f32, i32) {
+        let e = (ln_r / std::f64::consts::LN_2).floor();
+        ((ln_r - e * std::f64::consts::LN_2).exp() as f32, e as i32)
+    }
+}
+
+/// Render one strip chunk with the deep kernels (DS or SE3, chosen from
+/// `req.span`, which callers set to the chunk's smallest radius). Strips need no
+/// rug fallback: the deep kernels rebase and never flag a glitch.
+pub fn render_strip_chunk(gpu: &GpuCtx, req: &FrameRequest, strip: &StripSpec) -> MbResult<Vec<PixelOut>> {
+    reset_gpu_timer();
+    dispatch_pass_with(gpu, req, Tier::DeepPerturb, &req.center_re, &req.center_im, None, Some(strip))
 }
 
 /// [`dispatch_pass`] with BLA forced on or off (`Some`), or left to
-/// [`crate::bla_policy`] (`None`).
+/// [`crate::bla_policy`] (`None`), for a frame or (`strip`) a strip chunk.
 pub(crate) fn dispatch_pass_with(
     gpu: &GpuCtx,
     req: &FrameRequest,
@@ -140,6 +166,7 @@ pub(crate) fn dispatch_pass_with(
     ref_re: &str,
     ref_im: &str,
     bla: Option<bool>,
+    strip: Option<&StripSpec>,
 ) -> MbResult<Vec<PixelOut>> {
     let aspect = req.width as f64 / req.height as f64;
     let span_y = req.span;
@@ -226,7 +253,7 @@ pub(crate) fn dispatch_pass_with(
     // Decided before the timer starts: a calibration probe is not this frame's work.
     let use_bla = tier == Tier::DeepPerturb
         && matches!(eff_engine, rosie_mandlebrot_core::config::DeepEngine::GpuDs | rosie_mandlebrot_core::config::DeepEngine::GpuFe)
-        && bla.unwrap_or_else(|| crate::bla_policy::choose(gpu, req));
+        && bla.unwrap_or_else(|| crate::bla_policy::choose(gpu, req, strip));
 
     // Time only the GPU tile loop (submit + blocking readback) for the CPU-vs-GPU
     // work split; the CPU reference orbit above is deliberately excluded.
@@ -278,10 +305,15 @@ pub(crate) fn dispatch_pass_with(
                 usage: wgpu::BufferUsages::STORAGE,
             }),
         };
+        // Binding 2: the column directions for a strip, the SA coefficients otherwise.
         let sa_arr = sa_as_gpu_coeffs(&r.sa);
+        let sa_bytes: &[u8] = match strip {
+            Some(s) => cast_slice::<[f32; 2], u8>(s.col_dir),
+            None => cast_slice::<SaCoeff, u8>(&sa_arr),
+        };
         let sa_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("sa-coeffs"),
-            contents: cast_slice::<SaCoeff, u8>(&sa_arr),
+            label: Some("sa-coeffs-or-col-dir"),
+            contents: sa_bytes,
             usage: wgpu::BufferUsages::STORAGE,
         });
         (Some(ref_buf), Some(sa_buf))
@@ -293,7 +325,10 @@ pub(crate) fn dispatch_pass_with(
     // its half-diagonal plus any shift of the reference.
     let bla_buf = (tier == Tier::DeepPerturb).then(|| {
         let r = reference.as_ref().expect("reference computed for deep tier");
-        let max_delta = 0.5 * span_x.hypot(span_y) + ref_offset_x.hypot(ref_offset_y);
+        let max_delta = match strip {
+            Some(s) => s.ln_r_top.exp(),
+            None => 0.5 * span_x.hypot(span_y) + ref_offset_x.hypot(ref_offset_y),
+        };
         bla_buffers(gpu, req, r, ref_re, ref_im, use_bla.then_some(max_delta))
     });
 
@@ -400,6 +435,12 @@ pub(crate) fn dispatch_pass_with(
                     }
                     _ => {}
                 }
+                // Strip: params[0] = (radius of the tile's first row as mantissa
+                // and exponent, d). ref_len stays where each kernel reads it.
+                if let Some(st) = strip {
+                    let (m, e) = StripSpec::radius_parts(st.ln_r_top - tile.origin_y as f64 * st.d);
+                    uniforms.params[0] = [m, f32::from_bits(e as u32), st.d as f32, 0.0];
+                }
             }
         }
 
@@ -465,7 +506,10 @@ pub(crate) fn dispatch_pass_with(
             // Deep tier picks its pipeline from the selected engine; other
             // tiers map straight from the tier.
             let pipeline = if tier == Tier::DeepPerturb {
-                gpu.pipelines.deep_for_engine(eff_engine, req.interior_exit, use_bla)
+                gpu.pipelines.deep_for_engine(
+                    eff_engine,
+                    crate::gpu::DeepVariant { interior_exit: req.interior_exit, bla: use_bla, strip: strip.is_some() },
+                )
             } else {
                 gpu.pipelines.for_tier(tier)
             };

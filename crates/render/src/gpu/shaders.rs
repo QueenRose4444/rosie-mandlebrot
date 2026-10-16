@@ -14,6 +14,7 @@ pub const EMBEDDED: &[(&str, &str)] = &[
     ("mandelbrot_perturb.wgsl", include_str!("../../../../shaders/mandelbrot_perturb.wgsl")),
     ("mandelbrot_perturb_ds.wgsl", include_str!("../../../../shaders/mandelbrot_perturb_ds.wgsl")),
     ("mandelbrot_perturb_fe.wgsl", include_str!("../../../../shaders/mandelbrot_perturb_fe.wgsl")),
+    ("assemble.wgsl", include_str!("../../../../shaders/assemble.wgsl")),
     ("mandelbrot_perturb_f64.wgsl", include_str!("../../../../shaders/mandelbrot_perturb_f64.wgsl")),
 ];
 

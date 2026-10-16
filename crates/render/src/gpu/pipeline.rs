@@ -13,22 +13,10 @@ pub struct Pipelines {
     pub shallow: wgpu::ComputePipeline,
     pub medium: wgpu::ComputePipeline,
     pub deep: wgpu::ComputePipeline,
-    /// Double-single (2×f32) deep-tier perturbation. Same bgl_perturb layout;
-    /// reference orbit uploaded as DS (hi/lo) entries. The intended default
-    /// deep engine — accurate without hardware f64, fast on f32 units.
-    pub deep_ds: wgpu::ComputePipeline,
-    /// DS-floatexp deep tier: same ~48-bit mantissa as `deep_ds` plus a per-value
-    /// integer exponent, so the per-pixel delta never underflows. Removes the
-    /// ~1e-30 DS depth wall (→ effectively unlimited zoom). Same `bgl_perturb`
-    /// layout and DS reference-orbit format as `deep_ds`.
-    pub deep_fe: wgpu::ComputePipeline,
-    /// `deep_ds` / `deep_fe` with interior exit compiled in, for frames that
-    /// have interior to skip.
-    pub deep_ds_interior: wgpu::ComputePipeline,
-    pub deep_fe_interior: wgpu::ComputePipeline,
-    /// The same four with BLA skips compiled in, indexed `[interior as usize]`.
-    pub deep_ds_bla: [wgpu::ComputePipeline; 2],
-    pub deep_fe_bla: [wgpu::ComputePipeline; 2],
+    /// Double-single (2×f32) and DS-floatexp (SE3) deep kernels, in up to
+    /// eight variants each (interior exit × BLA × strip), compiled on first
+    /// use: most runs need two or three of the sixteen.
+    deep_variants: DeepVariants,
     /// f64 variant of the deep tier; only present when SHADER_F64 is available.
     /// Uses the same bgl_perturb layout but a different reference orbit format
     /// (32 bytes/entry vs 16) — the storage buffer size differs but the binding
@@ -163,32 +151,14 @@ impl Pipelines {
             compilation_options: Default::default(),
             cache: None,
         });
-        let deep_variant = |label: &str, module: &wgpu::ShaderModule, interior: bool, bla: bool| {
-            let flag = |on: bool| if on { 1.0 } else { 0.0 };
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pl_perturb),
-                module,
-                entry_point: Some("cs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[("INTERIOR_EXIT", flag(interior)), ("BLA", flag(bla))],
-                    ..Default::default()
-                },
-                cache: None,
-            })
+        let deep_variants = DeepVariants {
+            device: device.clone(),
+            layout: pl_perturb.clone(),
+            ds: mod_perturb_ds,
+            fe: mod_perturb_fe,
+            ds_cache: Default::default(),
+            fe_cache: Default::default(),
         };
-        let deep_ds = deep_variant("pipeline-deep-ds", &mod_perturb_ds, false, false);
-        let deep_ds_interior = deep_variant("pipeline-deep-ds-interior", &mod_perturb_ds, true, false);
-        let deep_fe = deep_variant("pipeline-deep-fe", &mod_perturb_fe, false, false);
-        let deep_fe_interior = deep_variant("pipeline-deep-fe-interior", &mod_perturb_fe, true, false);
-        let deep_ds_bla = [
-            deep_variant("pipeline-deep-ds-bla", &mod_perturb_ds, false, true),
-            deep_variant("pipeline-deep-ds-interior-bla", &mod_perturb_ds, true, true),
-        ];
-        let deep_fe_bla = [
-            deep_variant("pipeline-deep-fe-bla", &mod_perturb_fe, false, true),
-            deep_variant("pipeline-deep-fe-interior-bla", &mod_perturb_fe, true, true),
-        ];
 
         // Compile the f64 deep tier only if SHADER_F64 is supported. We attempt
         // the shader compile and capture any naga/Vulkan error, downgrading
@@ -218,26 +188,17 @@ impl Pipelines {
             shallow,
             medium,
             deep,
-            deep_ds,
-            deep_ds_interior,
-            deep_fe,
-            deep_fe_interior,
-            deep_ds_bla,
-            deep_fe_bla,
+            deep_variants,
             deep_f64,
         })
     }
 
     /// Pick the deep-tier pipeline for the selected engine. `gpu-ds` → DS;
     /// `gpu-f64` → hardware f64 if compiled, else f32; everything else → f32.
-    pub fn deep_for_engine(&self, engine: DeepEngine, interior_exit: bool, bla: bool) -> &wgpu::ComputePipeline {
+    pub fn deep_for_engine(&self, engine: DeepEngine, v: DeepVariant) -> &wgpu::ComputePipeline {
         match engine {
-            DeepEngine::GpuDs if bla => &self.deep_ds_bla[interior_exit as usize],
-            DeepEngine::GpuFe if bla => &self.deep_fe_bla[interior_exit as usize],
-            DeepEngine::GpuDs if interior_exit => &self.deep_ds_interior,
-            DeepEngine::GpuDs => &self.deep_ds,
-            DeepEngine::GpuFe if interior_exit => &self.deep_fe_interior,
-            DeepEngine::GpuFe => &self.deep_fe,
+            DeepEngine::GpuDs => self.deep_variants.get(false, v),
+            DeepEngine::GpuFe => self.deep_variants.get(true, v),
             DeepEngine::GpuF64 => self.deep_pipeline(),
             _ => &self.deep,
         }
@@ -299,7 +260,7 @@ impl Pipelines {
     }
 }
 
-fn shader_module(device: &wgpu::Device, label: &str, src: std::borrow::Cow<'static, str>) -> wgpu::ShaderModule {
+pub(crate) fn shader_module(device: &wgpu::Device, label: &str, src: std::borrow::Cow<'static, str>) -> wgpu::ShaderModule {
     // naga's loop bounding adds a counter to every loop. In these kernels the
     // loop is the escape-time iteration itself, so it cost 19% of DS shader
     // time on wgpu 30 with pixels unchanged. Bounds checks stay on.
@@ -322,5 +283,54 @@ fn storage_ro(binding: u32) -> wgpu::BindGroupLayoutEntry {
             min_binding_size: None,
         },
         count: None,
+    }
+}
+
+/// Which compile-time options a DS or SE3 pipeline carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeepVariant {
+    pub interior_exit: bool,
+    pub bla: bool,
+    /// Exponential-map strip instead of a frame.
+    pub strip: bool,
+}
+
+impl DeepVariant {
+    fn index(self) -> usize {
+        self.interior_exit as usize | (self.bla as usize) << 1 | (self.strip as usize) << 2
+    }
+}
+
+struct DeepVariants {
+    device: wgpu::Device,
+    layout: wgpu::PipelineLayout,
+    ds: wgpu::ShaderModule,
+    fe: wgpu::ShaderModule,
+    ds_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 8],
+    fe_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 8],
+}
+
+impl DeepVariants {
+    fn get(&self, fe: bool, v: DeepVariant) -> &wgpu::ComputePipeline {
+        let (cache, module, name) = if fe { (&self.fe_cache, &self.fe, "fe") } else { (&self.ds_cache, &self.ds, "ds") };
+        cache[v.index()].get_or_init(|| {
+            let flag = |on: bool| if on { 1.0 } else { 0.0 };
+            let label = format!("pipeline-deep-{name}-i{}-b{}-s{}", v.interior_exit as u8, v.bla as u8, v.strip as u8);
+            self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(&label),
+                layout: Some(&self.layout),
+                module,
+                entry_point: Some("cs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[
+                        ("INTERIOR_EXIT", flag(v.interior_exit)),
+                        ("BLA", flag(v.bla)),
+                        ("STRIP", flag(v.strip)),
+                    ],
+                    ..Default::default()
+                },
+                cache: None,
+            })
+        })
     }
 }

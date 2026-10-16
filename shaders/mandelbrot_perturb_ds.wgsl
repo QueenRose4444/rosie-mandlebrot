@@ -28,7 +28,9 @@ struct PixelOut {
 // One vec4<f32> per entry: (z_re_hi, z_re_lo, z_im_hi, z_im_lo). Matches
 // RefOrbitEntryDs exactly, and reads as a single 16-byte vector load.
 @group(0) @binding(1) var<storage, read>      ref_orbit : array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read>      sa_coeffs : array<vec2<f32>>; // unused in DS, bound for layout compat
+// Strip mode: each column's unit direction (cos, sin), computed in f64 on the
+// CPU. The binding is the one the legacy f32 kernel uses for SA coefficients.
+@group(0) @binding(2) var<storage, read>      col_dir   : array<vec2<f32>>;
 @group(0) @binding(3) var<storage, read_write> out_buf  : array<PixelOut>;
 
 // BLA table (see crates/ref/src/bla.rs): every level's entries back to back,
@@ -55,6 +57,10 @@ const BAILOUT_SQ : f32 = 4.0;
 override INTERIOR_EXIT : bool = false;
 // BLA skips, likewise compiled in or out per pipeline.
 override BLA : bool = false;
+// Exponential-map strip instead of a frame: column x is the ray at angle x*d,
+// row y the circle of radius r_top * exp(-y*d). params[0] = (r_top mantissa,
+// bitcast exponent, d, unused); the tile's first column is tile_origin_px.x.
+override STRIP : bool = false;
 
 // ---- DS (double-single) primitives. A DS value is vec2<f32> = (hi, lo). ----
 
@@ -207,8 +213,15 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // delta_c = dorig + local_x * px_dx (real)  ,  dorig + local_y * px_dy (imag)
     let lx = f32(gid.x);
     let ly = f32(gid.y);
-    let dc_re = ds_add(dorig_re, ds_mul_f32(px_dx, lx));
-    let dc_im = ds_add(dorig_im, ds_mul_f32(px_dy, ly));
+    var dc_re = ds_add(dorig_re, ds_mul_f32(px_dx, lx));
+    var dc_im = ds_add(dorig_im, ds_mul_f32(px_dy, ly));
+    if (STRIP) {
+        let dir = col_dir[U.tile_origin_px.x + gid.x];
+        let r = U.params[0].x * exp(-ly * U.params[0].z);
+        let re = bitcast<i32>(U.params[0].y);
+        dc_re = ds_scale2(vec2<f32>(r * dir.x, 0.0), re);
+        dc_im = ds_scale2(vec2<f32>(r * dir.y, 0.0), re);
+    }
 
     // Perturbation with REBASING (Zhuoran). State: n = reference index,
     // dz = delta, iter = pixel iteration count. Rebasing makes this glitch-free

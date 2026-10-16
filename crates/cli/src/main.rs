@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 // else is a library crate: `rosie_mandlebrot_core` (types, precision, schedule),
 // `rosie_mandlebrot_ref` (high-precision reference orbit), `rosie_mandlebrot_render`
 // (wgpu + CPU renderers) and `rosie_mandlebrot_store` (SQLite, PNG, ffmpeg).
+mod assemble;
 mod config;
+mod keyframes;
 mod stdin_cmds;
 mod sysstats;
 
@@ -285,6 +287,27 @@ fn run() -> anyhow::Result<()> {
         return probe(&run_cfg, shader_dir, span, max_iter, cli.probe_oracle, cli.allow_software_gpu).map_err(Into::into);
     }
 
+    if cli.assemble {
+        let stop = Arc::new(AtomicBool::new(false));
+        install_stop_handlers(&cli, stop.clone());
+        let gpu = GpuCtx::new_with_engine(shader_dir, run_cfg.deep_engine, cli.allow_software_gpu)?;
+        let size = cli.width.zip(cli.height);
+        let opt = crate::assemble::Options::from_cli(&cli, &run_cfg)?;
+        let code = crate::assemble::run_logged(&gpu, &run_cfg.output, size, &opt, &stop);
+        // Skip wgpu's Device drop, which can hang on teardown (see the end of a frame run).
+        std::io::stdout().flush().ok();
+        std::process::exit(code);
+    }
+
+    if cli.keyframes {
+        let stop = Arc::new(AtomicBool::new(false));
+        install_stop_handlers(&cli, stop.clone());
+        size_thread_pool(&cli);
+        let code = crate::keyframes::run(&cli, &run_cfg, shader_dir, stop)?;
+        std::io::stdout().flush().ok();
+        std::process::exit(code);
+    }
+
     let state = StateStore::open(&state_path)?;
     let existing = state.latest_run()?;
     let resuming = cli.resume && !cli.new_run && existing.is_some();
@@ -345,73 +368,13 @@ fn run() -> anyhow::Result<()> {
     let stop_signals = StdinSignals::default();
     let _stdin_handle = crate::stdin_cmds::spawn_listener(stop_signals.clone());
 
-    // SIGINT / SIGTERM / SIGHUP: **first** signal asks for a graceful stop, a
-    // **second** one exits immediately.
-    //
-    // Exiting on the first signal, or leaving out `ctrlc`'s `termination`
-    // feature (so SIGTERM is never registered), would make `docker stop` a
-    // 10-second hang followed by a SIGKILL landing mid-frame — which is exactly
-    // the timing that leaves the encode queue half-drained and the resume point
-    // inconsistent.
-    //
-    // Graceful here means the same path as the stdin `stop` command: break the
-    // frame loop, drain the encode queue, write the video, checkpoint. That
-    // finishes well inside Docker's default grace period because the expensive
-    // part (rendering) is abandoned, not completed.
-    //
-    // The second signal is the escape hatch for when a frame is mid-dispatch and
-    // the GPU will not return promptly.
-    let log_path_for_ctrlc: Option<std::path::PathBuf> = match &cli.log_file {
-        Some(p) if p.as_os_str().is_empty() => None,
-        Some(p) => Some(p.clone()),
-        None => Some(cli.default_log_path()),
-    };
-    let signal_stop = stop_signals.stop.clone();
-    let second_signal = Arc::new(AtomicBool::new(false));
-    let _ = ctrlc::set_handler(move || {
-        if !second_signal.swap(true, Ordering::SeqCst) {
-            eprintln!("\nsignal received — stopping gracefully (signal again to exit now)");
-            signal_stop.store(true, Ordering::SeqCst);
-            return;
-        }
-        let msg = "second signal received — terminating immediately";
-        eprintln!("\n{msg}");
-        if let Some(p) = &log_path_for_ctrlc {
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(p) {
-                let now = time::OffsetDateTime::now_utc()
-                    .to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC));
-                let _ = writeln!(
-                    f,
-                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}  WARN {}",
-                    now.year(), now.month() as u8, now.day(),
-                    now.hour(), now.minute(), now.second(),
-                    msg,
-                );
-                let _ = f.sync_data();
-            }
-        }
-        std::process::exit(130);
-    });
+    install_stop_handlers(&cli, stop_signals.stop.clone());
 
     // Size rayon's global pool before anything touches it. Left alone it takes
     // every core, and the rug glitch fallback is the heaviest CPU work here — so
     // a deep frame would hold the whole machine, including whatever the person
     // at the keyboard was trying to do.
-    let (render_threads, num_encoders) = cli.thread_counts();
-    if let Err(e) = rayon::ThreadPoolBuilder::new()
-        .num_threads(render_threads)
-        .build_global()
-    {
-        // Already initialised by something else — not fatal, just means we do
-        // not get to choose.
-        tracing::debug!("could not size the rayon pool ({e}); using its default");
-    } else {
-        tracing::info!(
-            "render threads: {} of {} cores",
-            render_threads,
-            num_cpus::get()
-        );
-    }
+    let num_encoders = size_thread_pool(&cli);
 
     let gpu = GpuCtx::new_with_engine(shader_dir, run_cfg.deep_engine, cli.allow_software_gpu)?;
     tracing::info!("encode threads: {}", num_encoders);
@@ -1348,6 +1311,70 @@ fn run() -> anyhow::Result<()> {
     // status=stopped), so skip Drop and exit immediately.
     std::io::stdout().flush().ok();
     std::process::exit(exit_code);
+}
+
+/// SIGINT / SIGTERM / SIGHUP: the **first** signal sets `stop` (a graceful stop),
+/// a **second** one exits immediately.
+///
+/// Exiting on the first signal, or leaving out `ctrlc`'s `termination`
+/// feature (so SIGTERM is never registered), would make `docker stop` a
+/// 10-second hang followed by a SIGKILL landing mid-frame — which is exactly
+/// the timing that leaves the encode queue half-drained and the resume point
+/// inconsistent. The second signal is the escape hatch for when a frame is
+/// mid-dispatch and the GPU will not return promptly.
+fn install_stop_handlers(cli: &Cli, stop: Arc<AtomicBool>) {
+    let log_path_for_ctrlc: Option<std::path::PathBuf> = match &cli.log_file {
+        Some(p) if p.as_os_str().is_empty() => None,
+        Some(p) => Some(p.clone()),
+        None => Some(cli.default_log_path()),
+    };
+    let signal_stop = stop;
+    let second_signal = Arc::new(AtomicBool::new(false));
+    let _ = ctrlc::set_handler(move || {
+        if !second_signal.swap(true, Ordering::SeqCst) {
+            eprintln!("\nsignal received — stopping gracefully (signal again to exit now)");
+            signal_stop.store(true, Ordering::SeqCst);
+            return;
+        }
+        let msg = "second signal received — terminating immediately";
+        eprintln!("\n{msg}");
+        if let Some(p) = &log_path_for_ctrlc {
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(p) {
+                let now = time::OffsetDateTime::now_utc()
+                    .to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC));
+                let _ = writeln!(
+                    f,
+                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}  WARN {}",
+                    now.year(), now.month() as u8, now.day(),
+                    now.hour(), now.minute(), now.second(),
+                    msg,
+                );
+                let _ = f.sync_data();
+            }
+        }
+        std::process::exit(130);
+    });
+}
+
+/// Size rayon's global pool before anything touches it; returns the number of
+/// encoder threads.
+fn size_thread_pool(cli: &Cli) -> usize {
+    let (render_threads, num_encoders) = cli.thread_counts();
+    if let Err(e) = rayon::ThreadPoolBuilder::new()
+        .num_threads(render_threads)
+        .build_global()
+    {
+        // Already initialised by something else — not fatal, just means we do
+        // not get to choose.
+        tracing::debug!("could not size the rayon pool ({e}); using its default");
+    } else {
+        tracing::info!(
+            "render threads: {} of {} cores",
+            render_threads,
+            num_cpus::get()
+        );
+    }
+    num_encoders
 }
 
 fn list_presets(cli: &Cli) -> MbResult<()> {

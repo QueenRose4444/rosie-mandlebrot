@@ -13,7 +13,7 @@ pub mod shaders;
 pub use rosie_mandlebrot_core::tiling;
 pub use rosie_mandlebrot_core::types as buffers;
 
-pub use pipeline::Pipelines;
+pub use pipeline::{DeepVariant, Pipelines};
 
 pub struct GpuCtx {
     pub instance: wgpu::Instance,

@@ -10,6 +10,7 @@
 // only run when something has already gone wrong.
 #![allow(clippy::result_large_err)]
 
+pub mod keyframes;
 pub mod progress;
 pub mod save;
 pub mod state;

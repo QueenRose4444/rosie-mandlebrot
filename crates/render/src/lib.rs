@@ -12,6 +12,7 @@
 
 pub mod gpu;
 
+pub mod assembler;
 mod bla_policy;
 mod cpu_path;
 mod frame;
@@ -25,3 +26,4 @@ pub use rosie_mandlebrot_core::frame::{
 };
 pub use frame::{last_frame_gpu_ms, last_frame_orbit_ms, last_frame_shader_ms, render_frame};
 pub use gpu::GpuCtx;
+pub use gpu_path::{render_strip_chunk, StripSpec};

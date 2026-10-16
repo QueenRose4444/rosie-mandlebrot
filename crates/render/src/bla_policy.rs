@@ -12,7 +12,7 @@
 
 use crate::frame::*;
 use crate::gpu::GpuCtx;
-use crate::gpu_path::dispatch_pass_with;
+use crate::gpu_path::{dispatch_pass_with, StripSpec};
 use rosie_mandlebrot_core::precision::Tier;
 use std::sync::Mutex;
 
@@ -37,7 +37,7 @@ fn forced() -> Option<bool> {
     }
 }
 
-pub(crate) fn choose(gpu: &GpuCtx, req: &FrameRequest) -> bool {
+pub(crate) fn choose(gpu: &GpuCtx, req: &FrameRequest, strip: Option<&StripSpec>) -> bool {
     if let Some(f) = forced() {
         return f;
     }
@@ -48,15 +48,16 @@ pub(crate) fn choose(gpu: &GpuCtx, req: &FrameRequest) -> bool {
             return p.choice;
         }
     }
-    let choice = calibrate(gpu, req).unwrap_or(false);
+    let choice = calibrate(gpu, req, strip).unwrap_or(false);
     *POLICY.lock().expect("BLA policy mutex poisoned") = Some(Policy { choice, frames_left: RECALIBRATE_EVERY - 1 });
     choice
 }
 
-/// Render a quarter-resolution copy of the frame without and with BLA, twice
-/// each, interleaved; true when BLA was faster by [`MARGIN`]. The probe's time
-/// is kept out of the frame's own timers.
-fn calibrate(gpu: &GpuCtx, req: &FrameRequest) -> Option<bool> {
+/// Render a quarter-resolution copy of the frame (for a strip chunk, its first
+/// quarter of columns and rows) without and with BLA, twice each, interleaved;
+/// true when BLA was faster by [`MARGIN`]. The probe's time is kept out of the
+/// frame's own timers.
+fn calibrate(gpu: &GpuCtx, req: &FrameRequest, strip: Option<&StripSpec>) -> Option<bool> {
     let probe = FrameRequest {
         frame_idx: req.frame_idx,
         width: (req.width / 4).max(64),
@@ -76,7 +77,7 @@ fn calibrate(gpu: &GpuCtx, req: &FrameRequest) -> Option<bool> {
     for _ in 0..2 {
         for (arm, bla) in [false, true].into_iter().enumerate() {
             reset_gpu_timer();
-            dispatch_pass_with(gpu, &probe, Tier::DeepPerturb, &probe.center_re, &probe.center_im, Some(bla)).ok()?;
+            dispatch_pass_with(gpu, &probe, Tier::DeepPerturb, &probe.center_re, &probe.center_im, Some(bla), strip).ok()?;
             // Shader timestamps when the adapter has them, dispatch wall time otherwise.
             let t = last_frame_shader_ms();
             ms[arm] += if t > 0.0 { t } else { last_frame_gpu_ms() };

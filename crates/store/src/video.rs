@@ -33,12 +33,27 @@ pub fn encode_run(
             .arg("-i").arg(out_dir.join("frame_*.png"));
     }
 
+    cmd.args(codec_args(codec)?);
+    cmd.arg("-pix_fmt").arg("yuv420p").arg(&out_path);
+
+    tracing::info!("invoking ffmpeg: {:?}", cmd);
+    let status = cmd
+        .status()
+        .map_err(|e| MbError::Ffmpeg(format!("spawn ffmpeg: {e}")))?;
+    if !status.success() {
+        return Err(MbError::Ffmpeg(format!("ffmpeg exited with {status}")));
+    }
+    Ok(out_path)
+}
+
+/// ffmpeg arguments for one of the supported codecs.
+pub fn codec_args(codec: &str) -> MbResult<Vec<String>> {
     // Low-RAM, ~4-thread encoder settings. The default x264/x265 "slow" preset
     // keeps ~50 frames of lookahead resident — ~1.25 GB at 4K, which blows a
     // 2 GB memory cap. "medium" + a short rc-lookahead holds it to a few hundred
     // MB at negligible quality cost (crf unchanged), so the encoder step fits
     // the same memory budget as the renderer.
-    let codec_args: Vec<String> = match codec {
+    let args: Vec<String> = match codec {
         "h264" => vec![
             "-c:v".into(), "libx264".into(),
             "-crf".into(), "18".into(),
@@ -60,15 +75,5 @@ pub fn encode_run(
         ],
         other => return Err(MbError::Ffmpeg(format!("unknown codec {other}"))),
     };
-    cmd.args(codec_args);
-    cmd.arg("-pix_fmt").arg("yuv420p").arg(&out_path);
-
-    tracing::info!("invoking ffmpeg: {:?}", cmd);
-    let status = cmd
-        .status()
-        .map_err(|e| MbError::Ffmpeg(format!("spawn ffmpeg: {e}")))?;
-    if !status.success() {
-        return Err(MbError::Ffmpeg(format!("ffmpeg exited with {status}")));
-    }
-    Ok(out_path)
+    Ok(args)
 }

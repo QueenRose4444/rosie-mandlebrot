@@ -43,7 +43,9 @@ struct PixelOut {
 @group(0) @binding(0) var<uniform> U : Uniforms;
 // (z_re_hi, z_re_lo, z_im_hi, z_im_lo), the same entries the DS kernel reads.
 @group(0) @binding(1) var<storage, read>      ref_orbit : array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read>      sa_coeffs : array<vec2<f32>>; // unused; layout compat
+// Strip mode: each column's unit direction (cos, sin), computed in f64 on the
+// CPU. The binding is the one the legacy f32 kernel uses for SA coefficients.
+@group(0) @binding(2) var<storage, read>      col_dir   : array<vec2<f32>>;
 @group(0) @binding(3) var<storage, read_write> out_buf  : array<PixelOut>;
 
 // BLA table (see crates/ref/src/bla.rs): every level's entries back to back,
@@ -69,6 +71,11 @@ const BAILOUT_SQ : f32 = 4.0;
 override INTERIOR_EXIT : bool = false;
 // BLA skips, likewise compiled in or out per pipeline.
 override BLA : bool = false;
+// Exponential-map strip instead of a frame: column x is the ray at angle x*d,
+// row y the circle of radius r_top * exp(-y*d). params[0] = (r_top mantissa,
+// bitcast exponent, d, unused); the tile's first column is tile_origin_px.x.
+// ref_len stays in params[3].x.
+override STRIP : bool = false;
 // Below this exponent a value is handled at a common exponent, not absolutely.
 const ABS_FLOOR : i32 = -100;
 // 2^-100: a w smaller than this is re-formed at a common exponent.
@@ -192,9 +199,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // dc = dorig + pixel * step, at one shared exponent Sc.
-    let Sc = max(max(ore_e, oim_e), max(dx_e, dy_e));
-    let mc_re = ds_add(ds_scale2(ore, ore_e - Sc), ds_mul_f32(ds_scale2(dx, dx_e - Sc), f32(gid.x)));
-    let mc_im = ds_add(ds_scale2(oim, oim_e - Sc), ds_mul_f32(ds_scale2(dy, dy_e - Sc), f32(gid.y)));
+    var Sc = max(max(ore_e, oim_e), max(dx_e, dy_e));
+    var mc_re = ds_add(ds_scale2(ore, ore_e - Sc), ds_mul_f32(ds_scale2(dx, dx_e - Sc), f32(gid.x)));
+    var mc_im = ds_add(ds_scale2(oim, oim_e - Sc), ds_mul_f32(ds_scale2(dy, dy_e - Sc), f32(gid.y)));
+    if (STRIP) {
+        let dir = col_dir[U.tile_origin_px.x + gid.x];
+        let r = U.params[0].x * exp(-f32(gid.y) * U.params[0].z);
+        mc_re = vec2<f32>(r * dir.x, 0.0);
+        mc_im = vec2<f32>(r * dir.y, 0.0);
+        Sc = bitcast<i32>(U.params[0].y);
+    }
 
     var m_re : vec2<f32> = vec2<f32>(0.0, 0.0);
     var m_im : vec2<f32> = vec2<f32>(0.0, 0.0);

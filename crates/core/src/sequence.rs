@@ -58,17 +58,22 @@ pub struct FrameParams {
 impl SequenceConfig {
     pub fn frame(&self, index: u64) -> FrameParams {
         let span = self.initial_span * self.zoom_factor.powi(index as i32);
-        // Depth-based iteration scaling: iter grows logarithmically with the
-        // zoom depth. This is independent of zoom_factor — a fast zoom (0.92)
-        // and a slow zoom (0.98) both produce the same iter count for the
-        // same span.
-        // Formula with exponent: initial_max_iter + iter_per_depth * depth^iter_exponent.
+        FrameParams { index, span, max_iter: self.max_iter_for_span(span) }
+    }
+
+    /// The scheduled iteration budget for a frame of this span.
+    ///
+    /// Depth-based iteration scaling: iter grows logarithmically with the
+    /// zoom depth. This is independent of zoom_factor — a fast zoom (0.92)
+    /// and a slow zoom (0.98) both produce the same iter count for the
+    /// same span.
+    /// Formula with exponent: initial_max_iter + iter_per_depth * depth^iter_exponent.
+    pub fn max_iter_for_span(&self, span: f64) -> u32 {
         let depth = (self.initial_span / span).ln().max(0.0);
         let scaled = self.initial_max_iter as f64 + self.iter_per_depth * depth.powf(self.iter_exponent);
-        let max_iter = (scaled.round() as u32)
+        (scaled.round() as u32)
             .min(self.iter_cap)
-            .max(self.initial_max_iter);
-        FrameParams { index, span, max_iter }
+            .max(self.initial_max_iter)
     }
 
     pub fn frames_for_zoom_end(&self, zoom_end: f64) -> u64 {

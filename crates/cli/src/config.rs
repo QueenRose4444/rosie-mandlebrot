@@ -218,6 +218,32 @@ pub struct Cli {
     #[arg(long)]
     pub no_video: bool,
 
+    /// Render the zoom as an exponential-map strip ("keyframes") and assemble
+    /// the video from it, instead of rendering every frame.
+    #[arg(long)]
+    pub keyframes: bool,
+
+    /// Make the video again from the strip a --keyframes run left in
+    /// --run-dir / --output: another --palette, --video-fps, --zoom-factor or
+    /// --width/--height, without rendering anything.
+    #[arg(long)]
+    pub assemble: bool,
+
+    /// How keyframe videos map values to colours: "location" (a point keeps
+    /// its colour in every frame) or "per-frame" (each frame's own range, as
+    /// frame-by-frame rendering does).
+    #[arg(long, default_value = "location")]
+    pub tone: String,
+
+    /// With --keyframes/--assemble: also save these frames (0-based) as PNGs.
+    #[arg(long, value_delimiter = ',', hide = true)]
+    pub frames_png: Vec<u64>,
+
+    /// With --assemble: for these frames also save a direct render and a 5x5
+    /// supersampled truth, coloured identically, for quality measurements.
+    #[arg(long, value_delimiter = ',', hide = true)]
+    pub compare_frames: Vec<u64>,
+
     /// Only run the ffmpeg encode step over an existing run, then exit.
     #[arg(long)]
     pub encode_only: bool,
