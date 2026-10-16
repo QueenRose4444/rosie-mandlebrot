@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandelbrot frames</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0b0b0e; color: #e7e7ea;
+         font: 14px/1.4 system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; display: flex; gap: 1rem;
+           align-items: center; padding: .6rem 1rem; background: #14141a;
+           border-bottom: 1px solid #25252e; }
+  header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+  header .stat { color: #9aa; font-variant-numeric: tabular-nums; }
+  header .spacer { flex: 1; }
+  button, label.toggle { background: #23232d; color: #e7e7ea; border: 1px solid #34343f;
+           border-radius: 6px; padding: .35rem .7rem; cursor: pointer; font: inherit; }
+  button:hover { background: #2d2d3a; }
+  main { padding: 1rem; max-width: 1500px; margin: 0 auto; }
+  .hero { margin-bottom: 1rem; text-align: center; }
+  .hero img { max-width: min(100%, 760px); width: 100%; height: auto;
+              border-radius: 10px; border: 1px solid #25252e; background: #000; }
+  .hero .cap { color: #9aa; margin-top: .4rem; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; gap: .5rem;
+          grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .grid a { display: block; position: relative; aspect-ratio: 1/1;
+            border-radius: 8px; overflow: hidden; border: 1px solid #25252e;
+            background: #000; }
+  .grid img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .grid .tag { position: absolute; left: 0; bottom: 0; right: 0;
+               background: linear-gradient(transparent, #000a); color: #ccd;
+               font-size: 11px; padding: .5rem .35rem .25rem; }
+  .more { text-align: center; margin: 1.2rem 0; }
+  .empty { color: #9aa; text-align: center; padding: 3rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mandelbrot frames</h1>
+  <span class="stat" id="count">…</span>
+  <span class="spacer"></span>
+  <label class="toggle"><input type="checkbox" id="auto" checked> auto-refresh</label>
+  <button id="refresh">Refresh</button>
+</header>
+<main>
+  <div class="hero" id="hero"></div>
+  <div class="grid" id="grid"></div>
+  <div class="more"><button id="loadmore" hidden>Load more</button></div>
+  <div class="empty" id="empty" hidden>No frames yet — the render hasn't written any PNGs.</div>
+</main>
+<script>
+const PAGE = 60;
+const FRAMES = "/frames/";   // full-res PNG (click-through / fallback)
+const THUMB = "/thumb/";     // server-resized ~400px thumbnail for the grid
+const PREVIEW = "/preview/"; // server-resized ~1280px preview for the hero
+let all = [];     // sorted newest-first
+let shown = 0;    // how many of `all` (from the top) are in the grid
+
+const $ = id => document.getElementById(id);
+
+async function fetchList() {
+  const r = await fetch(FRAMES, { cache: "no-store" });
+  if (!r.ok) throw new Error("listing " + r.status);
+  const items = await r.json();
+  // zero-padded names → lexicographic desc == newest first.
+  return items
+    .filter(e => e.type === "file" && /^frame_\d+\.png$/.test(e.name))
+    .sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+}
+
+function renderHero() {
+  const hero = $("hero");
+  if (!all.length) { hero.innerHTML = ""; return; }
+  const latest = all[0];
+  // Hero uses the medium preview (light, crisp) and links to the full frame.
+  // The name changes whenever a new frame lands, so no cache-buster is needed —
+  // an unchanged name stays cached instead of re-downloading every refresh.
+  hero.innerHTML =
+    `<a href="${FRAMES}${latest.name}" target="_blank" rel="noopener">
+       <img src="${PREVIEW}${latest.name}" alt="${latest.name}"></a>
+     <div class="cap">latest: ${latest.name} &middot; ${all.length.toLocaleString()} frames</div>`;
+}
+
+// One grid cell. Loads the small thumbnail; if the resize ever fails (e.g. a
+// frame larger than the filter buffer) it falls back to the full PNG.
+function makeCell(f) {
+  const a = document.createElement("a");
+  a.href = FRAMES + f.name; a.target = "_blank"; a.rel = "noopener";
+  const num = f.name.replace(/^frame_0*/, "#").replace(/\.png$/, "");
+  a.innerHTML =
+    `<img loading="lazy" src="${THUMB}${f.name}" alt="${f.name}"
+          onerror="this.onerror=null;this.src='${FRAMES}${f.name}'">
+     <span class="tag">${num}</span>`;
+  return a;
+}
+
+// Append the next `n` frames (older direction) to the bottom of the grid.
+function appendGrid(n) {
+  const grid = $("grid");
+  const frag = document.createDocumentFragment();
+  const end = Math.min(shown + n, all.length);
+  for (let i = shown; i < end; i++) frag.appendChild(makeCell(all[i]));
+  grid.appendChild(frag);
+  shown = end;
+  $("loadmore").hidden = shown >= all.length;
+}
+
+// Prepend newly-arrived frames to the TOP of the grid (newest-first order),
+// so the grid stays in sync with the hero on auto-refresh.
+function prependGrid(newFrames) {
+  const grid = $("grid");
+  const frag = document.createDocumentFragment();
+  for (const f of newFrames) frag.appendChild(makeCell(f));
+  grid.insertBefore(frag, grid.firstChild);
+  shown += newFrames.length;
+}
+
+function rerender() {
+  $("grid").innerHTML = "";
+  shown = 0;
+  $("empty").hidden = all.length > 0;
+  $("count").textContent = all.length ? `${all.length.toLocaleString()} frames` : "";
+  renderHero();
+  appendGrid(PAGE);
+}
+
+async function refresh(full) {
+  try {
+    const next = await fetchList();
+    if (full) { all = next; rerender(); return; }
+    // Auto-refresh: figure out which frames are new (name greater than the
+    // previous newest) and prepend just those — so the grid updates too, not
+    // only the hero. Avoids a full rebuild that would reset scroll/pagination.
+    const prevNewest = all.length ? all[0].name : null;
+    const newOnes = prevNewest ? next.filter(e => e.name > prevNewest) : next;
+    all = next;
+    $("empty").hidden = all.length > 0;
+    $("count").textContent = all.length ? `${all.length.toLocaleString()} frames` : "";
+    if (newOnes.length) {
+      renderHero();
+      prependGrid(newOnes);
+    }
+  } catch (e) {
+    $("count").textContent = "listing error";
+  }
+}
+
+$("refresh").onclick = () => refresh(true);
+$("loadmore").onclick = () => appendGrid(PAGE);
+refresh(true);
+setInterval(() => { if ($("auto").checked) refresh(false); }, 20000);
+</script>
+</body>
+</html>

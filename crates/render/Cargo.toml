@@ -1,0 +1,22 @@
+[package]
+name = "rosie_mandlebrot_render"
+description = "Frame rendering: the wgpu compute path and the CPU fallbacks, over a shared perturbation kernel."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rosie_mandlebrot_core.workspace = true
+rosie_mandlebrot_ref.workspace = true
+bytemuck.workspace = true
+num-complex.workspace = true
+tracing.workspace = true
+pollster.workspace = true
+rayon.workspace = true
+wgpu.workspace = true
+wide.workspace = true
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }

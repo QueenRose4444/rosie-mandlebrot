@@ -1,0 +1,35 @@
+[package]
+name = "rosie_mandlebrot_core"
+description = "Shared types, precision policy, zoom schedule and colour mapping. No GPU, no database, no high-precision maths — so its tests compile in seconds."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# NOTE on "core is light": rosie_mandlebrot_store depends on core with the `sqlite`
+# feature, and cargo unifies features across a workspace build - so
+# `cargo test --workspace` compiles core WITH rusqlite and its bundled C SQLite.
+# The fast-to-test property is real but only visible via
+# `cargo test -p rosie_mandlebrot_core`. Time that, not the workspace, or you will
+# conclude the crate split did not work.
+[features]
+default = []
+# Lets `MbError` carry a `rusqlite::Error` directly, so the store crate keeps
+# plain `?` on SQLite calls. Off by default: enabling it pulls in a C build of
+# SQLite, which is exactly what this crate exists to stay out of.
+sqlite = ["dep:rusqlite"]
+# Derives clap's `ValueEnum` on `DeepEngine` for the CLI crate. Off by default
+# for the same reason.
+cli = ["dep:clap"]
+
+[dependencies]
+bytemuck.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+num_cpus.workspace = true
+humantime.workspace = true
+clap = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }

@@ -1,0 +1,36 @@
+[package]
+name = "rosie_mandlebrot"
+description = "Rosie_Mandlebrot: a GPU deep-zoom renderer for the Mandelbrot set."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rosie_mandlebrot"
+path = "src/main.rs"
+
+[dependencies]
+rosie_mandlebrot_core = { workspace = true, features = ["cli"] }
+rosie_mandlebrot_ref.workspace = true
+rosie_mandlebrot_render.workspace = true
+rosie_mandlebrot_store.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+crossbeam-channel.workspace = true
+ctrlc.workspace = true
+humantime.workspace = true
+memory-stats.workspace = true
+image.workspace = true
+indicatif.workspace = true
+num_cpus.workspace = true
+rayon.workspace = true
+nvml-wrapper.workspace = true
+time.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

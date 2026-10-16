@@ -1,0 +1,25 @@
+/target
+
+# Real values live here; .env.example is the committed template.
+/.env
+/out
+/state
+/logs
+/mandelbrot_out
+/mandelbrot_state
+
+# Run output, wherever a --run-dir drops it inside the crate. The documented
+# home is ../runs/; these patterns are a safety net for a --run-dir that points
+# at a folder in here instead.
+state.db
+state.db-shm
+state.db-wal
+progress.json
+progress.json.tmp
+*.png
+*.png.tmp
+*.mkv
+*.mp4
+
+# Release archives built by tools/package.py
+/dist/

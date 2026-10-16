@@ -1,0 +1,50 @@
+# A long-running render on an NVIDIA GPU. See DEPLOY.md.
+#
+#   docker compose up -d                      the render
+#   docker compose --profile gallery up -d    plus a frame gallery on http://localhost:8080
+#
+# The render restarts after a crash or reboot and resumes from the last saved
+# frame. A finished run idles; empty both folders to start a new one.
+services:
+  mandelbrot:
+    image: ghcr.io/queenrose4444/rosie-mandlebrot:latest
+    build: .
+    container_name: rosie_mandlebrot
+    restart: unless-stopped
+    # Type `stop` + Enter after `docker attach rosie_mandlebrot` to end a run cleanly.
+    stdin_open: true
+    tty: true
+    cpus: "4.0"
+    mem_limit: 2g
+    environment:
+      - RUST_LOG=info
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+    volumes:
+      - ./mandelbrot_out:/out
+      - ./mandelbrot_state:/state
+    # The entrypoint adds --output /out --state /state/state.db --resume.
+    command: >
+      --preset seahorse_deep
+      --res 1080p
+      --max-storage 50GB
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [compute, utility, graphics]
+
+  gallery:
+    profiles: ["gallery"]
+    build: ./gallery
+    container_name: rosie_mandlebrot_gallery
+    restart: unless-stopped
+    mem_limit: 384m
+    ports:
+      - "8080:80"
+    volumes:
+      - ./mandelbrot_out:/usr/share/nginx/html/frames:ro
+      - ./gallery/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./gallery/index.html:/usr/share/nginx/html/site/index.html:ro

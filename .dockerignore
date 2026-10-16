@@ -1,0 +1,40 @@
+# NOTE: dockerignore is NOT gitignore. A pattern without a slash matches only at
+# the root here, whereas gitignore matches at any depth. `*.png` therefore does
+# NOT exclude bench/out/frame_000001.png, so run output would be shipped to the
+# daemon on every build. Use `**/` explicitly.
+
+target/
+**/target/
+
+# Run output, wherever it landed.
+out/
+state/
+runs/
+bench/
+logs/
+mandelbrot_out/
+mandelbrot_state/
+**/*.png
+**/*.png.tmp
+**/*.mkv
+**/*.mp4
+**/progress.json
+**/progress.json.tmp
+**/state.db
+**/state.db-shm
+**/state.db-wal
+
+# Real secrets. Not COPYed, but everything here is still transmitted to the
+# daemon, which matters with a remote or CI builder.
+.env
+
+.git/
+.gitignore
+.gitattributes
+
+# Docs are not needed to build the binary.
+README.md
+COMMANDS.md
+DEPLOY.md
+docs/
+*.tmp

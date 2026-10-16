@@ -1,0 +1,464 @@
+# Built-in presets. Override with --presets FILE (or MANDELBROT_PRESETS).
+#
+# A preset supplies a location and a look, never a budget: frames, duration,
+# resolution, iteration cap and storage are always the user's choice.
+#
+#   name               a-z, 0-9 and _, passed as --preset NAME
+#   formula            the iteration rule; "mandelbrot" (the default) for now
+#   kind               nucleus | misiurewicz | landmark | view
+#   period, preperiod  for a nucleus its period; for a Misiurewicz point the
+#                      preperiod and period of the cycle it lands on
+#   center_re/im       decimal strings, parsed at the run's precision
+#   initial_span       starting view width (3 = the whole set)
+#   suggested_palette  hot | grayscale | electric | rainbow | ember
+#   suggested_zoom_end how deep the location keeps producing structure. It can
+#                      be written as a string ("1e-400") to go past f64.
+#   zoom_factor, iter_per_depth, iter_exponent
+#                      optional pace and iteration growth
+#
+# Every centre was derived by Newton's method from its defining equation, not
+# copied, and the tests re-check it: a nucleus must have its period as the last
+# rung of its atom-domain ladder, a Misiurewicz point's orbit must land on its
+# cycle, a bulb root must match its closed form. `--ladder` prints the ladder
+# for any centre.
+
+[[preset]]
+name = "seahorse"
+kind = "view"
+description = "Seahorse Valley spirals; the default. A 15-digit centre, so it ends near 1e-15."
+center_re = "-0.743643887037151"
+center_im = "0.131825904205330"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-15
+
+[[preset]]
+name = "seahorse_deep"
+kind = "view"
+description = "Deep Seahorse Valley, alongside a period-16014 minibrot that fills the frame near 1e-32."
+center_re = "-0.743643887037158704752191506114774"
+center_im = "0.131825904205311970493132056385139"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-32
+iter_exponent = 1.6
+
+[[preset]]
+name = "elephant_valley"
+kind = "view"
+description = "Elephant Valley at the main cardioid's cusp. Shallow."
+center_re = "0.275"
+center_im = "0.006"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-3
+
+[[preset]]
+name = "spiral"
+kind = "view"
+description = "A spiral beside a period-106 minibrot. Shallow."
+center_re = "-0.761574"
+center_im = "-0.0847596"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-6
+
+[[preset]]
+name = "tendrils"
+kind = "view"
+description = "Tendrils near a period-96 minibrot."
+center_re = "-0.748000"
+center_im = "0.100000"
+initial_span = 3.0
+suggested_palette = "ember"
+suggested_zoom_end = 6e-6
+
+[[preset]]
+name = "double_embedded_julia"
+kind = "view"
+description = "A second-order embedded Julia set framing a period-4246 island (Fractalshades example 10)."
+center_re = "-1.768667862837488812627419470"
+center_im = "0.001645580546820209430325900"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 2e-23
+iter_exponent = 1.6
+
+[[preset]]
+name = "feigenbaum_point"
+kind = "landmark"
+description = "The end of the period-doubling cascade: each zoom by 4.669 shows the next doubling. Needs many iterations."
+center_re = "-1.4011551890920506"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "grayscale"
+suggested_zoom_end = 5e-12
+iter_exponent = 2.0
+
+[[preset]]
+name = "seahorse_ultra"
+kind = "nucleus"
+period = 1344
+description = "The centre of a period-1344 minibrot in Seahorse Valley, reached through seahorse spirals."
+center_re = "-0.74179748370620031368547827325030206864494182491308035116753606661393545914587267019772545354887961941476671606777868992148314417476726794367"
+center_im = "0.11039428483421076170713716352357426661042697834997063419298022176185813317992564739288515050755762590446598629301562114037101169183002246809"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-32
+iter_exponent = 1.6
+
+[[preset]]
+name = "island_period3"
+kind = "nucleus"
+period = 3
+description = "The largest minibrot on the main antenna."
+center_re = "-1.75487766624669276004950889635852869189460661777279314398928397064608065512808109073822709284225030364837736791281342294"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 2e-2
+
+[[preset]]
+name = "island_period4"
+kind = "nucleus"
+period = 4
+description = "A period-4 minibrot on the real axis."
+center_re = "-1.94079980652948475223209097965520417686904071446103552393821017668126279764545405718343675436210278856459884007959751527"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-3
+
+[[preset]]
+name = "island_period5a"
+kind = "nucleus"
+period = 5
+description = "A period-5 minibrot on the real axis."
+center_re = "-1.62541372512330373744341057502333018380225593809105241063400673817838645731602611985801876787913979110476905428655109877"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 4e-3
+
+[[preset]]
+name = "island_period5b"
+kind = "nucleus"
+period = 5
+description = "A second period-5 minibrot on the real axis."
+center_re = "-1.86078252220485487123224202379987408091573477503986799691588037588051899947338962855499012546932081179758189104771706568"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 8e-4
+
+[[preset]]
+name = "bulb3_nucleus"
+kind = "nucleus"
+period = 3
+description = "The centre of the period-3 bulb at the top of the set."
+center_re = "-0.122561166876653619975245551820735654052696691113603428005358014676959672435959454630886453578874848175811316043593288531"
+center_im = "0.744861766619744236593170428604392367240163084906824574201847592154415217837839767791143754932964159039252804873377366033"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 2e-1
+
+[[preset]]
+name = "bulb4_nucleus"
+kind = "nucleus"
+period = 4
+description = "The centre of the period-4 bulb."
+center_re = "0.282271390766913879696817539321511791585592669402347178499476690827812756010429617569932104514551855370653329866728404163"
+center_im = "0.530060617578525299487869047520201937843021932664933685970632533418518640743217133822053702390049266901512275539249422385"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 9e-2
+
+[[preset]]
+name = "seahorse_island29"
+kind = "nucleus"
+period = 29
+description = "A period-29 minibrot in Seahorse Valley."
+center_re = "-0.745098758524967834369771465249092869590583286450067960033060494411209804619119692178972978903847672249993935252530499111"
+center_im = "0.118252515975555074555168622895717313868630590362577731854994039959736351759803171463311125905259085001294674689162240108"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 2e-4
+
+[[preset]]
+name = "seahorse_island43"
+kind = "nucleus"
+period = 43
+description = "A period-43 minibrot in Seahorse Valley."
+center_re = "-0.744538834348504904896190643479131967675117709857201648991329809634223550004516344623126110122706523641367336323216126763"
+center_im = "0.121724294144943806715388222268057917933616311604461146946153242960359190167662406173653243477870595214108009948917780626"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1.5e-6
+
+[[preset]]
+name = "seahorse_island1312"
+kind = "nucleus"
+period = 1312
+description = "A period-1312 minibrot deep in Seahorse Valley (Munafo's deep seahorse)."
+center_re = "-0.744539860355908380816557815895347302972191689140931575676706189621984070753702073353326058877931166694464540818317627711"
+center_im = "0.121723773894424824214568649877920092818523475982202032420433286685727728146805447811457096524747224492879420564109657963"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 3.5e-18
+iter_exponent = 1.6
+
+[[preset]]
+name = "julia_island"
+kind = "nucleus"
+period = 113
+description = "A period-113 minibrot inside an embedded Julia set."
+center_re = "-1.76877881882505244070204328921906568399856273481965709587200755304435521001682796491704283020662362167122981178033708258"
+center_im = "-0.0017389905981379000644453474272231322474552894256451995902637660092921242667564029777973895016416124829190523262849534524"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1.7e-11
+
+[[preset]]
+name = "double_ejs_101"
+kind = "nucleus"
+period = 101
+description = "A period-101 minibrot in a second-order embedded Julia set."
+center_re = "-1.76866786298867554965359517866967322202213691029422017746873"
+center_im = "0.00164558027514632870785873378960101782710533206297857192950625"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1.1e-9
+
+[[preset]]
+name = "period2_nucleus"
+kind = "nucleus"
+period = 2
+description = "The centre of the period-2 disc."
+center_re = "-1.000000000000000000000000000000"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 2.5e-1
+
+[[preset]]
+name = "tip_of_antenna"
+kind = "misiurewicz"
+preperiod = 2
+period = 1
+description = "c = -2, the westmost point of the set. The same two lines forever."
+center_re = "-2.000000000000000000000000000000"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "grayscale"
+suggested_zoom_end = 1e-29
+iter_exponent = 1.6
+
+[[preset]]
+name = "c_equals_i"
+kind = "misiurewicz"
+preperiod = 2
+period = 2
+description = "c = i, the tip of a branch of the 1/3 limb."
+center_re = "0.0"
+center_im = "1.000000000000000000000000000000"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-29
+iter_exponent = 1.6
+
+[[preset]]
+name = "antenna_principal"
+kind = "misiurewicz"
+preperiod = 3
+period = 1
+description = "The main branch point of the antenna."
+center_re = "-1.54368901269207636157085597180174798652520329765098393524080403783116867392797386648515791457605912546212082922636706019"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-118
+iter_exponent = 1.6
+
+[[preset]]
+name = "band_merge_m2"
+kind = "misiurewicz"
+preperiod = 5
+period = 2
+description = "The second band-merging point on the antenna."
+center_re = "-1.43035763245130739897493007239025039034215561472380828912450634682671548392019381931042245683872244399001543627190335371"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-118
+iter_exponent = 1.6
+
+[[preset]]
+name = "band_merge_m3"
+kind = "misiurewicz"
+preperiod = 9
+period = 4
+description = "The third band-merging point on the antenna."
+center_re = "-1.40740511816470202250782822919905097778380592609454793509082964602695720565222276462463354429817508559583867278610289552"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-118
+iter_exponent = 1.6
+
+[[preset]]
+name = "limb3_tip"
+kind = "misiurewicz"
+preperiod = 3
+period = 1
+description = "The tip of a main branch of the 1/3 limb."
+center_re = "-0.228155493653961819214572014099126006737398351174508032379597981084415663036013066757421042711970437268939585386816469905"
+center_im = "1.11514250803993735974576463631501406818877809046795460362746803348104090929463551685725720068747652288721003224510333247"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-118
+iter_exponent = 1.6
+
+[[preset]]
+name = "limb3_branch"
+kind = "misiurewicz"
+preperiod = 4
+period = 1
+description = "Where three branches of the 1/3 limb meet."
+center_re = "-0.101096363845622161025785445738622565463805442826253483876931177660780840740470584274821219810516779033404531908556741194"
+center_im = "0.956286510809141500771096057729977435809833336510529170034314321500524659065716732526978410787339807204344472492646928437"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-118
+iter_exponent = 1.6
+
+[[preset]]
+name = "wake4_principal"
+kind = "misiurewicz"
+preperiod = 5
+period = 1
+description = "The principal branch point of the 1/4 wake."
+center_re = "0.366362983422764341328932730797849058049853857302798581020042294955577332518413468412047703920294463751775862985570364431"
+center_im = "0.591533773261445227577493493716541981153545720382641121464347350418803619778012356652881811320323944548891548753811867678"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-118
+iter_exponent = 1.6
+
+[[preset]]
+name = "wake7_principal"
+kind = "misiurewicz"
+preperiod = 8
+period = 1
+description = "The principal branch point of the 1/7 wake."
+center_re = "0.397391822296541174984294368688579916992479541143994242786694180768290366991640352944969234568976625876331668018634180716"
+center_im = "0.133511204871877632657699517071768916616145330843731565206393795770314934660594111556322572873414011304048633950583899348"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-118
+iter_exponent = 1.6
+
+[[preset]]
+name = "seahorse_spiral"
+kind = "misiurewicz"
+preperiod = 24
+period = 1
+description = "The centre of the two-arm spiral in Seahorse Valley: about 29 turns per decade of zoom."
+center_re = "-0.775683768009053797469483503934741045728246504615800394794952001400666017222819589894883159368782255028252296689050972509"
+center_im = "0.13646736829469012473327440961784876519777211159246769640780019540083566597481550087544861124417865662570682305975983601"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-118
+iter_exponent = 1.6
+
+[[preset]]
+name = "misiurewicz_deep"
+kind = "misiurewicz"
+preperiod = 29
+period = 9
+description = "Repeats itself every 4.2 decades of zoom, as deep as its 160 digits allow."
+center_re = "-0.2071078670939677328939913262557801160643682191975378418909945675066652107482510225519172635508421458917878411156725153328182015367547687684156050923887645526936"
+center_im = "1.122757063632597484616024931109240715728480178497536814076561704566229022556298920961354163449163766075970255837931593601811198976744934134173059254309660565372"
+initial_span = 3.0
+suggested_palette = "hot"
+suggested_zoom_end = 1e-158
+iter_exponent = 1.6
+
+[[preset]]
+name = "seahorse_valley_cusp"
+kind = "landmark"
+description = "The root of the period-2 disc, where Seahorse Valley meets."
+center_re = "-0.750000000000000000000000000000"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-5
+
+[[preset]]
+name = "elephant_valley_cusp"
+kind = "landmark"
+description = "The cusp of the main cardioid, where Elephant Valley meets."
+center_re = "0.250000000000000000000000000000"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-5
+
+[[preset]]
+name = "triple_spiral_valley"
+kind = "landmark"
+description = "The root of the period-3 bulb."
+center_re = "-0.125000000000000000000000000000"
+center_im = "0.6495190528383289850727923780647021376036"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-5
+
+[[preset]]
+name = "quad_spiral_valley"
+kind = "landmark"
+description = "The root of the period-4 bulb."
+center_re = "0.250000000000000000000000000000"
+center_im = "0.500000000000000000000000000000"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-5
+
+[[preset]]
+name = "root_1_5"
+kind = "landmark"
+description = "The root of the 1/5 bulb."
+center_re = "0.3567627457812105680767200628871142941451"
+center_im = "0.3285819450744585037660431780299228795534"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-5
+
+[[preset]]
+name = "root_2_5"
+kind = "landmark"
+description = "The root of the 2/5 bulb."
+center_re = "-0.4817627457812105680767200628871142941451"
+center_im = "0.5316567552200249576134628106643819201503"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-5
+
+[[preset]]
+name = "scepter_valley"
+kind = "landmark"
+description = "The root of the period-4 bulb on the period-2 disc."
+center_re = "-1.250000000000000000000000000000"
+center_im = "0.0"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-5
+
+[[preset]]
+name = "root_1_100"
+kind = "landmark"
+description = "The root of the 1/100 bulb, deep in Elephant Valley."
+center_re = "0.2509846888855163232137201427352806463052"
+center_im = "0.00006195137358062669480942232868836807551285"
+initial_span = 3.0
+suggested_palette = "electric"
+suggested_zoom_end = 1e-5

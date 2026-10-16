@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/ref",
+    "crates/render",
+    "crates/store",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/QueenRose4444/rosie-mandlebrot"
+description = "Rosie_Mandlebrot: GPU deep zooms into the Mandelbrot set, with adaptive precision and crash-safe resume"
+
+[workspace.dependencies]
+rosie_mandlebrot_core = { path = "crates/core" }
+rosie_mandlebrot_ref = { path = "crates/ref" }
+rosie_mandlebrot_render = { path = "crates/render" }
+rosie_mandlebrot_store = { path = "crates/store" }
+
+# Shared third-party versions. Pinned here so the crates cannot drift apart.
+anyhow = "1"
+bytemuck = { version = "1.16", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
+crossbeam-channel = "0.5"
+# `termination` is what registers SIGTERM and SIGHUP. Without it ctrlc
+# installs a SIGINT handler only, and since entrypoint.sh `exec`s the binary
+# it runs as PID 1, where Linux discards signals that have no handler.
+# `docker stop` would then hang for the full 10s grace period and SIGKILL the
+# process mid-frame, which can corrupt the resume point.
+ctrlc = { version = "3.4", features = ["termination"] }
+humantime = "2.1"
+memory-stats = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+indicatif = "0.17"
+num-complex = "0.4"
+num_cpus = "1.16"
+nvml-wrapper = "0.10"
+pollster = "0.3"
+rayon = "1.10"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time", "local-time"] }
+wgpu = "30"
+# Stable-Rust portable SIMD.
+#
+# `wide` dispatches at COMPILE time via #[cfg(target_feature=...)], not at
+# runtime, and nothing here sets a target feature. The default builds therefore
+# get SSE2 only, so `f64x4` is compiled as two 128-bit halves rather than one
+# 256-bit AVX register, even on AVX2-capable CPUs.
+#
+# Enabling AVX2 is one line in .cargo/config.toml
+# (`rustflags = ["-C", "target-feature=+avx2,+fma"]`) and measured 6.5% on the
+# CPU kernel. It is deliberately not set: a binary built with +avx2 crashes
+# with SIGILL on any CPU without it, and 6.5% of a path that is already the
+# slow fallback is not worth shipping something that can die on another
+# machine. Anyone building for their own hardware can set it.
+wide = "0.7"
+
+# `rug` (GMP/MPFR) for the perturbation-theory reference orbit at deep zooms.
+rug = { version = "=1.28.0", default-features = false, features = ["float", "integer", "rational"] }
+# Pin gmp-mpfr-sys to 1.6.8 because 1.7.x dropped the prebuilt Windows-GNU
+# binaries and compiles GMP+MPFR+MPC from C source via autoconf. That compile
+# takes ~10+ minutes and triggers AV heuristics on every conftest.exe it
+# generates; 1.6.8's prebuilt libs unpack in seconds and skip all that.
+# (A source build can also choke on a build path containing parentheses.)
+gmp-mpfr-sys = { version = "=1.6.8", default-features = false, features = ["mpfr"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
