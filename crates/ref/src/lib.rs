@@ -19,6 +19,7 @@
 // only run when something has already gone wrong.
 #![allow(clippy::result_large_err)]
 
+pub mod exterior;
 pub mod ladder;
 mod xc;
 

@@ -92,8 +92,11 @@ too-low schedule shows up in the log rather than as a white frame.
 
 ### When to stop
 
-The first that applies wins. With none of them, the run continues until the location runs out:
-two featureless checks in a row end it.
+The first that applies wins. With none of them, the run continues until the location runs out. If
+the centre is outside the set, the run ends at the first frame that provably holds no part of it:
+the centre's distance from the set has a guaranteed lower bound, and once a frame's corners are
+nearer than that, it and every deeper frame are smooth gradient (`stop_reason` "past the set").
+Otherwise two featureless checks in a row end it.
 
 | option | |
 |---|---|
@@ -101,7 +104,7 @@ two featureless checks in a row end it.
 | `--duration 2h` | rendering time (`90s`, `30m`, `2h`, `30d`); survives a resume |
 | `--zoom-end 1e-20` | a span to stop at |
 | `--max-storage 100GB` | output size (`500MB`, `1.5TB`, `100GiB`) |
-| `--blank-stop-interval N` (20) | how often to look for featureless frames; 0 turns the check off |
+| `--blank-stop-interval N` (20) | how often to look for featureless frames; 0 turns this and the past-the-set stop off |
 | `--blank-stop-threshold F` (0.997) | the share of one colour that counts as featureless |
 | `--blank-stop-after S` | the span where checking starts; defaults to the preset's depth |
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4 — 2026-10-16
+
+- **A run ends where the picture does.** When the centre lies outside the set, the program works out
+  a guaranteed minimum distance from it to the set and stops at the first frame that cannot reach
+  that far: from there on every frame is smooth gradient. The 15-digit `seahorse` used to render to
+  frame 2373, the last ~460 frames all gradient; it now stops at 1914. Frames before the stop are
+  byte-identical to 0.1.3. `--blank-stop-interval 0` turns it off with the other auto-stops.
+
 ## 0.1.3 — 2026-10-16
 
 Fixes from re-running the outside test on 0.1.0 itself.

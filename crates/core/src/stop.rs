@@ -30,6 +30,10 @@ pub enum StopReason {
     BlankSaturated,
     /// Frames went uniform with pixels escaping early: a real dead end.
     BlankExterior,
+    /// The centre lies outside the set, further from it than the next frame
+    /// reaches: that frame and every later one are smooth gradient. Proven,
+    /// not judged from pixels (see [`frame_misses_set`]).
+    OutsideSet,
     /// The next frame needs a reference orbit value smaller than the GPU's f32
     /// orbit format can hold, so it would render wrong. Not a failure:
     /// the run went as deep as this renderer can go correctly.
@@ -83,6 +87,7 @@ impl fmt::Display for StopReason {
             StopReason::Recycle => "recycle",
             StopReason::BlankSaturated => "blank frames (solid interior at iteration cap)",
             StopReason::BlankExterior => "blank frames (featureless void)",
+            StopReason::OutsideSet => "past the set (only smooth gradient from here)",
             StopReason::EngineLimit => "reached the deepest this renderer draws correctly here",
             StopReason::RenderError => "render error",
             StopReason::EncodePipelineDead => "encode pipeline dead",
@@ -90,6 +95,16 @@ impl fmt::Display for StopReason {
         };
         f.write_str(s)
     }
+}
+
+/// Does a frame of this span miss the set entirely, given a proven lower bound
+/// on the centre's distance from it (log10)? The frame is `span` tall and
+/// `span · width / height` wide around the centre, so it misses the set when
+/// even its corners are closer to the centre than the bound.
+pub fn frame_misses_set(distance_bound_log10: f64, span: f64, width: u32, height: u32) -> bool {
+    let aspect = width as f64 / height as f64;
+    let half_diagonal = 0.5 * span * (1.0 + aspect * aspect).sqrt();
+    half_diagonal.log10() < distance_bound_log10
 }
 
 #[cfg(test)]
@@ -105,6 +120,7 @@ mod tests {
         StopReason::Recycle,
         StopReason::BlankSaturated,
         StopReason::BlankExterior,
+        StopReason::OutsideSet,
         StopReason::EngineLimit,
         StopReason::RenderError,
         StopReason::EncodePipelineDead,
@@ -127,9 +143,20 @@ mod tests {
             StopReason::DurationReached,
             StopReason::MaxStorageReached,
             StopReason::UserRequested,
+            StopReason::OutsideSet,
         ] {
             assert_eq!(r.status(), "stopped", "{r:?}");
         }
+    }
+
+    #[test]
+    fn a_frame_misses_the_set_only_when_its_corners_do() {
+        // Bound 1e-10. A square frame's half-diagonal is span · 0.707.
+        assert!(!frame_misses_set(-10.0, 1.5e-10, 100, 100)); // corner 1.06e-10 reaches past it
+        assert!(frame_misses_set(-10.0, 1.3e-10, 100, 100)); // corner 0.92e-10 does not
+        // A 16:9 frame is wider, so the same span still reaches the set.
+        assert!(!frame_misses_set(-10.0, 1.3e-10, 1920, 1080));
+        assert!(frame_misses_set(-10.0, 0.9e-10, 1920, 1080)); // corner 0.92e-10
     }
 
     #[test]

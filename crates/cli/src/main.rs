@@ -556,6 +556,21 @@ fn run() -> anyhow::Result<()> {
     let mut recent_durations: std::collections::VecDeque<Duration> =
         std::collections::VecDeque::with_capacity(3);
 
+    // A centre outside the set has a proven minimum distance from it. Once a
+    // frame no longer reaches that far, it and every frame after it are smooth
+    // gradient, so the run ends there rather than when a frame finally turns
+    // one flat colour. Off with the rest of the auto-stop.
+    let exterior_bound_log10 = if run_cfg.blank_stop_interval > 0 {
+        rosie_mandlebrot_ref::exterior::exterior_distance_log10(&center_re, &center_im, run_cfg.sequence.iter_cap)
+    } else {
+        None
+    };
+    if let Some(bound) = exterior_bound_log10 {
+        tracing::info!(
+            "the centre is outside the set, at least 1e{bound:.2} from it: the run ends once a frame no longer reaches that far"
+        );
+    }
+
     // Consecutive "blank" samples for the featureless-frame auto-stop. Two in a
     // row (blank_stop_interval frames apart) end the run.
     let mut blank_streak: u32 = 0;
@@ -655,6 +670,11 @@ fn run() -> anyhow::Result<()> {
         if let Some(end) = run_cfg.zoom_end {
             if params.span <= end {
                 break StopReason::ZoomEndReached;
+            }
+        }
+        if let Some(bound) = exterior_bound_log10 {
+            if rosie_mandlebrot_core::stop::frame_misses_set(bound, params.span, run_cfg.width, run_cfg.height) {
+                break StopReason::OutsideSet;
             }
         }
 

@@ -121,9 +121,11 @@ hand-picked place. Some to start with:
 | `misiurewicz_deep` | repeats itself every 4.2 decades | 1e-158 |
 
 A location's depth is honest: every centre was derived from its defining equation and is re-checked
-by the test suite. Past that depth there is nothing new to see. Without a stop limit the run keeps
-going until a frame is almost one flat colour, which can be a hundred frames or more of smooth
-gradients past the depth; add `--zoom-end` with the listed depth to stop there.
+by the test suite. Past that depth there is nothing new to see. Without a stop limit the run ends
+by itself: when the centre lies outside the set, as soon as a frame provably holds none of it (only
+smooth gradient is left; `seahorse` stops at frame 1914, about 150 frames past its depth); when
+it is inside or on the edge, once frames turn one flat colour. `--zoom-end` with the listed depth
+stops exactly there.
 
 Your own location: `--center="-0.7453,0.1127" --initial-span 0.01`. Write the centre with one digit
 per decade of zoom you want, and check it first with `--ladder`, which prints the minibrots near

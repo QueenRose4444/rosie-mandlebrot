@@ -116,3 +116,30 @@ fn no_view_claims_more_depth_than_its_ladder() {
         );
     }
 }
+
+#[test]
+fn no_preset_is_cut_short_by_the_outside_the_set_stop() {
+    // Where a preset's centre escapes, the run ends once a frame no longer
+    // reaches the set. That must not come well before the depth the preset
+    // promises: allow 30% (tendrils's corners leave the set at 6.8e-6, just
+    // above its listed 6.0e-6), no more.
+    use rosie_mandlebrot_core::stop::frame_misses_set;
+    use rosie_mandlebrot_ref::exterior::exterior_distance_log10;
+    let mut checked = 0;
+    for p in load_presets(None).unwrap() {
+        let Some(bound) = exterior_distance_log10(&p.center_re, &p.center_im, 200_000) else { continue };
+        let span = p.suggested_zoom_end.to_f64().unwrap_or(0.0) * 1.3;
+        assert!(!frame_misses_set(bound, span, 1, 1), "{}: bound 1e{bound:.2} stops above 1.3 x its depth {}", p.name, p.suggested_zoom_end);
+        checked += 1;
+    }
+    assert!(checked >= 10, "only {checked} presets escape");
+}
+
+#[test]
+fn the_fifteen_digit_seahorse_leaves_the_set_where_its_frames_went_smooth() {
+    // A stranger's run of this centre turned to gradients near 2e-16 and kept
+    // rendering to 4.7e-21. The bound puts the last frame that reaches the set
+    // between the two.
+    let bound = rosie_mandlebrot_ref::exterior::exterior_distance_log10("-0.743643887037151", "0.131825904205330", 200_000).unwrap();
+    assert!(bound < (2e-16f64).log10() && bound > (4.7e-21f64).log10(), "1e{bound:.2}");
+}

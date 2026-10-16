@@ -109,7 +109,8 @@ pub struct Cli {
     /// Auto-stop when frames go featureless ("blank"). Every Nth frame, if a
     /// single color covers >= --blank-stop-threshold of the frame (zoomed into
     /// a solid inside-set body, or a flat exterior void) for two consecutive
-    /// checks, the run ends. 0 disables. Cheap (one pass every N frames); guards
+    /// checks, the run ends. 0 disables this and the stop at the first frame
+    /// that provably holds no part of the set. Cheap (one pass every N frames); guards
     /// long unattended runs from burning storage on a dead-end location.
     #[arg(long, default_value_t = 20)]
     pub blank_stop_interval: u64,
