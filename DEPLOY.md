@@ -30,7 +30,7 @@ or reload the module with nothing using the GPU
 ## 2. Run it
 
 [`docker-compose.yml`](docker-compose.yml) runs one render with a 2 GB memory cap, restarting on
-failure and resuming from the last saved frame. It and the optional gallery live in the repository,
+failure and resuming where it stopped. It and the optional gallery live in the repository,
 so start from a clone:
 
 ```bash
@@ -42,9 +42,10 @@ docker compose logs -f
 ```
 
 Change the render in the compose file's `command:` (for example
-`--preset seahorse_deep --res 4k --max-storage 100GB`). Frames, `progress.json` and the video land
-in `mandelbrot_out/`; the checkpoint in `mandelbrot_state/` and the log in
-`mandelbrot_state/rosie-mandlebrot/logs/`.
+`--preset seahorse_deep --res 4k --max-storage 100GB`). The video (`zoom.mkv`), the keyframe strip
+it is made from (`keyframes/`, which is also the checkpoint) and `progress.json` land in
+`mandelbrot_out/`; the log in `mandelbrot_state/rosie-mandlebrot/logs/`. A run started frame by
+frame (with 0.1 or `--per-frame`) carries on frame by frame, with its checkpoint in `mandelbrot_state/`.
 
 When a run finishes, the container idles instead of starting over. A run that was stopped (`stop`,
 `docker stop`, a reboot) or that failed is resumed on the next start. To start a new run, empty
@@ -83,27 +84,34 @@ toolkit mounts the Vulkan driver.
 
 ## 4. Sizing
 
-- **RAM:** measured peak 754 MB for a deep 4K run in the container (2 encoders). Each PNG encoder thread holds one frame, so
-  `--encode-threads` (default: half the cores, at most 4) is the setting that moves memory.
-- **CPU:** the GPU does the pixel work; the CPU computes one reference orbit per frame and encodes
-  PNGs. `--cpu-percent 50` (or the compose `cpus:` limit) caps it.
-- **Disk:** 0.3–1 MB per 1080p frame, about four times that at 4K. `--max-storage 100GB` stops the
-  run before the disk fills; `--save-every N` keeps every Nth frame.
+- **RAM:** measured peaks (Windows, RTX 3060 Ti): about 200 MB for a 1080p run; at 4096×4096, 536 MB
+  while rendering the strip and 424 MB while making the video. `--per-frame` runs measured 754 MB for
+  a deep 4K run in the container (2 encoders); there each PNG encoder thread holds one frame, so
+  `--encode-threads` is the setting that moves memory.
+- **GPU memory:** up to 512 MB while the video is made (120 MB at 1080×1080), on top of the render.
+- **CPU:** the GPU does the pixel work; the CPU computes one reference orbit per strip chunk and
+  compresses the strip. `--cpu-percent 50` (or the compose `cpus:` limit) caps it.
+- **Disk:** the strip is 9–21 MB per tenfold zoom at 1080p and about twelve times that at
+  4096×4096 (`seahorse` from 3 to 1e-15: 167 MB and 1.98 GB). `--max-storage 100GB` stops the run
+  before the disk fills.
 
 ## 5. The video
 
-The render makes the video itself when the run ends. To redo it, for example with another codec:
+The render makes the video itself when the run ends. To make it again from the strip, for example
+with another palette, speed or codec (seconds to minutes, nothing is re-rendered):
 
 ```bash
-docker compose run --rm mandelbrot --encode-only --run 1 --video-codec h265
+docker compose run --rm mandelbrot --assemble --palette electric --video-codec h265
 ```
 
-ffmpeg reads the frames as a stream, so even 100 GB of 4K frames encodes within the memory cap.
+For a `--per-frame` run use `--encode-only --run 1` instead; ffmpeg reads the frames as a stream, so
+even 100 GB of 4K frames encodes within the memory cap.
 
 ## 6. A gallery (optional)
 
 [`gallery/`](gallery) is a small nginx page showing the newest frame and a grid of the rest, with
-server-side thumbnails so 4K frames load quickly:
+server-side thumbnails so 4K frames load quickly. It needs saved frames, so it shows `--per-frame`
+runs only:
 
 ```bash
 docker compose --profile gallery up -d      # then open http://localhost:8080

@@ -299,11 +299,13 @@ fn run() -> anyhow::Result<()> {
         std::process::exit(code);
     }
 
-    if cli.keyframes {
-        let stop = Arc::new(AtomicBool::new(false));
-        install_stop_handlers(&cli, stop.clone());
+    if keyframes_mode(&cli, &state_path) {
+        // `stop` typed into the terminal (or `docker attach`) and signals end it the same way.
+        let signals = StdinSignals::default();
+        let _stdin = crate::stdin_cmds::spawn_listener(signals.clone());
+        install_stop_handlers(&cli, signals.stop.clone());
         size_thread_pool(&cli);
-        let code = crate::keyframes::run(&cli, &run_cfg, shader_dir, stop)?;
+        let code = crate::keyframes::run(&cli, &run_cfg, shader_dir, signals.stop.clone())?;
         std::io::stdout().flush().ok();
         std::process::exit(code);
     }
@@ -1311,6 +1313,31 @@ fn run() -> anyhow::Result<()> {
     // status=stopped), so skip Drop and exit immediately.
     std::io::stdout().flush().ok();
     std::process::exit(exit_code);
+}
+
+/// Keyframes unless `--per-frame` — or unless this resumes a run that was
+/// started frame by frame (with v0.1, or with `--per-frame`): a resumed run
+/// carries on the way it started.
+fn keyframes_mode(cli: &Cli, state_path: &std::path::Path) -> bool {
+    if cli.per_frame {
+        return false;
+    }
+    let strip = crate::keyframes::strip_dir(&cli.resolved_output());
+    let resuming_frames = cli.resume
+        && !cli.new_run
+        && !strip.join("manifest.json").exists()
+        && state_path.exists()
+        && StateStore::open(state_path).ok().and_then(|s| s.latest_run().ok().flatten()).is_some();
+    if resuming_frames {
+        tracing::info!("resuming a frame-by-frame run; it continues frame by frame (start a new run for keyframes)");
+        return false;
+    }
+    for (set, flag) in [(cli.save_every.is_some_and(|n| n > 1), "--save-every"), (cli.recycle_after.is_some(), "--recycle-after")] {
+        if set {
+            tracing::warn!("{flag} applies to --per-frame runs only; ignored");
+        }
+    }
+    true
 }
 
 /// SIGINT / SIGTERM / SIGHUP: the **first** signal sets `stop` (a graceful stop),

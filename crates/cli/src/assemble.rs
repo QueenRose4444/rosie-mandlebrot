@@ -11,9 +11,9 @@ use rosie_mandlebrot_core::encode::{measure_tone_range, ToneRange, ToneSmoother}
 use rosie_mandlebrot_core::error::MbError;
 use rosie_mandlebrot_core::palette::ColorScheme;
 use rosie_mandlebrot_core::types::PixelOut;
-use rosie_mandlebrot_render::assembler::{AsmFrame, Assembler};
+use rosie_mandlebrot_render::assembler::{window_bytes, AsmFrame, Assembler, GroupSpec};
 use rosie_mandlebrot_render::GpuCtx;
-use rosie_mandlebrot_store::keyframes::{read_chunk, read_manifest, ChunkStats, Manifest, StripGeometry};
+use rosie_mandlebrot_store::keyframes::{read_block, read_manifest, ChunkStats, Manifest, StripGeometry, BLOCK_ROWS};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -25,7 +25,7 @@ pub(crate) enum Tone {
     /// One range per depth of the strip (smoothed over depth): a location has
     /// the same colour in every frame that shows it.
     Location,
-    /// Each frame's own range, as the per-frame renderer does (D-06), with the
+    /// Each frame's own range, as the per-frame renderer does, with the
     /// same `--tone-smoothing`.
     PerFrame,
 }
@@ -73,21 +73,27 @@ impl Options {
     }
 }
 
-/// Smoothing of the per-chunk tone ranges across depth, in chunks (octaves).
-const TONE_SIGMA: f64 = 1.5;
+/// [`WINDOW_BUDGET`], or `MANDELBROT_ASM_BUDGET_MB` for measuring the thinned path.
+fn window_budget() -> u64 {
+    std::env::var("MANDELBROT_ASM_BUDGET_MB").ok().and_then(|v| v.parse::<u64>().ok()).map_or(WINDOW_BUDGET, |mb| mb << 20)
+}
+
+/// Smoothing of the per-chunk tone ranges across depth, in octaves.
+const TONE_SIGMA_OCTAVES: f64 = 1.5;
 
 /// Each strip row's (lo, hi) for [`Tone::Location`]: every chunk's 0.5th and
-/// 99.5th percentile of escape values, Gaussian-smoothed over depth so the
+/// 99.5th percentile of escape values, Gaussian-smoothed over depth (σ 1.5 octaves) so the
 /// range drifts instead of stepping, then interpolated between chunk centres.
 fn location_tone(m: &Manifest) -> Vec<[f32; 2]> {
     let centres: Vec<f64> = m.chunks.iter().map(|c| c.row0 as f64 + f64::from(c.rows) * 0.5).collect();
     let usable = |s: &ChunkStats| s.escaped > 0 && s.p995 > s.p005;
+    let sigma_rows = TONE_SIGMA_OCTAVES * m.geometry.rows_per_octave();
     let smooth = |pick: fn(&ChunkStats) -> f32| -> Vec<f64> {
         (0..m.chunks.len())
             .map(|i| {
                 let (mut sum, mut wsum) = (0.0, 0.0);
                 for (j, c) in m.chunks.iter().enumerate().filter(|(_, c)| usable(&c.stats)) {
-                    let w = (-((i as f64 - j as f64) / TONE_SIGMA).powi(2) * 0.5).exp();
+                    let w = (-((centres[i] - centres[j]) / sigma_rows).powi(2) * 0.5).exp();
                     sum += w * f64::from(pick(&c.stats));
                     wsum += w;
                 }
@@ -113,13 +119,97 @@ fn location_tone(m: &Manifest) -> Vec<[f32; 2]> {
     out
 }
 
-/// Strip rows wanted by the frame whose pixel is `exp(ln_p)` plane units.
-fn rows_for(g: &StripGeometry, ln_p: f64, half_diag: f64) -> (f64, i64, i64) {
-    let d = g.d();
-    let a = (g.ln_r0 - ln_p) / d;
-    let corner = a - half_diag.ln() / d;
-    let centre = a - MIN_RADIUS_PX.ln() / d;
-    (a, (corner.floor() as i64 - 1).max(0), centre.ceil() as i64 + 2)
+/// GPU memory the assembler aims to stay within. A frame's window is about
+/// twelve octaves of strip rows: 293 MB at 1920x1080 with every column kept,
+/// 2.2 GB at 4096x4096, so big frames thin the columns of their deeper rows.
+pub(crate) const WINDOW_BUDGET: u64 = 512 << 20;
+
+/// Rows of margin around each group's band, for the second row of taps.
+const MARGIN: f64 = 4.0;
+/// Spare rows in each ring beyond its band: a frame moves about 22 rows at
+/// 1080p and 58 at 4096x4096 (zoom 0.98), and rows are uploaded as they enter.
+const SLACK_ROWS: u32 = 256;
+
+/// How a frame's rows are grouped for the assembler.
+#[derive(Debug, Clone)]
+pub(crate) struct Plan {
+    /// Octaves below the corner kept whole (group 0).
+    pub full_octaves: u32,
+    pub groups: Vec<GroupSpec>,
+    /// Rows per octave, and rows from the corner to [`MIN_RADIUS_PX`].
+    rows_per_octave: f64,
+    depth_rows: f64,
+}
+
+impl Plan {
+    /// The most columns that fit `budget`: every group as fine as possible,
+    /// thinning (by halves, at most 64x) only below the octave where it must.
+    pub(crate) fn new(g: &StripGeometry, half_diag: f64, budget: u64) -> Plan {
+        let rows_per_octave = std::f64::consts::LN_2 / g.d();
+        let depth_rows = (half_diag / MIN_RADIUS_PX).ln() / g.d();
+        let octaves = (depth_rows / rows_per_octave).ceil().max(1.0) as u32;
+        let max_pow = g.cols.trailing_zeros().min(6);
+        let mut best = None;
+        for full in (1..=octaves).rev() {
+            let ng = (octaves - full + 1).min(max_pow + 1);
+            let mut p = Plan { full_octaves: full, groups: Vec::new(), rows_per_octave, depth_rows };
+            p.groups = (0..ng)
+                .map(|gi| {
+                    let (lo, hi) = p.band(0.0, gi as usize, ng as usize);
+                    GroupSpec { stride: 1 << gi.min(max_pow), ring_rows: (hi - lo).ceil() as u32 + SLACK_ROWS }
+                })
+                .collect();
+            let fits = window_bytes(g.cols, &p.groups) <= budget;
+            best = Some(p);
+            if fits {
+                break;
+            }
+        }
+        best.expect("at least one octave")
+    }
+
+    /// Group `gi`'s rows for a frame whose corner is at strip row `corner`,
+    /// as `[lo, hi)` (unclipped).
+    fn band(&self, corner: f64, gi: usize, ng: usize) -> (f64, f64) {
+        let r = self.rows_per_octave;
+        let f = f64::from(self.full_octaves);
+        let lo = if gi == 0 { corner - MARGIN } else { corner + (f + gi as f64 - 1.0) * r - MARGIN };
+        let hi = if gi + 1 == ng { corner + self.depth_rows + 2.0 } else { corner + (f + gi as f64) * r + MARGIN };
+        (lo, hi)
+    }
+}
+
+/// Decoded blocks of strip rows ([`BLOCK_ROWS`] each), thinned to the columns
+/// of the group that reads them. A row enters a frame at its centre (the
+/// thinnest group) and moves out to the corner (full width); each group decodes
+/// a block once and drops it as soon as it is on the GPU, so about one block
+/// per group is held, whatever the frame size.
+struct BlockCache<'a> {
+    dir: &'a Path,
+    cols: u32,
+    held: std::collections::HashMap<(u32, usize, u32), std::rc::Rc<Vec<u32>>>,
+}
+
+impl BlockCache<'_> {
+    fn get(&mut self, chunk: u32, block: usize, stride: u32) -> anyhow::Result<std::rc::Rc<Vec<u32>>> {
+        if let Some(d) = self.held.get(&(chunk, block, stride)) {
+            return Ok(d.clone());
+        }
+        let full = read_block(self.dir, chunk, block)?;
+        let data = if stride == 1 {
+            full
+        } else {
+            full.chunks_exact(self.cols as usize).flat_map(|r| r.iter().step_by(stride as usize).copied()).collect()
+        };
+        let data = std::rc::Rc::new(data);
+        self.held.insert((chunk, block, stride), data.clone());
+        Ok(data)
+    }
+
+    /// Forget blocks a group has moved past: `keep(chunk, block, stride)`.
+    fn release(&mut self, keep: impl Fn(u32, usize, u32) -> bool) {
+        self.held.retain(|&(chunk, block, stride), _| keep(chunk, block, stride));
+    }
 }
 
 /// [`run`] for a command line: logs the outcome and returns the exit code (0,
@@ -164,17 +254,17 @@ pub(crate) fn run(
     let z = opt.zoom_factor.unwrap_or(m.zoom_factor);
     let end_span = deepest_frame_span(&m).max(m.video_end_span.unwrap_or(0.0));
     let frames = ((end_span / m.initial_span).ln() / z.ln()).floor().max(0.0) as u64 + 1;
-    let rows_per_chunk = m.chunks.iter().map(|c| c.rows).max().unwrap_or(1);
-    let window = (half_diag / MIN_RADIUS_PX).ln() / g.d();
-    let ring_rows = window.ceil() as u32 + 2 * rows_per_chunk + 8;
+    let plan = Plan::new(g, half_diag, window_budget());
     let lut = opt.palette.lut_1024();
-    let asm = Assembler::new(gpu, g.cols, ring_rows, w, h, &lut)?;
-    let tone_rows = location_tone(&m);
+    let total_rows = m.next_row();
+    let asm = Assembler::new(gpu, g.cols, &plan.groups, total_rows as u32, w, h, &lut)?;
+    asm.set_tone(gpu, &location_tone(&m));
     tracing::info!(
-        "assembling {frames} frames at {w}x{h}, {} fps, zoom {z} per frame, from {} strip rows ({:.0} MB GPU window)",
+        "assembling {frames} frames at {w}x{h}, {} fps, zoom {z} per frame, from {total_rows} strip rows ({:.0} MB GPU window, {} octaves at full width{})",
         opt.fps,
-        m.next_row(),
-        f64::from(ring_rows) * f64::from(g.cols) * 4.0 / 1e6
+        window_bytes(g.cols, &plan.groups) as f64 / 1e6,
+        plan.full_octaves,
+        if plan.groups.len() > 1 { format!(", then {} thinner groups", plan.groups.len() - 1) } else { String::new() }
     );
 
     let video_path = output.join(format!("zoom.{}", opt.container));
@@ -192,10 +282,14 @@ pub(crate) fn run(
     };
 
     let mut stats_csv = String::from("frame,span,mean_luma\n");
-    let mut loaded_hi: i64 = 0; // first strip row not yet in the ring
-    let mut next_chunk = 0usize;
+    let ng = plan.groups.len();
+    // First strip row not yet loaded, per group.
+    let mut loaded = vec![0u64; ng];
+    let mut cache = BlockCache { dir: &dir, cols: g.cols, held: Default::default() };
     let mut smoother = ToneSmoother::new(opt.tone_smoothing);
+    let mut sys = crate::sysstats::SysStats::new(num_cpus::get());
     let mut done = 0u64;
+    let br = u64::from(BLOCK_ROWS);
     for k in 0..frames {
         if stop.load(Ordering::SeqCst) {
             tracing::warn!("stopped after {done} frames");
@@ -203,23 +297,34 @@ pub(crate) fn run(
         }
         let span = m.initial_span * z.powf(k as f64);
         let ln_p = (span / f64::from(h)).ln();
-        let (a, lo_row, hi_row) = rows_for(g, ln_p, half_diag);
-        let hi_row = hi_row.min(m.next_row() as i64);
-        while loaded_hi < hi_row && next_chunk < m.chunks.len() {
-            let rec = &m.chunks[next_chunk];
-            let c = read_chunk(&dir, rec.index)?;
-            let at = (rec.row0 % u64::from(ring_rows)) as u32;
-            asm.write_rows(gpu, at, &c.data, &tone_rows[rec.row0 as usize..(rec.row0 + u64::from(rec.rows)) as usize]);
-            loaded_hi = (rec.row0 + u64::from(rec.rows)) as i64;
-            next_chunk += 1;
+        let corner = (g.ln_r0 - ln_p - half_diag.ln()) / g.d();
+        let mut windows = Vec::with_capacity(ng);
+        for (gi, spec) in plan.groups.iter().enumerate() {
+            let (lo, hi) = plan.band(corner, gi, ng);
+            let lo = lo.floor().max(0.0) as u64;
+            let hi = (hi.ceil().max(0.0) as u64).min(total_rows);
+            // Rows above the band are never read again; skip straight to it.
+            loaded[gi] = loaded[gi].max(lo);
+            let gcols = asm.group_cols(gi) as usize;
+            while loaded[gi] < hi {
+                let rec = &m.chunks[m.chunks.partition_point(|c| c.row0 + u64::from(c.rows) <= loaded[gi])];
+                let b = ((loaded[gi] - rec.row0) / br) as usize;
+                let block_row0 = rec.row0 + b as u64 * br;
+                let end = (block_row0 + br).min(rec.row0 + u64::from(rec.rows)).min(hi);
+                let data = cache.get(rec.index, b, spec.stride)?;
+                let from = (loaded[gi] - block_row0) as usize * gcols;
+                let to = (end - block_row0) as usize * gcols;
+                asm.write_rows(gpu, gi, loaded[gi], &data[from..to]);
+                loaded[gi] = end;
+            }
+            windows.push((lo as u32, loaded[gi] as u32));
         }
-        let mut f = AsmFrame {
-            ring_off: (lo_row as u64 % u64::from(ring_rows)) as u32,
-            win_rows: (hi_row - lo_row).max(1) as u32,
-            a_k: a - lo_row as f64,
-            sub: opt.sub,
-            tone_global: None,
-        };
+        // Keep only the block each group is part-way through; the rest is on the GPU.
+        cache.release(|chunk, block, stride| {
+            let block_end = m.chunks[chunk as usize].row0 + (block as u64 + 1) * br;
+            plan.groups.iter().zip(&loaded).any(|(spec, &next)| spec.stride == stride && block_end > next)
+        });
+        let mut f = AsmFrame { corner_row: corner, full_octaves: plan.full_octaves, loaded: windows, sub: opt.sub, tone_global: None };
         if opt.tone == Tone::PerFrame {
             // The frame's own range, measured exactly as the per-frame encoder
             // measures it, from the value at each pixel centre.
@@ -234,7 +339,9 @@ pub(crate) fn run(
         }
         let rgba = asm.frame(gpu, &f)?;
         let luma: f64 = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| 0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2]))
             .sum::<f64>()
             / f64::from(w * h);
@@ -243,10 +350,11 @@ pub(crate) fn run(
             let max_iter = m
                 .chunks
                 .iter()
-                .filter(|c| (c.row0 as i64) < hi_row && ((c.row0 + u64::from(c.rows)) as i64) > lo_row)
+                .filter(|c| f.loaded.iter().any(|&(lo, hi)| c.row0 < u64::from(hi) && c.row0 + u64::from(c.rows) > u64::from(lo)))
                 .map(|c| c.max_iter)
                 .max()
                 .unwrap_or(256);
+            let tone_rows = location_tone(&m);
             let ctx = Colouring { m: &m, tone_rows: &tone_rows, lut: &lut, ln_p, tone_global: f.tone_global, w, h };
             for (name, factor) in [("direct", 1u32), ("truth5x5", 5)] {
                 let img = render_reference(gpu, span, factor, max_iter, &ctx)?;
@@ -268,6 +376,9 @@ pub(crate) fn run(
             p.stdin.as_mut().expect("piped stdin").write_all(&rgba).map_err(|e| MbError::Ffmpeg(format!("writing to ffmpeg: {e}")))?;
         }
         done += 1;
+        if k % 25 == 0 {
+            let _ = sys.memory();
+        }
         if k % 100 == 0 {
             tracing::info!("assembled frame {k}/{frames} (span {span:.3e})");
         }
@@ -283,6 +394,9 @@ pub(crate) fn run(
         tracing::info!("video: {}", video_path.display());
     }
     tracing::info!("assembly GPU time {:.1} ms over {done} frames", asm.shader_ms());
+    if let Some((_, peak)) = sys.memory() {
+        tracing::info!("assembly peak RAM {:.0} MB", peak as f64 / 1048576.0);
+    }
     Ok(())
 }
 
@@ -425,15 +539,38 @@ mod tests {
     }
 
     #[test]
-    fn a_frames_rows_run_from_its_corner_to_its_centre() {
-        let g = StripGeometry::new(64, 36, 0.0);
-        let half = 64f64.hypot(36.0) * 0.5;
-        // The frame whose corner is row 0: pixel = r0 / half-diagonal.
-        let ln_p = g.ln_r0 - half.ln();
-        let (a, lo, hi) = rows_for(&g, ln_p, half);
-        assert_eq!(lo, 0);
-        assert!((a - half.ln() / g.d()).abs() < 1e-9);
-        let centre = (half / MIN_RADIUS_PX).ln() / g.d();
-        assert_eq!(hi, centre.ceil() as i64 + 2);
+    fn small_frames_keep_every_column_and_big_ones_fit_the_budget() {
+        let g1080 = StripGeometry::new(1920, 1080, 0.0);
+        let p = Plan::new(&g1080, g1080.half_diagonal_px(), WINDOW_BUDGET);
+        assert_eq!(p.groups.len(), 1, "{p:?}");
+        assert!(window_bytes(g1080.cols, &p.groups) <= WINDOW_BUDGET);
+        let g4k = StripGeometry::new(4096, 4096, 0.0);
+        let p = Plan::new(&g4k, g4k.half_diagonal_px(), WINDOW_BUDGET);
+        assert!(p.groups.len() > 1, "{p:?}");
+        assert!(window_bytes(g4k.cols, &p.groups) <= WINDOW_BUDGET, "{} MB", window_bytes(g4k.cols, &p.groups) >> 20);
+        // Strides double group by group and divide the columns.
+        for (i, gr) in p.groups.iter().enumerate() {
+            assert_eq!(gr.stride, 1 << i);
+            assert_eq!(g4k.cols % gr.stride, 0);
+        }
+    }
+
+    #[test]
+    fn bands_cover_the_frame_from_corner_to_centre_without_gaps() {
+        let g = StripGeometry::new(4096, 4096, 0.0);
+        let p = Plan::new(&g, g.half_diagonal_px(), WINDOW_BUDGET);
+        let ng = p.groups.len();
+        let corner = 12345.6;
+        let bands: Vec<_> = (0..ng).map(|i| p.band(corner, i, ng)).collect();
+        assert!(bands[0].0 <= corner - 1.0);
+        for w in bands.windows(2) {
+            assert!(w[1].0 < w[0].1, "gap between bands: {w:?}");
+        }
+        let centre = corner + (g.half_diagonal_px() / MIN_RADIUS_PX).ln() / g.d();
+        assert!(bands[ng - 1].1 >= centre + 1.0);
+        // Every band fits its ring with rows to spare for the frames that follow.
+        for (b, gr) in bands.iter().zip(&p.groups) {
+            assert!(f64::from(gr.ring_rows) >= b.1 - b.0 + f64::from(SLACK_ROWS));
+        }
     }
 }

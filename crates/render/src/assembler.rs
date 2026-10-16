@@ -5,6 +5,11 @@
 //! at a time. A frame reads the rows from its corner down to a third of a
 //! pixel from its centre, about twelve octaves; consecutive frames share
 //! almost all of them, so each frame uploads only the rows that are new.
+//!
+//! Rows are held in groups by how many octaves inside the frame they sit
+//! ([`GroupSpec`]): a row k octaves in has 2^k strip columns per output pixel,
+//! so deeper groups may keep every 2nd, 4th ... column and the window fits in
+//! GPU memory at any frame size.
 
 use crate::gpu::GpuCtx;
 use bytemuck::{Pod, Zeroable};
@@ -16,43 +21,65 @@ use wgpu::util::DeviceExt;
 struct AsmUniforms {
     out_w: u32,
     out_h: u32,
-    cols: u32,
-    ring_rows: u32,
-    ring_off: u32,
-    win_rows: u32,
+    ngroups: u32,
+    full_octaves: u32,
     sub: u32,
     tone_global: u32,
-    a_k: f32,
+    corner_int: u32,
+    pad0: u32,
+    corner_frac: f32,
     inv_d: f32,
+    ln_rho: f32,
     lo: f32,
     hi: f32,
+    pad1: [f32; 3],
 }
 
-/// Where one frame sits in the window of rows currently loaded.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Debug, Default)]
+struct GroupGpu {
+    base: u32,
+    cols: u32,
+    ring_rows: u32,
+    stride: u32,
+    lo: u32,
+    hi: u32,
+    pad: [u32; 2],
+}
+
+/// One group of rows: every `stride`-th strip column, `ring_rows` rows deep.
 #[derive(Debug, Clone, Copy)]
+pub struct GroupSpec {
+    pub stride: u32,
+    pub ring_rows: u32,
+}
+
+/// Where one frame sits in the strip.
+#[derive(Debug, Clone)]
 pub struct AsmFrame {
-    /// Ring row holding the window's first row.
-    pub ring_off: u32,
-    /// Rows loaded from there on.
-    pub win_rows: u32,
-    /// `(ln_r0 − ln p)/d − first window row`, where p is this frame's pixel
-    /// size in plane units: the window row at one pixel from the centre.
-    pub a_k: f64,
+    /// The strip row of the frame's corner (an f64: it can be large and must
+    /// stay exact to a small fraction of a row).
+    pub corner_row: f64,
+    /// Octaves from the corner kept whole by group 0.
+    pub full_octaves: u32,
+    /// Global rows loaded in each group, `[lo, hi)`.
+    pub loaded: Vec<(u32, u32)>,
     /// Sub-samples per pixel edge.
     pub sub: u32,
     /// `Some((lo, hi))`: colour every sample against this range (a per-frame
-    /// tone); `None`: each row's own range from [`Assembler::write_rows`].
+    /// tone); `None`: each row's own range from [`Assembler::set_tone`].
     pub tone_global: Option<(f32, f32)>,
 }
 
 pub struct Assembler {
-    cols: u32,
-    ring_rows: u32,
     out_w: u32,
     out_h: u32,
     inv_d: f32,
+    ln_rho: f32,
+    groups: Vec<GroupGpu>,
     strip: wgpu::Buffer,
     tone: wgpu::Buffer,
+    group_buf: wgpu::Buffer,
     out_px: wgpu::Buffer,
     out_val: wgpu::Buffer,
     uniforms: wgpu::Buffer,
@@ -61,13 +88,35 @@ pub struct Assembler {
     values: wgpu::ComputePipeline,
     staging: std::sync::Mutex<Option<wgpu::Buffer>>,
     shader_ms: std::cell::Cell<f64>,
+    /// Bytes queued with `write_buffer` since the last submission.
+    unsubmitted: std::cell::Cell<u64>,
+}
+
+/// Queued uploads are staged in host memory until submitted; the first frame
+/// fills the whole window (up to the 512 MB budget), so they are submitted and
+/// retired every this many bytes.
+const UPLOAD_FLUSH_BYTES: u64 = 64 << 20;
+
+/// Bytes of GPU memory the groups' rings take.
+pub fn window_bytes(cols: u32, groups: &[GroupSpec]) -> u64 {
+    groups.iter().map(|g| u64::from(g.ring_rows) * u64::from(cols.div_ceil(g.stride)) * 4).sum()
 }
 
 impl Assembler {
     /// `lut` is the palette, 1024 entries, as the per-frame encoder uses it.
-    pub fn new(gpu: &GpuCtx, cols: u32, ring_rows: u32, out_w: u32, out_h: u32, lut: &[[u8; 3]; 1024]) -> MbResult<Self> {
+    /// `total_rows` is the length of the strip (for the per-row tone ranges);
+    /// `cols` must be divisible by every group's stride.
+    pub fn new(
+        gpu: &GpuCtx,
+        cols: u32,
+        groups: &[GroupSpec],
+        total_rows: u32,
+        out_w: u32,
+        out_h: u32,
+        lut: &[[u8; 3]; 1024],
+    ) -> MbResult<Self> {
         let device = &gpu.device;
-        let strip_bytes = u64::from(ring_rows) * u64::from(cols) * 4;
+        let strip_bytes = window_bytes(cols, groups);
         let limits = device.limits();
         if strip_bytes > limits.max_storage_buffer_binding_size || strip_bytes > limits.max_buffer_size {
             return Err(MbError::GpuInit(format!(
@@ -85,7 +134,18 @@ impl Assembler {
             })
         };
         let strip = storage("asm-strip", strip_bytes, wgpu::BufferUsages::COPY_DST);
-        let tone = storage("asm-tone", u64::from(ring_rows) * 8, wgpu::BufferUsages::COPY_DST);
+        let tone = storage("asm-tone", u64::from(total_rows) * 8, wgpu::BufferUsages::COPY_DST);
+        let mut base = 0u32;
+        let gpu_groups: Vec<GroupGpu> = groups
+            .iter()
+            .map(|g| {
+                debug_assert_eq!(cols % g.stride, 0);
+                let gg = GroupGpu { base, cols: cols / g.stride, ring_rows: g.ring_rows, stride: g.stride, ..Default::default() };
+                base += g.ring_rows * gg.cols;
+                gg
+            })
+            .collect();
+        let group_buf = storage("asm-groups", (groups.len() * std::mem::size_of::<GroupGpu>()) as u64, wgpu::BufferUsages::COPY_DST);
         let pixels = u64::from(out_w) * u64::from(out_h);
         let out_px = storage("asm-out", pixels * 4, wgpu::BufferUsages::COPY_SRC);
         let out_val = storage("asm-values", pixels * 4, wgpu::BufferUsages::COPY_SRC);
@@ -112,7 +172,7 @@ impl Assembler {
         let rw = wgpu::BufferBindingType::Storage { read_only: false };
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bgl-assemble"),
-            entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, rw), entry(5, rw)],
+            entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, rw), entry(5, rw), entry(6, ro)],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bg-assemble"),
@@ -124,6 +184,7 @@ impl Assembler {
                 wgpu::BindGroupEntry { binding: 3, resource: lut_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: out_px.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: out_val.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: group_buf.as_entire_binding() },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -144,13 +205,14 @@ impl Assembler {
             })
         };
         Ok(Self {
-            cols,
-            ring_rows,
             out_w,
             out_h,
             inv_d: (f64::from(cols) / std::f64::consts::TAU) as f32,
+            ln_rho: (f64::from(out_w).hypot(f64::from(out_h)) * 0.5).ln() as f32,
+            groups: gpu_groups,
             strip,
             tone,
+            group_buf,
             out_px,
             out_val,
             uniforms,
@@ -159,45 +221,69 @@ impl Assembler {
             values: pipeline("values_main"),
             staging: std::sync::Mutex::new(None),
             shader_ms: std::cell::Cell::new(0.0),
+            unsubmitted: std::cell::Cell::new(0),
         })
     }
 
-    pub fn ring_rows(&self) -> u32 {
-        self.ring_rows
+    /// Every strip row's (lo, hi) tone range, from row 0.
+    pub fn set_tone(&self, gpu: &GpuCtx, tone: &[[f32; 2]]) {
+        gpu.queue.write_buffer(&self.tone, 0, bytemuck::cast_slice(tone));
     }
 
-    /// Copy whole rows into the ring from ring row `at`, wrapping round the
-    /// end. `tone` holds each row's (lo, hi).
-    pub fn write_rows(&self, gpu: &GpuCtx, at: u32, data: &[u32], tone: &[[f32; 2]]) {
-        let cols = self.cols as usize;
+    /// Columns group `g` keeps: every `stride`-th of the strip's.
+    pub fn group_cols(&self, g: usize) -> u32 {
+        self.groups[g].cols
+    }
+
+    /// Copy strip rows `row0..` into group `g`. `data` holds whole rows already
+    /// thinned to the group's columns; row r lands at ring row r mod the ring's
+    /// length.
+    pub fn write_rows(&self, gpu: &GpuCtx, g: usize, row0: u64, data: &[u32]) {
+        let gg = self.groups[g];
+        let cols = gg.cols as usize;
         let rows = data.len() / cols;
-        debug_assert_eq!(rows, tone.len());
         let mut done = 0usize;
         while done < rows {
-            let ring = (at as usize + done) % self.ring_rows as usize;
-            let n = (rows - done).min(self.ring_rows as usize - ring);
-            gpu.queue.write_buffer(&self.strip, (ring * cols * 4) as u64, bytemuck::cast_slice(&data[done * cols..(done + n) * cols]));
-            gpu.queue.write_buffer(&self.tone, (ring * 8) as u64, bytemuck::cast_slice(&tone[done..done + n]));
+            let ring = ((row0 + done as u64) % u64::from(gg.ring_rows)) as usize;
+            let n = (rows - done).min(gg.ring_rows as usize - ring);
+            let offset = (gg.base as usize + ring * cols) * 4;
+            let rows = &data[done * cols..(done + n) * cols];
+            gpu.queue.write_buffer(&self.strip, offset as u64, bytemuck::cast_slice(rows));
             done += n;
+            self.unsubmitted.set(self.unsubmitted.get() + rows.len() as u64 * 4);
+            if self.unsubmitted.get() >= UPLOAD_FLUSH_BYTES {
+                gpu.queue.submit(std::iter::empty());
+                let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+                self.unsubmitted.set(0);
+            }
         }
     }
 
     fn dispatch(&self, gpu: &GpuCtx, f: &AsmFrame, values: bool) -> MbResult<Vec<u8>> {
         let (lo, hi) = f.tone_global.unwrap_or((0.0, 1.0));
+        let corner_int = f.corner_row.floor().max(0.0);
         let u = AsmUniforms {
             out_w: self.out_w,
             out_h: self.out_h,
-            cols: self.cols,
-            ring_rows: self.ring_rows,
-            ring_off: f.ring_off,
-            win_rows: f.win_rows,
+            ngroups: self.groups.len() as u32,
+            full_octaves: f.full_octaves,
             sub: f.sub,
             tone_global: f.tone_global.is_some() as u32,
-            a_k: f.a_k as f32,
+            corner_int: corner_int as u32,
+            corner_frac: (f.corner_row - corner_int) as f32,
             inv_d: self.inv_d,
+            ln_rho: self.ln_rho,
             lo,
             hi,
+            ..Default::default()
         };
+        let groups: Vec<GroupGpu> = self
+            .groups
+            .iter()
+            .zip(&f.loaded)
+            .map(|(g, &(lo, hi))| GroupGpu { lo, hi: hi.max(lo + 1), ..*g })
+            .collect();
+        gpu.queue.write_buffer(&self.group_buf, 0, bytemuck::cast_slice(&groups));
         gpu.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("assemble") });
         let ts = gpu.timing.as_ref();

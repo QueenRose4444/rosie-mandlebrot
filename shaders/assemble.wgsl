@@ -2,62 +2,84 @@
 //
 // Strip column i is the ray at angle i*d from the zoom centre and strip row j
 // the circle of ln radius ln_r0 - j*d. A point `rad` pixels from the frame
-// centre, in a frame whose pixel is p plane units, sits at strip row
-// (ln_r0 - ln p)/d - ln(rad)/d. The CPU folds the first term (an f64, at any
-// depth) into `a_k`, relative to the first row held in the window, so every
-// f32 here stays small and exact enough.
+// centre sits ln(rho/rad)/d rows below the frame's corner row, rho being the
+// frame's half-diagonal in pixels. The corner row is an f64 on the CPU (at any
+// depth) passed as integer + fraction, so every f32 here stays small.
 //
 // Colour is applied here, from raw smooth values, so a run can be recoloured
-// without re-rendering. Each output pixel averages sub*sub point samples; each
-// point sample uses the adaptive rule the keyframe spike measured best
-// (research/21): where its four strip taps lie within 1/8 of the palette of
-// each other it interpolates the value and colours that, otherwise it colours
-// the four taps and blends the colours, because an interpolated count between
+// without re-rendering. Each output pixel averages sub*sub point samples. Each
+// point sample uses the rule that came closest to a supersampled render in
+// testing: where its four strip taps lie within 1/8 of the palette of each
+// other it interpolates the value and colours that; otherwise it colours the
+// four taps and blends the colours, because an interpolated count between
 // distant palette bands lands on a colour neither tap has.
+
+// The rows of a frame are held in up to eight groups by how many octaves
+// inside the frame they sit. Group 0, from the corner inwards, keeps every
+// column; each deeper group keeps every 2nd, 4th ... column, because a row k
+// octaves inside the frame has 2^k strip columns per output pixel and needs
+// only one. A group is a ring of rows in `strip`.
+struct Group {
+    // Offset of the group's ring in `strip`, its columns, rows in its ring,
+    // and full-strip columns per group column.
+    base      : u32,
+    cols      : u32,
+    ring_rows : u32,
+    stride    : u32,
+    // Global strip rows loaded: [lo, hi).
+    lo        : u32,
+    hi        : u32,
+    pad0      : u32,
+    pad1      : u32,
+}
 
 struct AsmUniforms {
     out_w       : u32,
     out_h       : u32,
-    cols        : u32,
-    ring_rows   : u32,
-    // Ring row holding window row 0, and how many window rows are loaded.
-    ring_off    : u32,
-    win_rows    : u32,
+    // Groups in use; octaves from the corner kept whole by group 0 (`full_octaves`).
+    ngroups     : u32,
+    full_octaves: u32,
     sub         : u32,
     // 1: colour every sample against (lo, hi) below; 0: each row's own range.
     tone_global : u32,
-    a_k         : f32,
+    // The frame corner's strip row, as integer + fraction.
+    corner_int  : u32,
+    pad0        : u32,
+    corner_frac : f32,
     inv_d       : f32,
+    // ln of the frame's half-diagonal, in pixels.
+    ln_rho      : f32,
     lo          : f32,
     hi          : f32,
+    pad1        : f32,
+    pad2        : f32,
+    pad3        : f32,
 }
 
 @group(0) @binding(0) var<uniform> U : AsmUniforms;
-// ring_rows * cols samples: smooth value * 256, or INTERIOR.
+// Every group's ring: smooth value * 256, or INTERIOR.
 @group(0) @binding(1) var<storage, read> strip : array<u32>;
-// Per ring row: the (lo, hi) smooth-value range mapped across the palette.
+// Per strip row: the (lo, hi) smooth-value range mapped across the palette.
 @group(0) @binding(2) var<storage, read> tone : array<vec2<f32>>;
 // 1024 palette entries, r | g << 8 | b << 16.
 @group(0) @binding(3) var<storage, read> lut : array<u32>;
 @group(0) @binding(4) var<storage, read_write> out_px : array<u32>;
 @group(0) @binding(5) var<storage, read_write> out_val : array<f32>;
+@group(0) @binding(6) var<storage, read> groups : array<Group>;
 
 const INTERIOR : u32 = 0xffffffffu;
 const ADAPTIVE_SPREAD : f32 = 0.125;
+const LN2 : f32 = 0.6931471805599453;
 
-fn ring_row(win_row: i32) -> u32 {
-    let r = u32(clamp(win_row, 0, i32(U.win_rows) - 1));
-    return (U.ring_off + r) % U.ring_rows;
+fn tap(g: Group, row: u32, col: i32) -> u32 {
+    let r = clamp(row, g.lo, g.hi - 1u) % g.ring_rows;
+    let c = u32(((col % i32(g.cols)) + i32(g.cols)) % i32(g.cols));
+    return strip[g.base + r * g.cols + c];
 }
 
-fn tap(win_row: i32, col: i32) -> u32 {
-    let c = u32(((col % i32(U.cols)) + i32(U.cols)) % i32(U.cols));
-    return strip[ring_row(win_row) * U.cols + c];
-}
-
-fn tone_at(win_row: i32) -> vec2<f32> {
+fn tone_at(row: u32) -> vec2<f32> {
     if (U.tone_global == 1u) { return vec2<f32>(U.lo, U.hi); }
-    return tone[ring_row(win_row)];
+    return tone[min(row, arrayLength(&tone) - 1u)];
 }
 
 // Palette position of a smooth value, as the per-frame encoder computes it.
@@ -86,16 +108,21 @@ struct Taps {
 // centre, y up, and their bilinear weights.
 fn taps_at(ox: f32, oy: f32) -> Taps {
     let rad = max(length(vec2<f32>(ox, oy)), 1e-6);
-    let u = atan2(oy, ox) * U.inv_d;
-    let v = U.a_k - log(rad) * U.inv_d;
+    // Rows below the frame corner, and the group that holds them.
+    let below = max(U.ln_rho - log(rad), 0.0);
+    let octave = u32(below / LN2);
+    let gi = min(u32(max(i32(octave) - i32(U.full_octaves) + 1, 0)), U.ngroups - 1u);
+    let g = groups[gi];
+    let v = U.corner_frac + below * U.inv_d;
+    let u = atan2(oy, ox) * U.inv_d / f32(g.stride);
     let i0 = i32(floor(u));
-    let j0 = i32(floor(v));
+    let row0 = U.corner_int + u32(floor(v));
     let fu = u - floor(u);
     let fv = v - floor(v);
     var t : Taps;
-    t.v = array<u32, 4>(tap(j0, i0), tap(j0, i0 + 1), tap(j0 + 1, i0), tap(j0 + 1, i0 + 1));
+    t.v = array<u32, 4>(tap(g, row0, i0), tap(g, row0, i0 + 1), tap(g, row0 + 1u, i0), tap(g, row0 + 1u, i0 + 1));
     t.w = array<f32, 4>((1.0 - fu) * (1.0 - fv), fu * (1.0 - fv), (1.0 - fu) * fv, fu * fv);
-    t.tn = tone_at(j0);
+    t.tn = tone_at(row0);
     return t;
 }
 

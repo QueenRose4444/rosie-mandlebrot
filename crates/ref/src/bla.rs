@@ -18,7 +18,7 @@
 //!
 //! `ε` must match the arithmetic that applies the skip — `2^-48` for the
 //! double-single kernels, `2^-53` for f64 — or the approximation error rises
-//! above the kernel's own rounding (research/17 §3.4, §4.1).
+//! above the kernel's own rounding.
 
 use num_complex::Complex64;
 use rosie_mandlebrot_core::types::{BlaEntryGpu, RefOrbitEntryF64};
@@ -59,9 +59,10 @@ pub fn build_bla_table(orbit: &[RefOrbitEntryF64], max_delta: f64, epsilon: f64)
     while levels.last().is_some_and(|l| l.len() > 1) {
         let prev = levels.last().unwrap();
         let next = prev
-            .chunks_exact(2)
-            .map(|p| {
-                let (x, y) = (p[0], p[1]);
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[x, y]| {
                 let r = x.r.min(((y.r - x.b.norm() * cmax) / x.a.norm()).max(0.0));
                 // An overflowed product makes r NaN; f64::min/max drop NaN, but
                 // make the entry unusable explicitly rather than by accident.
@@ -340,7 +341,7 @@ mod tests {
 
     /// Against MPFR, BLA must do as well as the plain f64 walk on the same
     /// pixels, give or take that walk's own error: near the boundary any
-    /// reassociation of the arithmetic moves some escape counts (I-52).
+    /// reassociation of the arithmetic moves some escape counts.
     #[test]
     fn bla_matches_mpfr_within_the_plain_floor() {
         let (span, max_iter) = (1e-26, 20_000);

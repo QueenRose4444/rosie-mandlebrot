@@ -1,5 +1,5 @@
 //! `--keyframes`: render a zoom as one exponential-map strip instead of frame by
-//! frame (D-29, D-34), then assemble the video from it.
+//! frame, then assemble the video from it.
 //!
 //! The strip is a log-polar picture of the zoom centre. Column `i` is the ray
 //! at angle `i·d`, row `j` the circle of radius `r0·e^(−j·d)`, with
@@ -9,7 +9,7 @@
 //! consecutive frames share almost all of them: rendering every pixel once per
 //! depth instead of once per frame is the saving.
 //!
-//! Rows are rendered in chunks of about one octave. Every chunk is written to
+//! Rows are rendered in chunks of half an octave. Every chunk is written to
 //! its own file and recorded in `manifest.json`, which is also the resume point.
 
 use crate::config::Cli;
@@ -74,9 +74,61 @@ pub(crate) fn deepest_frame_span(m: &Manifest) -> f64 {
     ln_r_last.exp() / MIN_RADIUS_PX * f64::from(g.height)
 }
 
-/// Make `s` the video's last span unless an earlier (wider) end is already set.
-fn cap_end(end: &mut Option<f64>, s: f64) {
-    *end = Some(end.map_or(s, |e| e.max(s)));
+/// `progress.json` for a keyframe run, in the frame run's format so the
+/// container's entrypoint and anything watching it read it the same way:
+/// "frames" are the video frames the strip can already serve.
+fn write_progress(cfg: &RunConfig, m: &Manifest, status: &'static str, reason: Option<String>, span: f64, max_iter: u32, started_unix: i64) {
+    let frames_to = |span: f64| ((span / m.initial_span).ln() / m.zoom_factor.ln()).floor().max(0.0) as u64 + 1;
+    let frames = if m.chunks.is_empty() {
+        0
+    } else {
+        let served = frames_to(deepest_frame_span(m));
+        m.video_end_span.map_or(served, |e| served.min(frames_to(e)))
+    };
+    let stats = memory_stats::memory_stats();
+    let snap = rosie_mandlebrot_store::progress::ProgressSnapshot {
+        run_id: 1,
+        started_at_unix: started_unix,
+        elapsed_secs: m.elapsed_secs as u64,
+        remaining_secs: cfg.duration_secs.map(|d| d.saturating_sub(m.elapsed_secs as u64)),
+        duration_secs: cfg.duration_secs,
+        frames_done: frames,
+        current_frame: frames,
+        instantaneous_fps: 0.0,
+        average_fps: if m.elapsed_secs > 0.0 { frames as f64 / m.elapsed_secs } else { 0.0 },
+        current_zoom_span: span,
+        current_tier: "keyframes",
+        current_max_iter: max_iter,
+        glitches_last_frame: 0,
+        glitches_total: 0,
+        output_dir: cfg.output.display().to_string(),
+        state_path: strip_dir(&cfg.output).join("manifest.json").display().to_string(),
+        status,
+        stop_reason: reason,
+        bytes_written: m.total_bytes(),
+        max_storage_bytes: cfg.max_storage_bytes,
+        width: m.geometry.width,
+        height: m.geometry.height,
+        gpu_util_pct: None,
+        cpu_util_pct: None,
+        ram_mb: stats.map(|s| s.physical_mem as f64 / 1048576.0),
+        peak_ram_mb: None,
+        gpu_work_pct: None,
+        cpu_work_pct: None,
+    };
+    if let Err(e) = rosie_mandlebrot_store::progress::write_progress_json(&cfg.output, &snap) {
+        tracing::warn!("could not write progress.json: {e}");
+    }
+}
+
+/// Make `s` the video's last span unless an earlier (wider) end is already
+/// set; true when `s` became the end.
+fn cap_end(end: &mut Option<f64>, s: f64) -> bool {
+    let wins = end.is_none_or(|e| s > e);
+    if wins {
+        *end = Some(s);
+    }
+    wins
 }
 
 /// Returns the process exit code: 0, 1 when the strip stopped on a failure, 3
@@ -118,16 +170,22 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
         }
     };
     let g = manifest.geometry.clone();
-    let rows_per_chunk = g.rows_per_octave().round().max(1.0) as u32;
+    // Half an octave per chunk: a chunk's pixels are all in memory at once, and
+    // at 4096x4096 a whole octave is ~300 MB of them.
+    let rows_per_chunk = (g.rows_per_octave() * 0.5).round().max(1.0) as u32;
     let col_dir = column_directions(g.cols);
 
     // The last frame, when something other than the rows decides it.
+    // `end_reason` is what the run reports once the strip reaches that end.
     let mut end_span = manifest.video_end_span;
+    let mut end_reason = StopReason::ZoomEndReached;
     if let Some(z) = cfg.zoom_end {
         cap_end(&mut end_span, z);
     }
     if let Some(n) = cfg.max_frames {
-        cap_end(&mut end_span, cfg.sequence.initial_span * cfg.sequence.zoom_factor.powi(n.saturating_sub(1) as i32));
+        if cap_end(&mut end_span, cfg.sequence.initial_span * cfg.sequence.zoom_factor.powi(n.saturating_sub(1) as i32)) {
+            end_reason = StopReason::MaxFramesReached;
+        }
     }
     // A centre outside the set: frames whose corner is nearer than the proven
     // distance are smooth gradient.
@@ -135,14 +193,19 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
         if let Some(b) = rosie_mandlebrot_ref::exterior::exterior_distance_log10(&manifest.center_re, &manifest.center_im, cfg.sequence.iter_cap) {
             let s = span_with_corner_at(&g, 10f64.powf(b));
             tracing::info!("the centre is outside the set, at least 1e{b:.2} from it: the video ends near span {s:.3e}");
-            cap_end(&mut end_span, s);
+            if cap_end(&mut end_span, s) {
+                end_reason = StopReason::OutsideSet;
+            }
         }
     }
 
     let gpu = GpuCtx::new_with_engine(shader_dir, cfg.deep_engine, cli.allow_software_gpu)?;
+    let started_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    write_progress(cfg, &manifest, "running", None, cfg.sequence.initial_span, 0, started_unix);
     let clock = RunClock::new(Duration::from_secs_f64(manifest.elapsed_secs), cfg.duration_secs.map(Duration::from_secs));
     let process_started = Instant::now();
     let elapsed_before = manifest.elapsed_secs;
+    let mut sys = crate::sysstats::SysStats::new(num_cpus::get());
     let mut adaptive_iter = manifest.chunks.last().map_or(0, |c| c.max_iter);
     let mut interior_exit = true;
     let mut blank_streak = 0u32;
@@ -164,7 +227,7 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
         // Done once the deepest frame wanted has its half pixel on the strip.
         if let Some(end) = end_span {
             if ln_top < (MIN_RADIUS_PX * end / f64::from(g.height)).ln() {
-                break StopReason::ZoomEndReached;
+                break end_reason;
             }
         }
 
@@ -252,6 +315,8 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
         manifest.elapsed_secs = elapsed_before + process_started.elapsed().as_secs_f64();
         manifest.video_end_span = end_span;
         write_manifest(&dir, &manifest)?;
+        write_progress(cfg, &manifest, "running", None, span_eq, max_iter, started_unix);
+        let _ = sys.memory();
         tracing::info!(
             "chunk {index} done | radius {:.3e}..{:.3e} (frame span {:.3e}) | {} iter, {:.1}% interior | {engine} {:.0} ms shader, {:.0} ms total | {:.1} MB",
             ln_top.exp(),
@@ -278,12 +343,14 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
                     adaptive_iter = max_iter.saturating_mul(4).min(cfg.sequence.iter_cap);
                     blank_streak = 0;
                 }
-                _ => {
+                blank => {
                     blank_streak += 1;
                     if blank_streak >= 2 {
                         let s = span_with_corner_at(&g, ln_top.exp());
                         tracing::info!("chunks {}-{index} are one flat colour: the video ends at span {s:.3e}", index - 1);
-                        cap_end(&mut end_span, s);
+                        if cap_end(&mut end_span, s) {
+                            end_reason = if blank == Blankness::Exterior { StopReason::BlankExterior } else { StopReason::BlankSaturated };
+                        }
                     }
                 }
             }
@@ -295,6 +362,12 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
     manifest.video_end_span = end_span;
     manifest.elapsed_secs = elapsed_before + process_started.elapsed().as_secs_f64();
     write_manifest(&dir, &manifest)?;
+    let last_span = manifest.chunks.last().map_or(cfg.sequence.initial_span, |c| span_with_corner_at(&g, g.ln_radius(c.row0 as f64).exp()));
+    let last_iter = manifest.chunks.last().map_or(0, |c| c.max_iter);
+    write_progress(cfg, &manifest, stop_reason.status(), Some(stop_reason.to_string()), last_span, last_iter, started_unix);
+    if let Some((now, peak)) = sys.memory() {
+        tracing::info!("strip peak RAM {:.0} MB (now {:.0} MB)", peak as f64 / 1048576.0, now as f64 / 1048576.0);
+    }
     tracing::info!(
         "strip {}: {} chunks, {} rows, {:.1} MB, deepest frame span {:.3e} ({stop_reason})",
         manifest.status,
@@ -318,7 +391,7 @@ pub(crate) fn run(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: A
 
 /// `--probe-oracle N` with `--keyframes`: re-iterate N samples of the chunk one
 /// at a time in high precision, at the sample's exact position, and compare
-/// escape counts. Near the boundary any arithmetic moves some counts (I-52), so
+/// escape counts. Near the boundary any arithmetic moves some counts, so
 /// read the rate against a frame's figure at the same depth, not against 100%.
 fn oracle_check(m: &Manifest, g: &StripGeometry, row0: u64, rows: u32, pixels: &[rosie_mandlebrot_core::types::PixelOut], max_iter: u32, n: u32) {
     use rayon::prelude::*;
@@ -424,10 +497,10 @@ mod tests {
     #[test]
     fn a_wider_end_wins() {
         let mut e = None;
-        cap_end(&mut e, 1e-10);
-        cap_end(&mut e, 1e-12);
+        assert!(cap_end(&mut e, 1e-10));
+        assert!(!cap_end(&mut e, 1e-12));
         assert_eq!(e, Some(1e-10));
-        cap_end(&mut e, 1e-8);
+        assert!(cap_end(&mut e, 1e-8));
         assert_eq!(e, Some(1e-8));
     }
 }

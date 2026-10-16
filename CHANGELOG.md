@@ -1,12 +1,25 @@
 # Changelog
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-10-17
 
-- **Deep frames are much faster.** The deep kernels can now skip thousands of iterations at a time
-  (bivariate linear approximation). Measured on an RTX 3060 Ti: 2.1× faster at 1e-31, 2.75× at 1e-60
-  and 16× on an interior-heavy frame at 1e-32. It switches itself on only where a quick probe measures
-  it faster, so shallower frames are byte-identical to 0.1.5. Where it is on, colours can change
-  slightly; checked against exact arithmetic, those frames are as accurate or more.
+- **Videos are made from keyframes.** A run now renders the zoom once, as a log-polar strip that
+  holds every depth, and assembles the video from it instead of rendering every frame. Measured on
+  `seahorse_deep` from 3 to 1e-12 at 1920×1080: 7.2× less GPU time, a fifth of the disk (339 MB
+  against 1.7 GB of PNG frames), and frames closer to a supersampled ideal (32.5 dB against 25.2 dB
+  for frame-by-frame), because every output pixel averages 2×2 samples.
+- **No more brightness pumping.** Colour belongs to the location, not the frame: a point keeps its
+  colour from frame to frame. On that run the largest frame-to-frame jump in mean brightness fell
+  from 16.9 to 3.5 levels. `--tone per-frame` brings back the 0.1 colouring.
+- **`--assemble`** makes the video again from the strip, with another `--palette`, `--video-fps`,
+  `--zoom-factor` or size, in seconds and without rendering anything.
+- **`--per-frame`** keeps the 0.1 behaviour (every frame saved as a PNG, then stitched). A run that
+  was started frame by frame carries on frame by frame when resumed.
+- The video is now `zoom.mkv` and the strip lives in `keyframes/`, both in the output folder.
+- **Deep frames are much faster.** The deep kernels can skip thousands of iterations at a time
+  (bivariate linear approximation): 2.1× faster at 1e-31, 2.75× at 1e-60 and 16× on an
+  interior-heavy frame at 1e-32 (RTX 3060 Ti). It switches itself on only where a quick probe
+  measures it faster; where it is on, frames are as accurate as before or more, checked against
+  exact arithmetic.
 - The reference orbit skips series-approximation work no engine uses: 14% less orbit time on a
   100,000-iteration orbit.
 

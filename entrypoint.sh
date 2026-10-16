@@ -11,9 +11,9 @@ set -e
 # a render error, a dead encode pipeline, or persistent save failures — those are
 # worth retrying, and resuming costs nothing because every frame is checkpointed.
 # Idling on them would retire the container permanently on one transient fault.
-# Re-encoding a finished run, or asking for a new one, is not a restart loop.
+# Re-making the video of a finished run, or asking for a new one, is not a restart loop.
 case " $* " in
-    *" --encode-only "*|*" --new-run "*) explicit=1 ;;
+    *" --encode-only "*|*" --assemble "*|*" --new-run "*) explicit=1 ;;
     *) explicit=0 ;;
 esac
 

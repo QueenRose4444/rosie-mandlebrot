@@ -21,6 +21,8 @@ C_LIBRARIES = [
      "statically linked through gmp-mpfr-sys, for the high-precision reference orbit"),
     ("MPFR 4.2.2", "LGPL-3.0-or-later", "https://www.mpfr.org/",
      "statically linked through gmp-mpfr-sys"),
+    ("Zstandard (libzstd)", "BSD-3-Clause OR GPL-2.0-only", "https://facebook.github.io/zstd/",
+     "statically linked through zstd-sys, to compress the keyframe strip"),
     ("SQLite", "Public domain", "https://sqlite.org/",
      "statically linked through rusqlite's bundled build, for the checkpoint database"),
     ("mingw-w64 runtime (Windows builds only)", "ZPL-2.1 and MIT", "https://www.mingw-w64.org/",

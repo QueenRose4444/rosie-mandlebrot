@@ -1,8 +1,10 @@
 # Rosie_Mandlebrot
 
-Deep zooms into the Mandelbrot set, rendered on your GPU. It renders a sequence of frames,
-each a little deeper than the last, and turns them into a video. It can keep going for days and
-picks up where it left off after a crash or a reboot.
+Deep zooms into the Mandelbrot set, rendered on your GPU, made into a video. It renders the zoom
+once, as a log-polar "keyframe" strip that holds every depth, and assembles the video from it:
+about seven times less GPU work than drawing every frame, smoother (antialiased, with no colour
+pumping), and a different palette, speed or frame rate later costs seconds instead of a re-render.
+It can keep going for days and picks up where it left off after a crash or a reboot.
 
 This page describes the latest release. Each release's zip carries the README for that version,
 and [CHANGELOG.md](CHANGELOG.md) lists what changed in each.
@@ -17,10 +19,13 @@ and [CHANGELOG.md](CHANGELOG.md) lists what changed in each.
 
 - A GPU with up-to-date drivers that supports Vulkan or DirectX 12. It is tested on NVIDIA cards;
   AMD and Intel should work but have not been tried. There is no CPU fallback worth waiting for.
-- 200–800 MB of RAM (measured peaks: 184 MB at 1080p on Windows, 754 MB for a deep 4K run on
-  Linux), and 0.3–1 MB of disk per 1080p frame — deep frames are busier and compress less.
-- [ffmpeg](https://ffmpeg.org/) on your `PATH` if you want the video made for you. Without it you
-  still get every frame as a PNG; add `--no-video` to skip the attempt.
+- 200–550 MB of RAM (measured peaks on Windows: about 200 MB for a 1080p run; at 4096×4096,
+  536 MB while rendering and 424 MB while making the video).
+- Disk for the strip: 167 MB for the 1080p dive to 1e-15 below, about 9–21 MB per tenfold zoom
+  at 1080p (busier locations compress less) and about twelve times that at 4096×4096, plus the video. Up to 512 MB of GPU memory while the
+  video is assembled (120 MB at 1080×1080).
+- [ffmpeg](https://ffmpeg.org/) on your `PATH` to make the video. Without it the strip is still
+  saved; install ffmpeg and run again with `--assemble` (see below).
 
 ## Windows
 
@@ -42,7 +47,7 @@ and [CHANGELOG.md](CHANGELOG.md) lists what changed in each.
    300 frames at the default pace only reach a span of about 7e-3, the outer spirals: at the default
    `--zoom-factor 0.98` each tenfold zoom takes 114 frames (at 0.9, 22). For the whole dive add
    `--zoom-factor 0.9 --zoom-end 1e-15` and drop `--max-frames`: 339 frames down to `seahorse`'s
-   depth (measured on an RTX 3060 Ti: 18–24 seconds, plus 14–21 for the video).
+   depth (measured on an RTX 3060 Ti: 24–27 seconds from start to finished video).
 
 3. **You should see your GPU** near the top of the output:
 
@@ -52,21 +57,20 @@ and [CHANGELOG.md](CHANGELOG.md) lists what changed in each.
 
    If it names a CPU or "Microsoft Basic Render Driver", update your graphics driver.
 
-Frames go to `out\` next to the exe, along with `progress.json`, and the video appears there when
-the run ends (`out\run_1.mkv`). The zip contains a `portable.txt`, which keeps everything beside
-the exe; delete it to use `%LOCALAPPDATA%\Rosie_Mandlebrot` instead.
+The video appears as `out\zoom.mkv` next to the exe when the run ends, with `progress.json` and
+the strip it was made from in `out\keyframes\`. The zip contains a `portable.txt`, which keeps
+everything beside the exe; delete it to use `%LOCALAPPDATA%\Rosie_Mandlebrot` instead.
 
 **Give each render its own folder** with `--run-dir NAME` (relative to the folder you run it from), for example
 `--preset seahorse_spiral --res 1080p --run-dir spiral`. Running again in a folder that already has
-a run needs `--resume` (carry on with the same size and palette); starting a different run there is
-refused, so two runs never mix their frames.
+a run needs `--resume` (carry on where it stopped); starting a different run there is refused
+unless you add `--new-run`, which replaces it.
 
 `--res 1080p` means 1080×1080: every size is square, because the set is. Without `--res` you get
 4096×4096. For another shape use `--width 1920 --height 1080`.
 
-If ffmpeg was missing, the frames are still saved: install it and run
-`.\rosie_mandlebrot.exe --encode-only --run 1` to make the video, adding the same `--run-dir` if
-you used one. The program warns at the start if it cannot find ffmpeg.
+If ffmpeg was missing, the strip is still saved: install it and run
+`.\rosie_mandlebrot.exe --assemble` to make the video, adding the same `--run-dir` if you used one.
 
 The exe is not code-signed yet, so Windows SmartScreen may warn the first time: choose
 **More info → Run anyway**. For ffmpeg, `winget install Gyan.FFmpeg` works.
@@ -89,9 +93,10 @@ docker run --rm -it --gpus all --user "$(id -u):$(id -g)" \
 
 **You should see your GPU** in the first lines of output. If it says `llvmpipe` or "CPU software
 rasterizer", the container cannot see the driver and stops; [DEPLOY.md](DEPLOY.md) explains why
-and how to fix it. `--user` makes the frames yours rather than the image's user 10001. Type `stop`
-and Enter to end a run early. Frames, `progress.json` and the video land in `out/`; the checkpoint
-and the log in `state/`. Run the same command again to carry on; use new folders for a new run.
+and how to fix it. `--user` makes the files yours rather than the image's user 10001. Type `stop`
+and Enter to end a run early (the video is made from what was rendered). The video
+(`zoom.mkv`), the strip (`keyframes/`) and `progress.json` land in `out/`; the log in `state/`.
+Run the same command again to carry on; use new folders for a new run.
 `:latest` is the newest release; each release is also tagged by version (`:v0.1.3`).
 
 For a long unattended run with automatic restarts, see [`docker-compose.yml`](docker-compose.yml)
@@ -102,7 +107,7 @@ and [DEPLOY.md](DEPLOY.md).
 Download `rosie_mandlebrot-<version>-linux-x86_64.tar.xz` (built on Debian 12, so glibc 2.36 or
 newer), unpack it and run `./rosie_mandlebrot --list-presets`. It needs the Vulkan loader
 (`libvulkan1` on Debian and Ubuntu) and your GPU's Vulkan driver. Like the Windows zip it is
-portable: frames, checkpoints and logs go beside the binary, under `out/`, `state/` and `logs/`.
+portable: the video, the strip and logs go beside the binary, under `out/` and `logs/`.
 
 ## Choosing a location
 
@@ -154,13 +159,21 @@ and `--ladder` says so.
 | `--run-dir DIR` | | keep this run's frames, state and log together in `DIR` |
 | `--resume` / `--new-run` | | continue the last run in that directory, or start over |
 | `--cpu-percent 50` | | use at most that share of the CPU |
-| `--no-video` | | keep the frames, skip ffmpeg |
+| `--no-video` | | render the strip only; make the video later with `--assemble` |
+| `--assemble` | | make the video again from the strip in `--run-dir`, with any `--palette`, `--video-fps`, `--zoom-factor` or size: seconds, nothing re-rendered |
+| `--per-frame` | | render every frame as a PNG and stitch them, the 0.1 way (needed for PNG frames or `--save-every`) |
 | `--live` | | in a terminal: a progress bar and a line per frame instead of a log line every 10 s |
 
-Stop a run with Ctrl+C (or type `stop` and Enter); it finishes the frame in hand and writes the
-video. `--resume` carries on from the last saved frame. Exit codes: 0 finished or stopped, 1 failed,
-2 bad input, 3 frames saved but the video encode failed. Every option: `rosie_mandlebrot --help`
-and [COMMANDS.md](COMMANDS.md).
+Stop a run with Ctrl+C (or type `stop` and Enter); the video is made from what was rendered so
+far, and `--resume` carries on from there. Exit codes: 0 finished or stopped, 1 failed, 2 bad input,
+3 rendered but the video step failed. Every option: `rosie_mandlebrot --help` and
+[COMMANDS.md](COMMANDS.md).
+
+**Another look without re-rendering:** the strip keeps the raw iteration counts, so
+`rosie_mandlebrot --run-dir NAME --assemble --palette electric --zoom-factor 0.95 --video-fps 60`
+makes a new video from the same run in seconds. `--tone per-frame` gives the 0.1 colouring, where
+each frame stretches its own colours (it pumps brighter and darker as the zoom goes on); the default
+keeps every point's colour fixed.
 
 ## How deep can it go?
 

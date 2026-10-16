@@ -218,9 +218,14 @@ pub struct Cli {
     #[arg(long)]
     pub no_video: bool,
 
-    /// Render the zoom as an exponential-map strip ("keyframes") and assemble
-    /// the video from it, instead of rendering every frame.
+    /// Render every frame as a PNG and stitch them into the video (the v0.1
+    /// way), instead of rendering the zoom once as an exponential-map strip
+    /// and assembling the video from it. Needed for PNG frames or --save-every.
     #[arg(long)]
+    pub per_frame: bool,
+
+    /// The default since 0.2: accepted so older scripts keep working.
+    #[arg(long, hide = true)]
     pub keyframes: bool,
 
     /// Make the video again from the strip a --keyframes run left in

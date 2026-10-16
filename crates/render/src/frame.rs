@@ -120,7 +120,7 @@ pub(crate) use rosie_mandlebrot_core::frame::{FrameRequest, FrameResult};
 pub(crate) const GLITCH_THRESHOLD_FRACTION: f64 = 0.0001;
 
 /// BLA radius factor for the CPU engine, which applies skips in f64. The
-/// radius has to match the arithmetic doing the skipping (research/17 §4.1).
+/// radius has to match the arithmetic doing the skipping.
 pub(crate) const BLA_EPSILON: f64 = rosie_mandlebrot_ref::BLA_EPSILON_F64;
 /// Only apply BLA below this span. Above it BLA gives no benefit (dz isn't
 /// small enough relative to the radius to skip) and can overshoot an escape;

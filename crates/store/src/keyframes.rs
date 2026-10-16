@@ -35,6 +35,11 @@ pub fn from_fixed(v: u32) -> Option<f32> {
     (v != INTERIOR).then(|| v as f32 / FIXED_SCALE)
 }
 
+/// The strip's columns are a multiple of this, so the assembler can keep every
+/// 2nd, 4th ... 64th column of rows deep inside a frame without a seam where the
+/// angle wraps round.
+pub const COL_MULTIPLE: u32 = 64;
+
 /// Shape of the whole strip. Written into the manifest so a resume can refuse
 /// to continue with different geometry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,7 +48,7 @@ pub struct StripGeometry {
     pub width: u32,
     pub height: u32,
     /// Columns of the strip: the circumference of the circle that reaches the
-    /// frame corner, in pixels.
+    /// frame corner, in pixels, rounded to a multiple of [`COL_MULTIPLE`].
     pub cols: u32,
     /// Natural log of the plane radius of row 0.
     pub ln_r0: f64,
@@ -52,7 +57,7 @@ pub struct StripGeometry {
 impl StripGeometry {
     pub fn new(width: u32, height: u32, ln_r0: f64) -> Self {
         let rho = f64::from(width).hypot(f64::from(height)) / 2.0;
-        let cols = (std::f64::consts::TAU * rho).round().max(1.0) as u32;
+        let cols = ((std::f64::consts::TAU * rho / f64::from(COL_MULTIPLE)).round().max(1.0) as u32) * COL_MULTIPLE;
         Self { width, height, cols, ln_r0 }
     }
 
@@ -91,9 +96,13 @@ pub struct Chunk {
 }
 
 const MAGIC: &[u8; 4] = b"RMK1";
-const FORMAT_VERSION: u32 = 1;
-const HEADER_LEN: usize = 4 + 4 + 4 + 8 + 4 + 4 + 8;
+/// 2: rows compressed in independent blocks of [`BLOCK_ROWS`], so a reader can
+/// decode the rows it needs without the whole chunk (a 4K chunk is ~150 MB).
+const FORMAT_VERSION: u32 = 2;
+const HEADER_LEN: usize = 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4;
 const ZSTD_LEVEL: i32 = 3;
+/// Rows per independently compressed block.
+pub const BLOCK_ROWS: u32 = 64;
 
 fn bad(path: impl Into<PathBuf>, reason: impl Into<String>) -> MbError {
     MbError::Encode { path: path.into(), reason: reason.into() }
@@ -136,22 +145,107 @@ fn unshuffle(bytes: &[u8], n: usize) -> Vec<u32> {
         .collect()
 }
 
+/// File layout: header (magic, version, index, row0, rows, cols, block rows,
+/// block count), one u64 compressed length per block, then the blocks. Each
+/// block is zstd of the byte-shuffled, row-delta-filtered rows it holds; the
+/// delta restarts in every block so blocks decode alone.
 pub fn encode_chunk(c: &Chunk) -> Vec<u8> {
-    let mut filtered = c.data.clone();
-    row_delta(&mut filtered, c.cols as usize);
-    let payload = zstd::bulk::compress(&shuffle(&filtered), ZSTD_LEVEL)
-        .expect("zstd compression into a growable buffer cannot fail");
-
-    let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
+    let cols = c.cols as usize;
+    let block = BLOCK_ROWS as usize * cols;
+    let payloads: Vec<Vec<u8>> = if block == 0 {
+        Vec::new()
+    } else {
+        c.data
+            .chunks(block)
+            .map(|rows| {
+                let mut filtered = rows.to_vec();
+                row_delta(&mut filtered, cols);
+                zstd::bulk::compress(&shuffle(&filtered), ZSTD_LEVEL).expect("zstd compression into a growable buffer cannot fail")
+            })
+            .collect()
+    };
+    let mut out = Vec::with_capacity(HEADER_LEN + payloads.len() * 8 + payloads.iter().map(Vec::len).sum::<usize>());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&c.index.to_le_bytes());
     out.extend_from_slice(&c.row0.to_le_bytes());
     out.extend_from_slice(&c.rows.to_le_bytes());
     out.extend_from_slice(&c.cols.to_le_bytes());
-    out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    out.extend_from_slice(&payload);
+    out.extend_from_slice(&BLOCK_ROWS.to_le_bytes());
+    out.extend_from_slice(&(payloads.len() as u32).to_le_bytes());
+    for p in &payloads {
+        out.extend_from_slice(&(p.len() as u64).to_le_bytes());
+    }
+    for p in &payloads {
+        out.extend_from_slice(p);
+    }
     out
+}
+
+/// A chunk file's header and block table.
+struct Layout {
+    index: u32,
+    row0: u64,
+    rows: u32,
+    cols: u32,
+    block_rows: u32,
+    /// Byte range of each block in the file.
+    blocks: Vec<(u64, u64)>,
+}
+
+impl Layout {
+    /// Parse and check the header and block table. `file_len` is checked
+    /// against the table when known.
+    fn parse(head: &[u8], file_len: Option<u64>, path: &Path) -> MbResult<Layout> {
+        if head.len() < HEADER_LEN {
+            return Err(bad(path, format!("chunk file is {} bytes, shorter than its {HEADER_LEN}-byte header", head.len())));
+        }
+        if &head[0..4] != MAGIC {
+            return Err(bad(path, "not a keyframe chunk (bad magic)"));
+        }
+        let u32_at = |o: usize| u32::from_le_bytes(head[o..o + 4].try_into().unwrap());
+        let u64_at = |o: usize| u64::from_le_bytes(head[o..o + 8].try_into().unwrap());
+        let version = u32_at(4);
+        if version != FORMAT_VERSION {
+            return Err(bad(path, format!("unsupported chunk format version {version} (this build reads {FORMAT_VERSION})")));
+        }
+        let (index, row0, rows, cols, block_rows, nblocks) = (u32_at(8), u64_at(12), u32_at(20), u32_at(24), u32_at(28), u32_at(32));
+        if block_rows == 0 || nblocks != rows.div_ceil(block_rows) {
+            return Err(bad(path, format!("{rows} rows in blocks of {block_rows} cannot make {nblocks} blocks")));
+        }
+        let table_end = HEADER_LEN + nblocks as usize * 8;
+        if head.len() < table_end {
+            return Err(bad(path, "chunk file ends inside its block table"));
+        }
+        let mut at = table_end as u64;
+        let mut blocks = Vec::with_capacity(nblocks as usize);
+        for b in 0..nblocks as usize {
+            let len = u64_at(HEADER_LEN + b * 8);
+            blocks.push((at, at + len));
+            at += len;
+        }
+        if let Some(n) = file_len {
+            if n != at {
+                return Err(bad(path, format!("payload is {} bytes but the block table says {} (truncated or padded file)", n.saturating_sub(table_end as u64), at - table_end as u64)));
+            }
+        }
+        Ok(Layout { index, row0, rows, cols, block_rows, blocks })
+    }
+
+    fn block_rows_of(&self, b: usize) -> u32 {
+        (self.rows - b as u32 * self.block_rows).min(self.block_rows)
+    }
+
+    fn decode_block(&self, b: usize, payload: &[u8], path: &Path) -> MbResult<Vec<u32>> {
+        let n = self.block_rows_of(b) as usize * self.cols as usize;
+        let raw = zstd::bulk::decompress(payload, n * 4).map_err(|e| bad(path, format!("block {b} payload does not decompress: {e}")))?;
+        if raw.len() != n * 4 {
+            return Err(bad(path, format!("block {b} payload holds {} bytes but its rows need {}", raw.len(), n * 4)));
+        }
+        let mut data = unshuffle(&raw, n);
+        row_undelta(&mut data, self.cols as usize);
+        Ok(data)
+    }
 }
 
 pub fn decode_chunk(bytes: &[u8]) -> MbResult<Chunk> {
@@ -159,41 +253,12 @@ pub fn decode_chunk(bytes: &[u8]) -> MbResult<Chunk> {
 }
 
 fn decode_named(bytes: &[u8], path: &Path) -> MbResult<Chunk> {
-    if bytes.len() < HEADER_LEN {
-        return Err(bad(path, format!("chunk file is {} bytes, shorter than its {HEADER_LEN}-byte header", bytes.len())));
+    let l = Layout::parse(bytes, Some(bytes.len() as u64), path)?;
+    let mut data = Vec::with_capacity(l.rows as usize * l.cols as usize);
+    for (b, &(start, end)) in l.blocks.iter().enumerate() {
+        data.extend(l.decode_block(b, &bytes[start as usize..end as usize], path)?);
     }
-    if &bytes[0..4] != MAGIC {
-        return Err(bad(path, "not a keyframe chunk (bad magic)"));
-    }
-    let u32_at = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-    let u64_at = |o: usize| u64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
-    let version = u32_at(4);
-    if version != FORMAT_VERSION {
-        return Err(bad(path, format!("unsupported chunk format version {version} (this build reads {FORMAT_VERSION})")));
-    }
-    let index = u32_at(8);
-    let row0 = u64_at(12);
-    let rows = u32_at(20);
-    let cols = u32_at(24);
-    let payload_len = u64_at(28);
-
-    let body = &bytes[HEADER_LEN..];
-    if payload_len != body.len() as u64 {
-        return Err(bad(path, format!("payload is {} bytes but the header says {payload_len} (truncated or padded file)", body.len())));
-    }
-    let n = u64::from(rows) * u64::from(cols);
-    let raw_len = n
-        .checked_mul(4)
-        .and_then(|b| usize::try_from(b).ok())
-        .ok_or_else(|| bad(path, format!("{rows} x {cols} samples is too large")))?;
-    let raw = zstd::bulk::decompress(body, raw_len)
-        .map_err(|e| bad(path, format!("payload does not decompress: {e}")))?;
-    if raw.len() != raw_len {
-        return Err(bad(path, format!("payload holds {} bytes but {rows} x {cols} samples need {raw_len}", raw.len())));
-    }
-    let mut data = unshuffle(&raw, n as usize);
-    row_undelta(&mut data, cols as usize);
-    Ok(Chunk { index, row0, rows, cols, data })
+    Ok(Chunk { index: l.index, row0: l.row0, rows: l.rows, cols: l.cols, data })
 }
 
 pub fn chunk_path(dir: &Path, index: u32) -> PathBuf {
@@ -231,6 +296,27 @@ pub fn read_chunk(dir: &Path, index: u32) -> MbResult<Chunk> {
     let path = chunk_path(dir, index);
     let bytes = std::fs::read(&path).map_err(|e| MbError::io(&path, e))?;
     decode_named(&bytes, &path)
+}
+
+/// Block `b` of chunk `index` (rows `b·BLOCK_ROWS ..` of the chunk, up to
+/// [`BLOCK_ROWS`] of them), decoding only that block.
+pub fn read_block(dir: &Path, index: u32, b: usize) -> MbResult<Vec<u32>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = chunk_path(dir, index);
+    let io = |e| MbError::io(&path, e);
+    let mut f = std::fs::File::open(&path).map_err(io)?;
+    let file_len = f.metadata().map_err(io)?.len();
+    let mut head = vec![0u8; HEADER_LEN];
+    f.read_exact(&mut head).map_err(io)?;
+    let nblocks = u32::from_le_bytes(head[32..36].try_into().unwrap()) as usize;
+    head.resize(HEADER_LEN + nblocks * 8, 0);
+    f.read_exact(&mut head[HEADER_LEN..]).map_err(io)?;
+    let l = Layout::parse(&head, Some(file_len), &path)?;
+    let &(start, end) = l.blocks.get(b).ok_or_else(|| bad(&path, format!("block {b} of {}", l.blocks.len())))?;
+    let mut payload = vec![0u8; (end - start) as usize];
+    f.seek(SeekFrom::Start(start)).map_err(io)?;
+    f.read_exact(&mut payload).map_err(io)?;
+    l.decode_block(b, &payload, &path)
 }
 
 /// Summary of a set of samples. Counts, `min` and `max` are exact; the
@@ -449,7 +535,7 @@ mod tests {
         assert!(decode_chunk(&b).unwrap_err().to_string().contains("magic"));
 
         let mut b = good.clone();
-        b[4..8].copy_from_slice(&2u32.to_le_bytes());
+        b[4..8].copy_from_slice(&3u32.to_le_bytes());
         assert!(decode_chunk(&b).unwrap_err().to_string().contains("version"));
 
         let b = &good[..good.len() - 5];
@@ -466,6 +552,22 @@ mod tests {
         let mut b = good.clone();
         b[20..24].copy_from_slice(&7u32.to_le_bytes());
         assert!(decode_chunk(&b).is_err());
+    }
+
+    #[test]
+    fn blocks_decode_alone_and_match_the_whole_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        // 150 rows: two full blocks and a short one.
+        let c = Chunk { index: 3, row0: 1000, rows: 150, cols: 70, data: synthetic(150, 70) };
+        write_chunk(dir.path(), &c).unwrap();
+        let mut joined = Vec::new();
+        for b in 0..3 {
+            let rows = read_block(dir.path(), 3, b).unwrap();
+            assert_eq!(rows.len(), (150 - b * 64).min(64) * 70);
+            joined.extend(rows);
+        }
+        assert_eq!(joined, c.data);
+        assert!(read_block(dir.path(), 3, 3).is_err());
     }
 
     #[test]
@@ -531,7 +633,9 @@ mod tests {
     fn geometry_is_consistent() {
         let g = StripGeometry::new(1920, 1080, 0.5);
         let rho = (1920f64).hypot(1080.0) / 2.0;
-        assert_eq!(g.cols, (std::f64::consts::TAU * rho).round() as u32);
+        // The circumference at the corner, to the nearest multiple of 64.
+        assert_eq!(g.cols % COL_MULTIPLE, 0);
+        assert!((f64::from(g.cols) - std::f64::consts::TAU * rho).abs() <= f64::from(COL_MULTIPLE) / 2.0);
         assert!((g.d() * f64::from(g.cols) - std::f64::consts::TAU).abs() < 1e-12);
         assert!((g.row_of_ln_radius(g.ln_radius(123.5)) - 123.5).abs() < 1e-9);
         assert!((g.rows_per_octave() * g.d() - std::f64::consts::LN_2).abs() < 1e-12);
