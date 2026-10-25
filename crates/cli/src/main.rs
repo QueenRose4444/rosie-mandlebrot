@@ -27,7 +27,7 @@ use rosie_mandlebrot_render::{render_frame, FrameRequest};
 use rosie_mandlebrot_store::state::StateStore;
 use rosie_mandlebrot_run::per_frame::PerFrameRun;
 use rosie_mandlebrot_run::signals::StdinSignals;
-use rosie_mandlebrot_run::NoEvents;
+use rosie_mandlebrot_run::{Events, JsonLines, NoEvents};
 
 /// Sets up logging to BOTH stdout (with ANSI colors) AND a file (plain text).
 ///
@@ -143,6 +143,16 @@ fn init_tracing(
     None
 }
 
+/// The web UI logs to the terminal only; each job's child writes its own log file.
+fn init_serve_logging() {
+    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=warn,naga=warn,tower_http=warn".into());
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_new(filter).unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")))
+        .with_target(false)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+        .try_init();
+}
+
 /// Renames an existing `logs/latest.log` to `logs/old/run-YYYYMMDD-HHMMSS.log`
 /// using its modification time as the timestamp. Silent on errors.
 fn archive_previous_latest_log(path: &std::path::Path) {
@@ -213,6 +223,12 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> anyhow::Result<()> {
+    // `serve` is the web UI: its own arguments, its own long-lived process.
+    let mut args = std::env::args();
+    if args.nth(1).as_deref() == Some("serve") {
+        init_serve_logging();
+        return rosie_mandlebrot_serve::main(args.collect(), env!("CARGO_PKG_VERSION"));
+    }
     let cli = Cli::parse();
     let argv: Vec<String> = std::env::args().collect();
     // Quick look-ups write no log file, so they do not push a render's log into logs/old/.
@@ -276,13 +292,29 @@ fn run() -> anyhow::Result<()> {
         return probe(&run_cfg, shader_dir, span, max_iter, cli.probe_oracle, cli.allow_software_gpu).map_err(Into::into);
     }
 
+    // `--events`: the steps of the run as JSON lines on stdout, for the web UI.
+    let events: Box<dyn Events> = if cli.events { Box::new(JsonLines::new(std::io::stdout())) } else { Box::new(NoEvents) };
+    let events = events.as_ref();
+
+    if let Some(dir) = &cli.heroes {
+        crate::stages::heroes(&cli, dir, shader_dir, events)?;
+        std::io::stdout().flush().ok();
+        std::process::exit(0);
+    }
+
+    if let Some(which) = &cli.values {
+        crate::stages::values(&cli, &run_cfg, which, shader_dir, events)?;
+        std::io::stdout().flush().ok();
+        std::process::exit(0);
+    }
+
     if cli.assemble {
         let stop = Arc::new(AtomicBool::new(false));
         install_stop_handlers(&cli, stop.clone());
         let gpu = GpuCtx::new_with_engine(shader_dir, run_cfg.deep_engine, cli.allow_software_gpu)?;
         let size = cli.width.zip(cli.height);
         let opt = crate::stages::assemble_options(&cli, &run_cfg)?;
-        let code = crate::stages::assemble_logged(&gpu, &run_cfg.output, size, &opt, &stop, &NoEvents);
+        let code = crate::stages::assemble_logged(&gpu, &run_cfg.output, size, &opt, &stop, events);
         // Skip wgpu's Device drop, which can hang on teardown (see the end of a frame run).
         std::io::stdout().flush().ok();
         std::process::exit(code);
@@ -294,7 +326,7 @@ fn run() -> anyhow::Result<()> {
         let _stdin = rosie_mandlebrot_run::signals::spawn_listener(signals.clone());
         install_stop_handlers(&cli, signals.stop.clone());
         size_thread_pool(&cli);
-        let code = crate::stages::keyframes(&cli, &run_cfg, shader_dir, signals.stop.clone(), &NoEvents)?;
+        let code = crate::stages::keyframes(&cli, &run_cfg, shader_dir, signals.stop.clone(), events)?;
         std::io::stdout().flush().ok();
         std::process::exit(code);
     }
@@ -311,7 +343,7 @@ fn run() -> anyhow::Result<()> {
     let num_encoders = size_thread_pool(&cli);
 
     let gpu = GpuCtx::new_with_engine(shader_dir, run.config().deep_engine, cli.allow_software_gpu)?;
-    let code = run.render(&gpu, &stop_signals, num_encoders, &NoEvents)?;
+    let code = run.render(&gpu, &stop_signals, num_encoders, events)?;
 
     // Clean exit. Returning here would run wgpu's Device Drop, which can hang for
     // minutes on GPU teardown ("Device::maintain: waiting for submission …") and

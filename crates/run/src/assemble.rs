@@ -10,7 +10,7 @@ use crate::events::{Event, Events};
 use crate::strip::{deepest_frame_span, strip_dir, MIN_RADIUS_PX};
 use rosie_mandlebrot_core::encode::{measure_tone_range, ToneRange, ToneSmoother};
 use rosie_mandlebrot_core::error::MbError;
-use rosie_mandlebrot_core::palette::ColorScheme;
+use rosie_mandlebrot_core::palette::Palette;
 use rosie_mandlebrot_core::types::PixelOut;
 use rosie_mandlebrot_render::assembler::{window_bytes, AsmFrame, Assembler, GroupSpec};
 use rosie_mandlebrot_render::GpuCtx;
@@ -32,7 +32,11 @@ pub enum Tone {
 }
 
 pub struct Options {
-    pub palette: ColorScheme,
+    pub palette: Palette,
+    /// The colour inside the set (default: the palette's last entry).
+    pub inside: Option<[u8; 3]>,
+    /// Bars around a smaller picture; `None` fills the frame.
+    pub bars: Option<Bars>,
     pub fps: u32,
     pub zoom_factor: Option<f64>,
     pub codec: String,
@@ -53,9 +57,105 @@ pub struct Options {
     pub keep_existing: bool,
 }
 
+/// How the space around a smaller picture is filled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarStyle {
+    /// One colour.
+    Solid,
+    /// A blurred, darkened copy of the picture, scaled to fill the frame.
+    Blur,
+    /// Nothing: alpha 0. Only formats with an alpha channel keep it.
+    Transparent,
+}
+
+impl BarStyle {
+    pub fn parse(s: &str) -> Option<BarStyle> {
+        match s {
+            "solid" => Some(BarStyle::Solid),
+            "blur" => Some(BarStyle::Blur),
+            "transparent" => Some(BarStyle::Transparent),
+            _ => None,
+        }
+    }
+}
+
+/// A picture of `picture` pixels centred in the frame, the rest filled by `style`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bars {
+    pub style: BarStyle,
+    pub colour: [u8; 3],
+    pub picture: (u32, u32),
+}
+
+/// Containers that can carry an alpha channel, with the codec that does.
+pub fn alpha_codec(container: &str) -> Option<&'static str> {
+    match container {
+        "webm" => Some("vp9"),
+        "mov" => Some("prores"),
+        _ => None,
+    }
+}
+
+/// The ffmpeg pixel format a video is written in.
+fn output_pix_fmt(codec: &str, alpha: bool) -> &'static str {
+    match (codec, alpha) {
+        ("prores", true) => "yuva444p10le",
+        ("prores", false) => "yuv444p10le",
+        (_, true) => "yuva420p",
+        _ => "yuv420p",
+    }
+}
+
+/// `pic` (RGBA, `pw`×`ph`) centred in a `w`×`h` frame with `bars` around it.
+pub fn compose_bars(pic: &[u8], pw: u32, ph: u32, w: u32, h: u32, bars: &Bars) -> Vec<u8> {
+    let mut out = match bars.style {
+        BarStyle::Solid => {
+            let [r, g, b] = bars.colour;
+            [r, g, b, 255].repeat((w * h) as usize)
+        }
+        BarStyle::Transparent => vec![0u8; (w * h * 4) as usize],
+        BarStyle::Blur => blurred_backdrop(pic, pw, ph, w, h),
+    };
+    let (x0, y0) = ((w - pw) / 2, (h - ph) / 2);
+    let row = (pw * 4) as usize;
+    for y in 0..ph {
+        let o = (((y0 + y) * w + x0) * 4) as usize;
+        let i = (y * pw * 4) as usize;
+        out[o..o + row].copy_from_slice(&pic[i..i + row]);
+    }
+    out
+}
+
+/// The picture scaled to cover the whole frame, blurred and darkened. Done at
+/// an eighth of the frame's size, where a blur is cheap, then scaled up.
+fn blurred_backdrop(pic: &[u8], pw: u32, ph: u32, w: u32, h: u32) -> Vec<u8> {
+    use image::imageops::{self, FilterType};
+    let src = image::RgbaImage::from_raw(pw, ph, pic.to_vec()).expect("picture buffer matches its size");
+    let (sw, sh) = (w.div_ceil(8).max(1), h.div_ceil(8).max(1));
+    let cover = (f64::from(sw) / f64::from(pw)).max(f64::from(sh) / f64::from(ph));
+    let (cw, ch) = (((f64::from(pw) * cover).ceil() as u32).max(sw), ((f64::from(ph) * cover).ceil() as u32).max(sh));
+    let scaled = imageops::resize(&src, cw, ch, FilterType::Triangle);
+    let small = imageops::crop_imm(&scaled, (cw - sw) / 2, (ch - sh) / 2, sw, sh).to_image();
+    let mut blurred = imageops::blur(&small, 2.5);
+    for p in blurred.pixels_mut() {
+        for c in 0..3 {
+            p.0[c] = (f32::from(p.0[c]) * 0.45) as u8;
+        }
+        p.0[3] = 255;
+    }
+    imageops::resize(&blurred, w, h, FilterType::Triangle).into_raw()
+}
+
 /// [`WINDOW_BUDGET`], or `MANDELBROT_ASM_BUDGET_MB` for measuring the thinned path.
 fn window_budget() -> u64 {
     std::env::var("MANDELBROT_ASM_BUDGET_MB").ok().and_then(|v| v.parse::<u64>().ok()).map_or(WINDOW_BUDGET, |mb| mb << 20)
+}
+
+/// GPU memory the assembler's rows take for frames `half_diag` pixels from
+/// centre to corner, within `budget`.
+pub fn window_bytes_for(g: &StripGeometry, half_diag: f64, budget: u64) -> u64 {
+    let p = Plan::new(g, half_diag, budget);
+    window_bytes(g.cols, &p.groups)
 }
 
 /// Smoothing of the per-chunk tone ranges across depth, in octaves.
@@ -192,6 +292,65 @@ impl BlockCache<'_> {
     }
 }
 
+/// Streams strip rows into an assembler's rings as frames move deeper. Each
+/// group keeps the rows of its band; rows above a band are never read again.
+struct Loader<'a> {
+    m: &'a Manifest,
+    plan: &'a Plan,
+    /// First strip row not yet loaded, per group.
+    loaded: Vec<u64>,
+    cache: BlockCache<'a>,
+}
+
+impl<'a> Loader<'a> {
+    fn new(m: &'a Manifest, plan: &'a Plan, dir: &'a Path) -> Self {
+        Self::resume(m, plan, dir, vec![0; plan.groups.len()])
+    }
+
+    /// A loader for rings that already hold rows up to `loaded` (per group).
+    fn resume(m: &'a Manifest, plan: &'a Plan, dir: &'a Path, loaded: Vec<u64>) -> Self {
+        Loader { m, plan, loaded, cache: BlockCache { dir, cols: m.geometry.cols, held: Default::default() } }
+    }
+
+    /// Upload what the frame with its corner at strip row `corner` needs and
+    /// return each group's loaded rows.
+    fn load(&mut self, gpu: &GpuCtx, asm: &Assembler, corner: f64) -> anyhow::Result<Vec<(u32, u32)>> {
+        let (m, plan) = (self.m, self.plan);
+        let ng = plan.groups.len();
+        let total_rows = m.next_row();
+        let br = u64::from(BLOCK_ROWS);
+        let loaded = &mut self.loaded;
+        let mut windows = Vec::with_capacity(ng);
+        for (gi, spec) in plan.groups.iter().enumerate() {
+            let (lo, hi) = plan.band(corner, gi, ng);
+            let lo = lo.floor().max(0.0) as u64;
+            let hi = (hi.ceil().max(0.0) as u64).min(total_rows);
+            // Rows above the band are never read again; skip straight to it.
+            loaded[gi] = loaded[gi].max(lo);
+            let gcols = asm.group_cols(gi) as usize;
+            while loaded[gi] < hi {
+                let rec = &m.chunks[m.chunks.partition_point(|c| c.row0 + u64::from(c.rows) <= loaded[gi])];
+                let b = ((loaded[gi] - rec.row0) / br) as usize;
+                let block_row0 = rec.row0 + b as u64 * br;
+                let end = (block_row0 + br).min(rec.row0 + u64::from(rec.rows)).min(hi);
+                let data = self.cache.get(rec.index, b, spec.stride)?;
+                let from = (loaded[gi] - block_row0) as usize * gcols;
+                let to = (end - block_row0) as usize * gcols;
+                asm.write_rows(gpu, gi, loaded[gi], &data[from..to]);
+                loaded[gi] = end;
+            }
+            windows.push((lo as u32, loaded[gi] as u32));
+        }
+        // Keep only the block each group is part-way through; the rest is on the GPU.
+        let loaded = &self.loaded;
+        self.cache.release(|chunk, block, stride| {
+            let block_end = m.chunks[chunk as usize].row0 + (block as u64 + 1) * br;
+            plan.groups.iter().zip(loaded).any(|(spec, &next)| spec.stride == stride && block_end > next)
+        });
+        Ok(windows)
+    }
+}
+
 /// `zoom.<container>`, or with `keep_existing` the first of `zoom-2`, `zoom-3`
 /// ... that does not exist yet.
 fn video_name(output: &Path, container: &str, keep_existing: bool) -> std::path::PathBuf {
@@ -229,7 +388,24 @@ pub fn run(
     })?;
     anyhow::ensure!(!m.chunks.is_empty(), "the strip in {} has no rows yet", dir.display());
     let g = &m.geometry;
-    let (w, h) = size.unwrap_or((g.width, g.height));
+    // The video frame, and the picture inside it (smaller when there are bars).
+    let (vw, vh) = size.unwrap_or((g.width, g.height));
+    let (w, h) = match &opt.bars {
+        Some(b) => {
+            anyhow::ensure!(b.picture.0 <= vw && b.picture.1 <= vh, "the picture ({}x{}) must fit in the video ({vw}x{vh})", b.picture.0, b.picture.1);
+            b.picture
+        }
+        None => (vw, vh),
+    };
+    let alpha = opt.bars.is_some_and(|b| b.style == BarStyle::Transparent);
+    if alpha && opt.video {
+        anyhow::ensure!(
+            alpha_codec(&opt.container) == Some(opt.codec.as_str()),
+            "transparent bars need a video format with an alpha channel: webm (vp9) or mov (prores), not {} ({})",
+            opt.container,
+            opt.codec
+        );
+    }
     let half_diag = f64::from(w).hypot(f64::from(h)) * 0.5;
     if half_diag > g.half_diagonal_px() * 1.001 {
         tracing::warn!(
@@ -243,8 +419,9 @@ pub fn run(
     let frames = ((end_span / m.initial_span).ln() / z.ln()).floor().max(0.0) as u64 + 1;
     let plan = Plan::new(g, half_diag, window_budget());
     let lut = opt.palette.lut_1024();
+    let inside = opt.inside.unwrap_or(lut[1023]);
     let total_rows = m.next_row();
-    let asm = Assembler::new(gpu, g.cols, &plan.groups, total_rows as u32, w, h, &lut)?;
+    let asm = Assembler::new(gpu, g.cols, &plan.groups, total_rows as u32, w, h, &lut, inside, false)?;
     asm.set_tone(gpu, &location_tone(&m));
     tracing::info!(
         "assembling {frames} frames at {w}x{h}, {} fps, zoom {z} per frame, from {total_rows} strip rows ({:.0} MB GPU window, {} octaves at full width{})",
@@ -253,16 +430,23 @@ pub fn run(
         plan.full_octaves,
         if plan.groups.len() > 1 { format!(", then {} thinner groups", plan.groups.len() - 1) } else { String::new() }
     );
-    ev.emit(Event::Started { stage: "assemble", width: w, height: h, frames: Some(frames) });
+    if let Some(b) = &opt.bars {
+        tracing::info!("the picture is {w}x{h} inside a {vw}x{vh} frame, {:?} bars", b.style);
+    }
+    ev.emit(Event::Started { stage: "assemble", width: vw, height: vh, frames: Some(frames) });
 
     let video_path = video_name(output, &opt.container, opt.keep_existing);
     let mut ffmpeg = if opt.video {
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-y", "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pix_fmt", "rgba"])
-            .args(["-s", &format!("{w}x{h}"), "-r", &opt.fps.to_string(), "-i", "-"])
+            .args(["-s", &format!("{vw}x{vh}"), "-r", &opt.fps.to_string(), "-i", "-"])
             .args(rosie_mandlebrot_store::video::codec_args(&opt.codec)?)
-            .args(["-pix_fmt", "yuv420p"])
-            .arg(&video_path)
+            .args(["-pix_fmt", output_pix_fmt(&opt.codec, alpha)]);
+        if opt.container == "mp4" {
+            // The index at the front, so a browser can play it while it loads.
+            cmd.args(["-movflags", "+faststart"]);
+        }
+        cmd.arg(&video_path)
             .stdin(Stdio::piped());
         Some(cmd.spawn().map_err(|e| MbError::Ffmpeg(format!("spawn ffmpeg: {e}")))?)
     } else {
@@ -270,14 +454,10 @@ pub fn run(
     };
 
     let mut stats_csv = String::from("frame,span,mean_luma\n");
-    let ng = plan.groups.len();
-    // First strip row not yet loaded, per group.
-    let mut loaded = vec![0u64; ng];
-    let mut cache = BlockCache { dir: &dir, cols: g.cols, held: Default::default() };
+    let mut loader = Loader::new(&m, &plan, &dir);
     let mut smoother = ToneSmoother::new(opt.tone_smoothing);
     let mut sys = crate::sysstats::SysStats::new(num_cpus::get());
     let mut done = 0u64;
-    let br = u64::from(BLOCK_ROWS);
     for k in 0..frames {
         if stop.load(Ordering::SeqCst) {
             tracing::warn!("stopped after {done} frames");
@@ -286,32 +466,7 @@ pub fn run(
         let span = m.initial_span * z.powf(k as f64);
         let ln_p = (span / f64::from(h)).ln();
         let corner = (g.ln_r0 - ln_p - half_diag.ln()) / g.d();
-        let mut windows = Vec::with_capacity(ng);
-        for (gi, spec) in plan.groups.iter().enumerate() {
-            let (lo, hi) = plan.band(corner, gi, ng);
-            let lo = lo.floor().max(0.0) as u64;
-            let hi = (hi.ceil().max(0.0) as u64).min(total_rows);
-            // Rows above the band are never read again; skip straight to it.
-            loaded[gi] = loaded[gi].max(lo);
-            let gcols = asm.group_cols(gi) as usize;
-            while loaded[gi] < hi {
-                let rec = &m.chunks[m.chunks.partition_point(|c| c.row0 + u64::from(c.rows) <= loaded[gi])];
-                let b = ((loaded[gi] - rec.row0) / br) as usize;
-                let block_row0 = rec.row0 + b as u64 * br;
-                let end = (block_row0 + br).min(rec.row0 + u64::from(rec.rows)).min(hi);
-                let data = cache.get(rec.index, b, spec.stride)?;
-                let from = (loaded[gi] - block_row0) as usize * gcols;
-                let to = (end - block_row0) as usize * gcols;
-                asm.write_rows(gpu, gi, loaded[gi], &data[from..to]);
-                loaded[gi] = end;
-            }
-            windows.push((lo as u32, loaded[gi] as u32));
-        }
-        // Keep only the block each group is part-way through; the rest is on the GPU.
-        cache.release(|chunk, block, stride| {
-            let block_end = m.chunks[chunk as usize].row0 + (block as u64 + 1) * br;
-            plan.groups.iter().zip(&loaded).any(|(spec, &next)| spec.stride == stride && block_end > next)
-        });
+        let windows = loader.load(gpu, &asm, corner)?;
         let mut f = AsmFrame { corner_row: corner, full_octaves: plan.full_octaves, loaded: windows, sub: opt.sub, tone_global: None };
         if opt.tone == Tone::PerFrame {
             // The frame's own range, measured exactly as the per-frame encoder
@@ -343,7 +498,7 @@ pub fn run(
                 .max()
                 .unwrap_or(256);
             let tone_rows = location_tone(&m);
-            let ctx = Colouring { m: &m, tone_rows: &tone_rows, lut: &lut, ln_p, tone_global: f.tone_global, w, h };
+            let ctx = Colouring { m: &m, tone_rows: &tone_rows, lut: &lut, inside, ln_p, tone_global: f.tone_global, w, h };
             for (name, factor) in [("direct", 1u32), ("truth5x5", 5)] {
                 let img = render_reference(gpu, span, factor, max_iter, &ctx)?;
                 let path = output.join(format!("compare_{k:06}_{name}.png"));
@@ -355,9 +510,14 @@ pub fn run(
                 .map_err(|e| MbError::io(&path, std::io::Error::other(e)))?;
             tracing::info!("frame {k}: wrote the assembled / direct / 5x5 truth comparison at {max_iter} iterations");
         }
+        // The video frame: the picture, with bars around it when asked for.
+        let rgba = match &opt.bars {
+            Some(b) => compose_bars(&rgba, w, h, vw, vh, b),
+            None => rgba,
+        };
         if opt.frames_png.contains(&k) {
             let path = output.join(format!("assembled_{k:06}.png"));
-            image::save_buffer(&path, &rgba, w, h, image::ExtendedColorType::Rgba8)
+            image::save_buffer(&path, &rgba, vw, vh, image::ExtendedColorType::Rgba8)
                 .map_err(|e| MbError::io(&path, std::io::Error::other(e)))?;
             ev.emit(Event::Image { path: path.display().to_string(), k });
         }
@@ -398,12 +558,200 @@ pub fn run(
     Ok(AssembleOutcome { video: opt.video.then_some(video_path), frames: done })
 }
 
+/// One frame made by [`frame_at`].
+pub struct Shot {
+    /// The frame's index at the strip's own zoom speed, and its span.
+    pub k: u64,
+    pub span: f64,
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8, top row first, when asked for.
+    pub rgba: Option<Vec<u8>>,
+    /// What each pixel's colour is made of ([`Assembler::weights`]), when asked for.
+    pub weights: Option<Vec<u32>>,
+}
+
+/// GPU memory a single frame may use: previews thin the strip's columns more
+/// than a video would, which costs a little sharpness deep in the frame.
+pub const SHOT_BUDGET: u64 = 96 << 20;
+
+/// One frame of the strip's video at `w`×`h`: frame `k` at the strip's own zoom
+/// speed, or the deepest the strip can serve when `k` is None (or past it).
+/// Location tone, 2×2 sub-samples, as the video.
+#[allow(clippy::too_many_arguments)]
+pub fn frame_at(
+    gpu: &GpuCtx,
+    m: &Manifest,
+    dir: &Path,
+    k: Option<u64>,
+    w: u32,
+    h: u32,
+    palette: &Palette,
+    inside: Option<[u8; 3]>,
+    want_rgba: bool,
+    want_weights: bool,
+) -> anyhow::Result<Shot> {
+    anyhow::ensure!(!m.chunks.is_empty(), "the strip has no rows yet");
+    let g = &m.geometry;
+    let z = m.zoom_factor;
+    let end_span = deepest_frame_span(m).max(m.video_end_span.unwrap_or(0.0));
+    let frames = ((end_span / m.initial_span).ln() / z.ln()).floor().max(0.0) as u64 + 1;
+    let k = k.unwrap_or(u64::MAX).min(frames - 1);
+    let span = m.initial_span * z.powf(k as f64);
+    let half_diag = f64::from(w).hypot(f64::from(h)) * 0.5;
+    let plan = Plan::new(g, half_diag, SHOT_BUDGET);
+    let lut = palette.lut_1024();
+    let asm = Assembler::new(gpu, g.cols, &plan.groups, m.next_row() as u32, w, h, &lut, inside.unwrap_or(lut[1023]), want_weights)?;
+    asm.set_tone(gpu, &location_tone(m));
+    let ln_p = (span / f64::from(h)).ln();
+    let corner = (g.ln_r0 - ln_p - half_diag.ln()) / g.d();
+    let mut loader = Loader::new(m, &plan, dir);
+    let windows = loader.load(gpu, &asm, corner)?;
+    let f = AsmFrame { corner_row: corner, full_octaves: plan.full_octaves, loaded: windows, sub: 2, tone_global: None };
+    let rgba = if want_rgba { Some(asm.frame(gpu, &f)?) } else { None };
+    let weights = if want_weights { Some(asm.weights(gpu, &f)?) } else { None };
+    Ok(Shot { k, span, width: w, height: h, rgba, weights })
+}
+
+/// The deepest frame of a strip that is still being rendered, again and again
+/// as it grows: the rows stay on the GPU between shots, so each shot only
+/// uploads the rows rendered since the last one.
+pub struct Snapshotter {
+    w: u32,
+    h: u32,
+    plan: Plan,
+    lut: [[u8; 3]; 1024],
+    inside: [u8; 3],
+    asm: Option<Assembler>,
+    /// Rows the assembler's tone table holds; past it a bigger one is made.
+    capacity: u64,
+    loaded: Vec<u64>,
+    last_k: Option<u64>,
+}
+
+impl Snapshotter {
+    pub fn new(g: &StripGeometry, long_side: u32, palette: &Palette, inside: Option<[u8; 3]>) -> Snapshotter {
+        let (w, h) = preview_size(g, long_side);
+        let plan = Plan::new(g, f64::from(w).hypot(f64::from(h)) * 0.5, SHOT_BUDGET);
+        let lut = palette.lut_1024();
+        let loaded = vec![0; plan.groups.len()];
+        Snapshotter { w, h, plan, lut, inside: inside.unwrap_or(lut[1023]), asm: None, capacity: 0, loaded, last_k: None }
+    }
+
+    /// The deepest frame the strip can serve now, or None when that is still
+    /// the frame of the last shot.
+    pub fn shot(&mut self, gpu: &GpuCtx, m: &Manifest, dir: &Path) -> anyhow::Result<Option<Shot>> {
+        if m.chunks.is_empty() {
+            return Ok(None);
+        }
+        let g = &m.geometry;
+        let end_span = deepest_frame_span(m).max(m.video_end_span.unwrap_or(0.0));
+        let k = ((end_span / m.initial_span).ln() / m.zoom_factor.ln()).floor().max(0.0) as u64;
+        if self.last_k == Some(k) {
+            return Ok(None);
+        }
+        if self.asm.is_none() || m.next_row() > self.capacity {
+            self.capacity = (m.next_row() * 2).max(4096);
+            self.asm = Some(Assembler::new(gpu, g.cols, &self.plan.groups, self.capacity as u32, self.w, self.h, &self.lut, self.inside, false)?);
+            self.loaded = vec![0; self.plan.groups.len()];
+        }
+        let asm = self.asm.as_ref().expect("made above");
+        asm.set_tone(gpu, &location_tone(m));
+        let span = m.initial_span * m.zoom_factor.powf(k as f64);
+        let half_diag = f64::from(self.w).hypot(f64::from(self.h)) * 0.5;
+        let corner = (g.ln_r0 - (span / f64::from(self.h)).ln() - half_diag.ln()) / g.d();
+        let mut loader = Loader::resume(m, &self.plan, dir, std::mem::take(&mut self.loaded));
+        let windows = loader.load(gpu, asm, corner);
+        self.loaded = loader.loaded;
+        let f = AsmFrame { corner_row: corner, full_octaves: self.plan.full_octaves, loaded: windows?, sub: 2, tone_global: None };
+        let rgba = asm.frame(gpu, &f)?;
+        self.last_k = Some(k);
+        Ok(Some(Shot { k, span, width: self.w, height: self.h, rgba: Some(rgba), weights: None }))
+    }
+}
+
+/// The size of a preview no longer than `long` pixels on its long side, with
+/// the strip's own aspect.
+pub fn preview_size(g: &StripGeometry, long: u32) -> (u32, u32) {
+    let s = f64::from(long) / f64::from(g.width.max(g.height));
+    if s >= 1.0 {
+        return (g.width, g.height);
+    }
+    (((f64::from(g.width) * s).round() as u32).max(1), ((f64::from(g.height) * s).round() as u32).max(1))
+}
+
+/// Write a shot's weights as a values file: `RMW1`, u32 w, u32 h, u32 sub,
+/// f64 span, u32 k (little-endian), then per pixel a count and that many
+/// (u16 palette index, u16 weight) pairs; index 1024 is inside the set and a
+/// pixel's weights sum to 32768. Any palette can then be applied without the
+/// GPU: colour = floor(sum of weight x colour / 32768 + 0.5).
+pub fn write_values(shot: &Shot, path: &Path) -> anyhow::Result<()> {
+    use rosie_mandlebrot_render::assembler::WEIGHT_SLOTS;
+    let wts = shot.weights.as_ref().ok_or_else(|| anyhow::anyhow!("the shot has no weights"))?;
+    let mut out = Vec::with_capacity(28 + wts.len() * 2);
+    out.extend_from_slice(b"RMW1");
+    for v in [shot.width, shot.height, 2] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(&shot.span.to_le_bytes());
+    out.extend_from_slice(&(shot.k.min(u64::from(u32::MAX)) as u32).to_le_bytes());
+    for px in wts.chunks_exact(WEIGHT_SLOTS) {
+        let used: Vec<u32> = px.iter().copied().filter(|&e| e != u32::MAX).collect();
+        out.push(used.len() as u8);
+        for e in used {
+            out.extend_from_slice(&((e >> 16) as u16).to_le_bytes());
+            out.extend_from_slice(&((e & 0xffff) as u16).to_le_bytes());
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| MbError::io(parent, e))?;
+    }
+    std::fs::write(path, out).map_err(|e| MbError::io(path, e))?;
+    Ok(())
+}
+
+/// Colour a values file's weights with a palette, as the assembler would:
+/// RGBA8, top row first. Used to check the file against the assembled frame.
+pub fn recolour_weights(wts: &[u32], lut: &[[u8; 3]; 1024], inside: [u8; 3]) -> Vec<u8> {
+    use rosie_mandlebrot_render::assembler::WEIGHT_SLOTS;
+    let mut out = Vec::with_capacity(wts.len() / WEIGHT_SLOTS * 4);
+    for px in wts.chunks_exact(WEIGHT_SLOTS) {
+        let mut acc = [0f64; 3];
+        for &e in px.iter().filter(|&&e| e != u32::MAX) {
+            let i = (e >> 16) as usize;
+            let c = if i >= 1024 { inside } else { lut[i] };
+            let wt = f64::from(e & 0xffff);
+            for ch in 0..3 {
+                acc[ch] += wt * f64::from(c[ch]);
+            }
+        }
+        for a in acc {
+            out.push((a / 32768.0 + 0.5).floor().clamp(0.0, 255.0) as u8);
+        }
+        out.push(255);
+    }
+    out
+}
+
+/// Save RGBA8 as a JPEG (previews).
+pub fn write_jpeg(rgba: &[u8], w: u32, h: u32, path: &Path) -> anyhow::Result<()> {
+    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| MbError::io(parent, e))?;
+    }
+    let file = std::fs::File::create(path).map_err(|e| MbError::io(path, e))?;
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 85);
+    enc.encode(&rgb, w, h, image::ExtendedColorType::Rgb8).map_err(|e| MbError::io(path, std::io::Error::other(e)))?;
+    Ok(())
+}
+
 /// Everything needed to colour a directly rendered sample exactly as the
 /// assembler colours a strip sample.
 struct Colouring<'a> {
     m: &'a Manifest,
     tone_rows: &'a [[f32; 2]],
     lut: &'a [[u8; 3]; 1024],
+    inside: [u8; 3],
     /// ln of the output pixel size, in plane units.
     ln_p: f64,
     tone_global: Option<(f32, f32)>,
@@ -417,7 +765,7 @@ impl Colouring<'_> {
     fn colour(&self, px: PixelOut, max_iter: u32, ox: f64, oy: f64) -> [f32; 3] {
         let pick = |t: f32| self.lut[((t * 1023.0) as usize).min(1023)];
         let c = if rosie_mandlebrot_core::types::is_interior(px, max_iter) {
-            pick(1.0)
+            self.inside
         } else {
             let (lo, hi) = self.tone_global.unwrap_or_else(|| {
                 let g = &self.m.geometry;

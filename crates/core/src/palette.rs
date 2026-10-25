@@ -144,6 +144,111 @@ fn multi_stop(t: f64, stops: &[[f64; 3]]) -> [u8; 3] {
     lerp3(stops[idx], stops[idx + 1], frac)
 }
 
+/// One colour stop of a custom palette: a position in 0..=1 and a colour.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Stop {
+    pub pos: f64,
+    pub rgb: [u8; 3],
+}
+
+/// A palette: one of the built-in schemes, or a list of colour stops.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Palette {
+    Builtin(ColorScheme),
+    Stops(Vec<Stop>),
+}
+
+impl Palette {
+    /// 1024 entries, the form the renderer and the assembler use.
+    pub fn lut_1024(&self) -> [[u8; 3]; 1024] {
+        match self {
+            Palette::Builtin(s) => s.lut_1024(),
+            Palette::Stops(stops) => lut_from_stops(stops),
+        }
+    }
+}
+
+impl ColorScheme {
+    pub const ALL: [ColorScheme; 5] = [Self::Hot, Self::Grayscale, Self::Electric, Self::Rainbow, Self::Ember];
+
+    /// The scheme as stops at its own corners: a starting point for editing.
+    /// Their palette matches the scheme's to within one level per channel.
+    pub fn stops(self) -> Vec<Stop> {
+        let pos: &[f64] = match self {
+            Self::Hot => &[0.0, 0.375, 0.75, 1.0],
+            Self::Grayscale => &[0.0, 1.0],
+            Self::Electric | Self::Ember => &[0.0, 0.25, 0.5, 0.75, 1.0],
+            Self::Rainbow => &[0.0, 1.0 / 6.0, 2.0 / 6.0, 3.0 / 6.0, 4.0 / 6.0, 5.0 / 6.0, 1.0],
+        };
+        pos.iter().map(|&p| Stop { pos: p, rgb: self.sample(p) }).collect()
+    }
+}
+
+/// The palette of a stop list. Entry i sits at t = i/1023; before the first
+/// stop it takes the first colour, after the last the last, and between two
+/// stops each channel is interpolated and rounded to the nearest level. The
+/// web UI recolours previews with the same rule, so it must stay exactly this.
+pub fn lut_from_stops(stops: &[Stop]) -> [[u8; 3]; 1024] {
+    let mut sorted = stops.to_vec();
+    sorted.sort_by(|a, b| a.pos.total_cmp(&b.pos));
+    let mut lut = [[0u8; 3]; 1024];
+    if sorted.is_empty() {
+        return lut;
+    }
+    for (i, slot) in lut.iter_mut().enumerate() {
+        let t = i as f64 / 1023.0;
+        let k = sorted.partition_point(|s| s.pos <= t);
+        *slot = if k == 0 {
+            sorted[0].rgb
+        } else if k == sorted.len() {
+            sorted[k - 1].rgb
+        } else {
+            let (a, b) = (sorted[k - 1], sorted[k]);
+            let f = if b.pos > a.pos { (t - a.pos) / (b.pos - a.pos) } else { 0.0 };
+            let ch = |c: usize| {
+                let (x, y) = (f64::from(a.rgb[c]), f64::from(b.rgb[c]));
+                (x + (y - x) * f + 0.5).floor().clamp(0.0, 255.0) as u8
+            };
+            [ch(0), ch(1), ch(2)]
+        };
+    }
+    lut
+}
+
+/// `#rrggbb` (the `#` optional).
+pub fn parse_hex(s: &str) -> MbResult<[u8; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    let bad = || MbError::InvalidArg { flag: "--palette-stops", reason: format!("{s:?} is not a #rrggbb colour") };
+    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).map_err(|_| bad());
+    Ok([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// `#rrggbb` for a colour.
+pub fn to_hex(c: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+/// Stops written `pos:#rrggbb,pos:#rrggbb,…` (positions 0..=1, at least two).
+pub fn parse_stops(s: &str) -> MbResult<Vec<Stop>> {
+    let bad = |reason: String| MbError::InvalidArg { flag: "--palette-stops", reason };
+    let mut stops = Vec::new();
+    for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (pos, col) = part.split_once(':').ok_or_else(|| bad(format!("{part:?}: expected pos:#rrggbb")))?;
+        let pos: f64 = pos.trim().parse().map_err(|_| bad(format!("{pos:?} is not a number")))?;
+        if !(0.0..=1.0).contains(&pos) {
+            return Err(bad(format!("position {pos} is outside 0..1")));
+        }
+        stops.push(Stop { pos, rgb: parse_hex(col)? });
+    }
+    if stops.len() < 2 {
+        return Err(bad("a palette needs at least two stops".into()));
+    }
+    Ok(stops)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +274,41 @@ mod tests {
         let lut = ColorScheme::Hot.lut_1024();
         assert_eq!(lut[0], [0, 0, 0]);
         assert_eq!(lut[1023], [255, 255, 255]);
+    }
+
+    #[test]
+    fn stops_interpolate_and_round_like_the_ui() {
+        let bw = parse_stops("0:#000000,1:#ffffff").unwrap();
+        let lut = lut_from_stops(&bw);
+        for (i, c) in lut.iter().enumerate() {
+            let want = (255.0 * i as f64 / 1023.0 + 0.5).floor() as u8;
+            assert_eq!(*c, [want; 3], "entry {i}");
+        }
+        // Outside the stops the end colours hold; order of the list does not matter.
+        let mid = parse_stops("0.75:#00ff00,0.25:#ff0000").unwrap();
+        let lut = lut_from_stops(&mid);
+        assert_eq!(lut[0], [255, 0, 0]);
+        assert_eq!(lut[1023], [0, 255, 0]);
+        assert_eq!(lut[512], [127, 128, 0]);
+    }
+
+    #[test]
+    fn builtin_stops_rebuild_the_builtin_palettes() {
+        for scheme in ColorScheme::ALL {
+            let a = scheme.lut_1024();
+            let b = lut_from_stops(&scheme.stops());
+            let worst = a.iter().zip(&b).flat_map(|(x, y)| (0..3).map(move |c| x[c].abs_diff(y[c]))).max().unwrap();
+            assert!(worst <= 1, "{scheme:?} differs by {worst}");
+        }
+    }
+
+    #[test]
+    fn bad_stop_lists_are_refused() {
+        assert!(parse_stops("0:#000000").is_err());
+        assert!(parse_stops("0:#000000,2:#ffffff").is_err());
+        assert!(parse_stops("0:#00000,1:#ffffff").is_err());
+        assert!(parse_stops("x:#000000,1:#ffffff").is_err());
+        assert_eq!(parse_hex("FF8a2A").unwrap(), [255, 138, 42]);
+        assert_eq!(to_hex([255, 138, 42]), "#ff8a2a");
     }
 }

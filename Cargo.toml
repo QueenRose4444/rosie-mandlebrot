@@ -6,6 +6,7 @@ members = [
     "crates/render",
     "crates/store",
     "crates/run",
+    "crates/serve",
     "crates/cli",
 ]
 
@@ -23,6 +24,7 @@ rosie_mandlebrot_ref = { path = "crates/ref" }
 rosie_mandlebrot_render = { path = "crates/render" }
 rosie_mandlebrot_store = { path = "crates/store" }
 rosie_mandlebrot_run = { path = "crates/run" }
+rosie_mandlebrot_serve = { path = "crates/serve" }
 
 # Shared third-party versions. Pinned here so the crates cannot drift apart.
 anyhow = "1"
@@ -37,7 +39,7 @@ crossbeam-channel = "0.5"
 ctrlc = { version = "3.4", features = ["termination"] }
 humantime = "2.1"
 memory-stats = "1"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 indicatif = "0.17"
 num-complex = "0.4"
 num_cpus = "1.16"

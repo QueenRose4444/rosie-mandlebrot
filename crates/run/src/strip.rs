@@ -165,6 +165,84 @@ pub struct StripRun {
     /// what the run reports once the strip reaches that end.
     end_span: Option<f64>,
     end_reason: StopReason,
+    memory_limit: Option<u64>,
+}
+
+/// Peak memory of a strip render, measured: about 219 MB of fixed cost plus
+/// 17.3 bytes per sample of the chunk in hand (241 MB at 1080x1080 and 536 MB
+/// at 4096x4096, both with half-octave chunks).
+const FIXED_BYTES: f64 = 219.0 * 1048576.0;
+const BYTES_PER_CHUNK_SAMPLE: f64 = 17.3;
+
+/// The fraction of an octave each chunk covers: half an octave, or less when
+/// `limit` (bytes) would not hold that, down to a sixteenth.
+pub fn chunk_fraction(g: &StripGeometry, limit: Option<u64>) -> f64 {
+    let mut f = 0.5;
+    if let Some(limit) = limit {
+        while f > 1.0 / 16.0 && FIXED_BYTES + BYTES_PER_CHUNK_SAMPLE * g.rows_per_octave() * f * f64::from(g.cols) > limit as f64 {
+            f /= 2.0;
+        }
+    }
+    f
+}
+
+/// Snapshots while a strip renders: after every chunk, the deepest frame the
+/// strip can serve so far, as a small JPEG in `previews/` beside the strip,
+/// listed in `previews/index.json`.
+pub struct Previews {
+    /// Pixels on the long side.
+    pub long_side: u32,
+    pub palette: rosie_mandlebrot_core::palette::Palette,
+    pub inside: Option<[u8; 3]>,
+}
+
+/// One saved snapshot, as listed in `previews/index.json`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    pub file: String,
+    pub chunk: u32,
+    /// The frame (at the strip's own zoom speed) and its span.
+    pub k: u64,
+    pub span: f64,
+}
+
+/// The least time between snapshots while chunks render quickly.
+const SNAPSHOT_EVERY: Duration = Duration::from_secs(1);
+
+/// Where a run's snapshots live.
+pub fn previews_dir(output: &Path) -> PathBuf {
+    output.join("previews")
+}
+
+/// The snapshots listed so far (empty when there are none).
+pub fn read_snapshots(output: &Path) -> Vec<Snapshot> {
+    std::fs::read(previews_dir(output).join("index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Save the snapshot for chunk `index`, unless the strip still serves the
+/// same deepest frame as last time, and add it to the list.
+fn save_snapshot(
+    gpu: &GpuCtx,
+    snap: &mut crate::assemble::Snapshotter,
+    m: &Manifest,
+    dir: &Path,
+    output: &Path,
+    index: u32,
+    ev: &dyn Events,
+) -> anyhow::Result<()> {
+    let Some(shot) = snap.shot(gpu, m, dir)? else { return Ok(()) };
+    let (w, h) = (shot.width, shot.height);
+    let file = format!("p_{index:05}.jpg");
+    let pdir = previews_dir(output);
+    let path = pdir.join(&file);
+    crate::assemble::write_jpeg(shot.rgba.as_deref().unwrap_or_default(), w, h, &path)?;
+    let mut list = read_snapshots(output);
+    list.retain(|s| s.chunk != index);
+    list.push(Snapshot { file, chunk: index, k: shot.k, span: shot.span });
+    let index_path = pdir.join("index.json");
+    std::fs::write(&index_path, serde_json::to_vec(&list)?).map_err(|e| MbError::io(&index_path, e))?;
+    ev.emit(Event::Image { path: path.display().to_string(), k: shot.k });
+    Ok(())
 }
 
 /// How a strip render ended.
@@ -236,7 +314,13 @@ impl StripRun {
                 }
             }
         }
-        Ok(StripRun { cfg: cfg.clone(), dir, manifest, end_span, end_reason })
+        Ok(StripRun { cfg: cfg.clone(), dir, manifest, end_span, end_reason, memory_limit: None })
+    }
+
+    /// Keep the render's memory near `bytes` by rendering smaller chunks.
+    pub fn memory_limit(mut self, bytes: Option<u64>) -> Self {
+        self.memory_limit = bytes;
+        self
     }
 
     /// The strip as found or created.
@@ -246,15 +330,29 @@ impl StripRun {
 
     /// Render chunks until the strip reaches its end or a stop rule fires.
     /// `probe_oracle` > 0 checks that many samples of every chunk against a
-    /// high-precision orbit (a diagnostic; slow).
-    pub fn render(self, gpu: &GpuCtx, probe_oracle: u32, stop: Arc<AtomicBool>, ev: &dyn Events) -> anyhow::Result<StripOutcome> {
-        let StripRun { cfg, dir, mut manifest, mut end_span, mut end_reason } = self;
+    /// high-precision orbit (a diagnostic; slow). `previews` saves a snapshot
+    /// after every chunk.
+    pub fn render(
+        self,
+        gpu: &GpuCtx,
+        probe_oracle: u32,
+        previews: Option<&Previews>,
+        stop: Arc<AtomicBool>,
+        ev: &dyn Events,
+    ) -> anyhow::Result<StripOutcome> {
+        let StripRun { cfg, dir, mut manifest, mut end_span, mut end_reason, memory_limit } = self;
         let cfg = &cfg;
         let g = manifest.geometry.clone();
         // Half an octave per chunk: a chunk's pixels are all in memory at once, and
-        // at 4096x4096 a whole octave is ~300 MB of them.
-        let rows_per_chunk = (g.rows_per_octave() * 0.5).round().max(1.0) as u32;
+        // at 4096x4096 a whole octave is ~300 MB of them. Less under a memory limit.
+        let fraction = chunk_fraction(&g, memory_limit);
+        if fraction < 0.5 {
+            tracing::info!("chunks of 1/{} octave to stay within the memory limit", (1.0 / fraction).round());
+        }
+        let rows_per_chunk = (g.rows_per_octave() * fraction).round().max(1.0) as u32;
         let col_dir = column_directions(g.cols);
+        let mut snapshotter = previews.map(|p| crate::assemble::Snapshotter::new(&g, p.long_side, &p.palette, p.inside));
+        let mut last_snapshot: Option<Instant> = None;
         ev.emit(Event::Started { stage: "strip", width: g.width, height: g.height, frames: None });
         let started_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         write_progress(cfg, &manifest, "running", None, cfg.sequence.initial_span, 0, started_unix);
@@ -383,6 +481,16 @@ impl StripRun {
                 bytes: manifest.total_bytes(),
                 elapsed_secs: manifest.elapsed_secs,
             });
+            // At most one snapshot a second while chunks are quick; the last
+            // chunk always gets one (below, after the loop).
+            if let Some(snap) = snapshotter.as_mut().filter(|_| last_snapshot.is_none_or(|t: Instant| t.elapsed() >= SNAPSHOT_EVERY)) {
+                let t = Instant::now();
+                last_snapshot = Some(t);
+                match save_snapshot(gpu, snap, &manifest, &dir, &cfg.output, index, ev) {
+                    Ok(()) => tracing::debug!("snapshot after chunk {index} in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0),
+                    Err(e) => tracing::warn!("no snapshot after chunk {index}: {e:#}"),
+                }
+            }
             let _ = sys.memory();
             tracing::info!(
                 "chunk {index} done | radius {:.3e}..{:.3e} (frame span {:.3e}) | {} iter, {:.1}% interior | {engine} {:.0} ms shader, {:.0} ms total | {:.1} MB",
@@ -424,6 +532,11 @@ impl StripRun {
             }
         };
 
+        if let (Some(snap), Some(last)) = (snapshotter.as_mut(), manifest.chunks.last()) {
+            if let Err(e) = save_snapshot(gpu, snap, &manifest, &dir, &cfg.output, last.index, ev) {
+                tracing::warn!("no final snapshot: {e:#}");
+            }
+        }
         manifest.status = if stop_reason.is_failure() { "failed".into() } else { "stopped".into() };
         manifest.stop_reason = Some(stop_reason.to_string());
         manifest.video_end_span = end_span;
@@ -558,6 +671,17 @@ mod tests {
         for (a, b) in d.iter().zip(want) {
             assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6, "{a:?} vs {b:?}");
         }
+    }
+
+    #[test]
+    fn a_memory_limit_only_ever_makes_chunks_smaller() {
+        let g = StripGeometry::new(4096, 4096, 0.0);
+        assert_eq!(chunk_fraction(&g, None), 0.5);
+        assert_eq!(chunk_fraction(&g, Some(4 << 30)), 0.5);
+        let f = chunk_fraction(&g, Some(400 << 20));
+        assert!(f < 0.5, "{f}");
+        assert!(FIXED_BYTES + BYTES_PER_CHUNK_SAMPLE * g.rows_per_octave() * f * f64::from(g.cols) <= f64::from(400u32 << 20));
+        assert_eq!(chunk_fraction(&g, Some(1)), 1.0 / 16.0);
     }
 
     #[test]

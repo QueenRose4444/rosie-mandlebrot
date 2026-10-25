@@ -34,7 +34,7 @@ pub fn encode_run(
     }
 
     cmd.args(codec_args(codec)?);
-    cmd.arg("-pix_fmt").arg("yuv420p").arg(&out_path);
+    cmd.arg("-pix_fmt").arg(if codec == "prores" { "yuv444p10le" } else { "yuv420p" }).arg(&out_path);
 
     tracing::info!("invoking ffmpeg: {:?}", cmd);
     let status = cmd
@@ -72,6 +72,11 @@ pub fn codec_args(codec: &str) -> MbResult<Vec<String>> {
             "-crf".into(), "30".into(),
             "-b:v".into(), "0".into(),
             "-threads".into(), "4".into(),
+        ],
+        // ProRes 4444: the profile that keeps an alpha channel.
+        "prores" => vec![
+            "-c:v".into(), "prores_ks".into(),
+            "-profile:v".into(), "4444".into(),
         ],
         other => return Err(MbError::Ffmpeg(format!("unknown codec {other}"))),
     };

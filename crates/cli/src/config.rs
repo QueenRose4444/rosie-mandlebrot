@@ -61,6 +61,11 @@ pub struct Cli {
     #[arg(long, value_parser = parse_byte_size)]
     pub max_storage: Option<u64>,
 
+    /// Keep a keyframe render's memory near this ("512MiB", "1GB"): the strip
+    /// is rendered in smaller pieces, which costs some speed.
+    #[arg(long, value_parser = parse_byte_size)]
+    pub memory_limit: Option<u64>,
+
     /// Multiplicative span change per frame. (default 0.98; preset/--config may set it)
     #[arg(long)]
     pub zoom_factor: Option<f64>,
@@ -131,6 +136,31 @@ pub struct Cli {
     /// Colour palette: hot, grayscale, electric, rainbow or ember [default: the preset's].
     #[arg(long)]
     pub palette: Option<String>,
+
+    /// A palette of your own instead of --palette, as colour stops
+    /// "pos:#rrggbb,pos:#rrggbb,…" with positions from 0 to 1 (keyframe videos).
+    #[arg(long)]
+    pub palette_stops: Option<String>,
+
+    /// The colour inside the set, #rrggbb [default: the palette's last colour]
+    /// (keyframe videos).
+    #[arg(long)]
+    pub inside_colour: Option<String>,
+
+    /// Keep the picture --picture WxH and fill the rest of the frame with bars:
+    /// blur (a blurred copy of the picture), solid (--bar-colour) or
+    /// transparent (needs --video-container webm or mov).
+    #[arg(long)]
+    pub bars: Option<String>,
+
+    /// The colour of solid bars, #rrggbb.
+    #[arg(long, default_value = "#000000")]
+    pub bar_colour: String,
+
+    /// The picture's size inside the frame when there are --bars, as WxH
+    /// [default: a square as tall as the frame, or as wide if the frame is tall].
+    #[arg(long)]
+    pub picture: Option<String>,
 
     /// The engine for deep frames. Leave it at gpu-ds: it switches to gpu-fe
     /// below 1e-24 by itself. The others exist for testing.
@@ -206,11 +236,12 @@ pub struct Cli {
     #[arg(long, default_value_t = 30)]
     pub video_fps: u32,
 
-    /// Video codec: h264 / h265 / vp9 / none.
+    /// Video codec: h264 / h265 / vp9 / prores / none. webm and mov containers
+    /// pick vp9 and prores themselves.
     #[arg(long, default_value = "h264")]
     pub video_codec: String,
 
-    /// Video container: mkv / mp4.
+    /// Video container: mkv / mp4 / webm / mov.
     #[arg(long, default_value = "mkv")]
     pub video_container: String,
 
@@ -284,6 +315,35 @@ pub struct Cli {
     /// depths where no GPU kernel can serve as one.
     #[arg(long, default_value_t = 0)]
     pub probe_oracle: u32,
+
+    /// Also print one JSON object per line on stdout for every step of the run
+    /// (each starts with {"ev":), for a program that drives this one.
+    #[arg(long)]
+    pub events: bool,
+
+    /// While a strip renders, save the deepest frame so far as a JPEG this many
+    /// pixels on its long side after every chunk, in <output>/previews. 0 = off.
+    #[arg(long, default_value_t = 0)]
+    pub previews: u32,
+
+    /// Write a values file for frame N of the strip in --run-dir/--output
+    /// ("last" for the deepest) and exit: what each pixel's colour is made of,
+    /// so any palette can be applied without the GPU.
+    #[arg(long, hide = true)]
+    pub values: Option<String>,
+
+    /// The long side of --values' frame, in pixels.
+    #[arg(long, default_value_t = 640, hide = true)]
+    pub values_size: u32,
+
+    /// Render one small picture of every preset (or of --preset, when given
+    /// with this) into this folder, as <name>.jpg, and exit.
+    #[arg(long, hide = true)]
+    pub heroes: Option<PathBuf>,
+
+    /// The size of --heroes pictures, in pixels.
+    #[arg(long, default_value_t = 320, hide = true)]
+    pub hero_size: u32,
 
     /// Print the centre's atom-domain ladder — the minibrots it sits near, and
     /// the depth below which no new structure arrives — then exit. Renders
@@ -458,20 +518,20 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
 
     // Validate codec/container early so we fail before the GPU init.
     match cli.video_codec.as_str() {
-        "h264" | "h265" | "vp9" | "none" => {}
+        "h264" | "h265" | "vp9" | "prores" | "none" => {}
         other => {
             return Err(MbError::InvalidArg {
                 flag: "--video-codec",
-                reason: format!("must be h264/h265/vp9/none, got {other}"),
+                reason: format!("must be h264/h265/vp9/prores/none, got {other}"),
             });
         }
     }
     match cli.video_container.as_str() {
-        "mkv" | "mp4" => {}
+        "mkv" | "mp4" | "webm" | "mov" => {}
         other => {
             return Err(MbError::InvalidArg {
                 flag: "--video-container",
-                reason: format!("must be mkv/mp4, got {other}"),
+                reason: format!("must be mkv/mp4/webm/mov, got {other}"),
             });
         }
     }
@@ -509,7 +569,12 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
         max_frames: cli.max_frames.or(profile.max_frames),
         output: cli.resolved_output(),
         video_fps: cli.video_fps,
-        video_codec: cli.video_codec.clone(),
+        // webm and mov exist here for their alpha channel; give them the codec that has one.
+        video_codec: match (cli.video_container.as_str(), cli.video_codec.as_str()) {
+            ("webm", "h264") => "vp9".into(),
+            ("mov", "h264") => "prores".into(),
+            _ => cli.video_codec.clone(),
+        },
         video_container: cli.video_container.clone(),
         no_video: cli.no_video,
         save_every,

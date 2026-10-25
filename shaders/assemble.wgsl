@@ -61,15 +61,19 @@ struct AsmUniforms {
 @group(0) @binding(1) var<storage, read> strip : array<u32>;
 // Per strip row: the (lo, hi) smooth-value range mapped across the palette.
 @group(0) @binding(2) var<storage, read> tone : array<vec2<f32>>;
-// 1024 palette entries, r | g << 8 | b << 16.
+// 1024 palette entries, r | g << 8 | b << 16, then the colour inside the set.
 @group(0) @binding(3) var<storage, read> lut : array<u32>;
 @group(0) @binding(4) var<storage, read_write> out_px : array<u32>;
 @group(0) @binding(5) var<storage, read_write> out_val : array<f32>;
 @group(0) @binding(6) var<storage, read> groups : array<Group>;
+// weights_main only: per pixel WEIGHT_SLOTS of (palette index << 16 | weight).
+@group(0) @binding(7) var<storage, read_write> out_wt : array<u32>;
 
 const INTERIOR : u32 = 0xffffffffu;
 const ADAPTIVE_SPREAD : f32 = 0.125;
 const LN2 : f32 = 0.6931471805599453;
+// Palette index of the inside-the-set colour.
+const INSIDE : u32 = 1024u;
 
 fn tap(g: Group, row: u32, col: i32) -> u32 {
     let r = clamp(row, g.lo, g.hi - 1u) % g.ring_rows;
@@ -92,9 +96,15 @@ fn lut_rgb(t: f32) -> vec3<f32> {
     return vec3<f32>(f32(p & 255u), f32((p >> 8u) & 255u), f32((p >> 16u) & 255u));
 }
 
+fn rgb_at(i: u32) -> vec3<f32> {
+    let p = lut[i];
+    return vec3<f32>(f32(p & 255u), f32((p >> 8u) & 255u), f32((p >> 16u) & 255u));
+}
+
 fn tap_rgb(v: u32, tn: vec2<f32>) -> vec3<f32> {
-    // Interior takes the top of the palette, as in the per-frame encoder.
-    if (v == INTERIOR) { return lut_rgb(1.0); }
+    // Interior has its own entry; by default the top of the palette, as in
+    // the per-frame encoder.
+    if (v == INTERIOR) { return rgb_at(INSIDE); }
     return lut_rgb(t_of(f32(v) / 256.0, tn));
 }
 
@@ -192,4 +202,96 @@ fn values_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var out = -1.0;
     if (w_ext >= 0.5) { out = s / w_ext; }
     out_val[gid.y * U.out_w + gid.x] = out;
+}
+
+// What cs_main's colour is made of: every output pixel is a weighted sum of
+// palette entries (one per point sample where the value is interpolated, four
+// where the tap colours are blended), so recording the entries and weights lets
+// a frame be recoloured with any palette without the GPU. Weights are in units
+// of 1/8192 of a sample and sum to 8192 * sub * sub.
+const WEIGHT_SLOTS : u32 = 16u;
+
+fn lut_index(t: f32) -> u32 {
+    return min(u32(t * 1023.0), 1023u);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn weights_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= U.out_w || gid.y >= U.out_h) { return; }
+    let n = f32(U.sub);
+    let c = pixel_centre(gid.x, gid.y);
+    var idx : array<u32, 16>;
+    var wt : array<f32, 16>;
+    var used = 0u;
+    for (var sy = 0u; sy < U.sub; sy = sy + 1u) {
+        for (var sx = 0u; sx < U.sub; sx = sx + 1u) {
+            let ox = c.x + (f32(sx) + 0.5) / n - 0.5;
+            let oy = c.y - (f32(sy) + 0.5) / n + 0.5;
+            let t = taps_at(ox, oy);
+            var ids : array<u32, 4>;
+            var ws : array<f32, 4>;
+            var m = 4u;
+            let exterior = t.v[0] != INTERIOR && t.v[1] != INTERIOR && t.v[2] != INTERIOR && t.v[3] != INTERIOR;
+            var single = false;
+            if (exterior) {
+                var lo = 2.0;
+                var hi = -1.0;
+                var s = 0.0;
+                for (var k = 0; k < 4; k = k + 1) {
+                    let sv = f32(t.v[k]) / 256.0;
+                    let p = t_of(sv, t.tn);
+                    lo = min(lo, p);
+                    hi = max(hi, p);
+                    s = s + sv * t.w[k];
+                }
+                if (hi - lo < ADAPTIVE_SPREAD) {
+                    ids[0] = lut_index(t_of(s, t.tn));
+                    ws[0] = 1.0;
+                    m = 1u;
+                    single = true;
+                }
+            }
+            if (!single) {
+                for (var k = 0; k < 4; k = k + 1) {
+                    if (t.v[k] == INTERIOR) { ids[k] = INSIDE; } else { ids[k] = lut_index(t_of(f32(t.v[k]) / 256.0, t.tn)); }
+                    ws[k] = t.w[k];
+                }
+            }
+            for (var k = 0u; k < m; k = k + 1u) {
+                if (ws[k] <= 0.0) { continue; }
+                var j = 0u;
+                loop {
+                    if (j >= used) { break; }
+                    if (idx[j] == ids[k]) { break; }
+                    j = j + 1u;
+                }
+                if (j == used && used < WEIGHT_SLOTS) {
+                    idx[j] = ids[k];
+                    wt[j] = 0.0;
+                    used = used + 1u;
+                }
+                if (j < used) { wt[j] = wt[j] + ws[k]; }
+            }
+        }
+    }
+    // Quantise, then give any rounding remainder to the largest entry so the
+    // weights sum exactly.
+    let total = i32(8192u * U.sub * U.sub);
+    var q : array<i32, 16>;
+    var sum = 0;
+    var big = 0u;
+    for (var j = 0u; j < used; j = j + 1u) {
+        q[j] = i32(round(wt[j] * 8192.0));
+        sum = sum + q[j];
+        if (wt[j] > wt[big]) { big = j; }
+    }
+    q[big] = q[big] + (total - sum);
+    let o = (gid.y * U.out_w + gid.x) * WEIGHT_SLOTS;
+    for (var j = 0u; j < WEIGHT_SLOTS; j = j + 1u) {
+        if (j < used && q[j] > 0) {
+            out_wt[o + j] = (idx[j] << 16u) | u32(q[j]);
+        } else {
+            out_wt[o + j] = 0xffffffffu;
+        }
+    }
 }

@@ -82,10 +82,12 @@ pub struct Assembler {
     group_buf: wgpu::Buffer,
     out_px: wgpu::Buffer,
     out_val: wgpu::Buffer,
+    out_wt: wgpu::Buffer,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     rgb: wgpu::ComputePipeline,
     values: wgpu::ComputePipeline,
+    weights: Option<wgpu::ComputePipeline>,
     staging: std::sync::Mutex<Option<wgpu::Buffer>>,
     shader_ms: std::cell::Cell<f64>,
     /// Bytes queued with `write_buffer` since the last submission.
@@ -97,15 +99,32 @@ pub struct Assembler {
 /// retired every this many bytes.
 const UPLOAD_FLUSH_BYTES: u64 = 64 << 20;
 
+/// Palette slots per pixel in [`Assembler::weights`]' output.
+pub const WEIGHT_SLOTS: usize = 16;
+
+/// The palette index [`Assembler::weights`] uses for the colour inside the set.
+pub const INSIDE_INDEX: u16 = 1024;
+
+/// Which pass a dispatch runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Rgb,
+    Values,
+    Weights,
+}
+
 /// Bytes of GPU memory the groups' rings take.
 pub fn window_bytes(cols: u32, groups: &[GroupSpec]) -> u64 {
     groups.iter().map(|g| u64::from(g.ring_rows) * u64::from(cols.div_ceil(g.stride)) * 4).sum()
 }
 
 impl Assembler {
-    /// `lut` is the palette, 1024 entries, as the per-frame encoder uses it.
-    /// `total_rows` is the length of the strip (for the per-row tone ranges);
-    /// `cols` must be divisible by every group's stride.
+    /// `lut` is the palette, 1024 entries, as the per-frame encoder uses it,
+    /// and `inside` the colour inside the set (the per-frame encoder uses the
+    /// last palette entry). `total_rows` is the length of the strip (for the
+    /// per-row tone ranges); `cols` must be divisible by every group's stride.
+    /// `weights` makes [`Assembler::weights`] available.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gpu: &GpuCtx,
         cols: u32,
@@ -114,6 +133,8 @@ impl Assembler {
         out_w: u32,
         out_h: u32,
         lut: &[[u8; 3]; 1024],
+        inside: [u8; 3],
+        weights: bool,
     ) -> MbResult<Self> {
         let device = &gpu.device;
         let strip_bytes = window_bytes(cols, groups);
@@ -149,7 +170,9 @@ impl Assembler {
         let pixels = u64::from(out_w) * u64::from(out_h);
         let out_px = storage("asm-out", pixels * 4, wgpu::BufferUsages::COPY_SRC);
         let out_val = storage("asm-values", pixels * 4, wgpu::BufferUsages::COPY_SRC);
-        let packed: Vec<u32> = lut.iter().map(|c| u32::from(c[0]) | u32::from(c[1]) << 8 | u32::from(c[2]) << 16).collect();
+        let out_wt = storage("asm-weights", if weights { pixels * WEIGHT_SLOTS as u64 * 4 } else { 4 }, wgpu::BufferUsages::COPY_SRC);
+        let packed: Vec<u32> =
+            lut.iter().chain(std::iter::once(&inside)).map(|c| u32::from(c[0]) | u32::from(c[1]) << 8 | u32::from(c[2]) << 16).collect();
         let lut_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("asm-lut"),
             contents: bytemuck::cast_slice(&packed),
@@ -172,7 +195,16 @@ impl Assembler {
         let rw = wgpu::BufferBindingType::Storage { read_only: false };
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bgl-assemble"),
-            entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, rw), entry(5, rw), entry(6, ro)],
+            entries: &[
+                entry(0, wgpu::BufferBindingType::Uniform),
+                entry(1, ro),
+                entry(2, ro),
+                entry(3, ro),
+                entry(4, rw),
+                entry(5, rw),
+                entry(6, ro),
+                entry(7, rw),
+            ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bg-assemble"),
@@ -185,6 +217,7 @@ impl Assembler {
                 wgpu::BindGroupEntry { binding: 4, resource: out_px.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: out_val.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: group_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: out_wt.as_entire_binding() },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -215,10 +248,12 @@ impl Assembler {
             group_buf,
             out_px,
             out_val,
+            out_wt,
             uniforms,
             bind_group,
             rgb: pipeline("cs_main"),
             values: pipeline("values_main"),
+            weights: weights.then(|| pipeline("weights_main")),
             staging: std::sync::Mutex::new(None),
             shader_ms: std::cell::Cell::new(0.0),
             unsubmitted: std::cell::Cell::new(0),
@@ -259,7 +294,7 @@ impl Assembler {
         }
     }
 
-    fn dispatch(&self, gpu: &GpuCtx, f: &AsmFrame, values: bool) -> MbResult<Vec<u8>> {
+    fn dispatch(&self, gpu: &GpuCtx, f: &AsmFrame, pass: Pass) -> MbResult<Vec<u8>> {
         let (lo, hi) = f.tone_global.unwrap_or((0.0, 1.0));
         let corner_int = f.corner_row.floor().max(0.0);
         let u = AsmUniforms {
@@ -288,7 +323,7 @@ impl Assembler {
         let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("assemble") });
         let ts = gpu.timing.as_ref();
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            let mut cpass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("assemble-pass"),
                 timestamp_writes: ts.map(|t| wgpu::ComputePassTimestampWrites {
                     query_set: &t.query_set,
@@ -296,17 +331,27 @@ impl Assembler {
                     end_of_pass_write_index: Some(1),
                 }),
             });
-            pass.set_pipeline(if values { &self.values } else { &self.rgb });
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.dispatch_workgroups(self.out_w.div_ceil(8), self.out_h.div_ceil(8), 1);
+            let pipeline = match pass {
+                Pass::Rgb => &self.rgb,
+                Pass::Values => &self.values,
+                Pass::Weights => self.weights.as_ref().ok_or_else(|| MbError::GpuInit("assembler made without weights".into()))?,
+            };
+            cpass.set_pipeline(pipeline);
+            cpass.set_bind_group(0, &self.bind_group, &[]);
+            cpass.dispatch_workgroups(self.out_w.div_ceil(8), self.out_h.div_ceil(8), 1);
         }
         if let Some(t) = ts {
             enc.resolve_query_set(&t.query_set, 0..2, &t.resolve, 0);
             enc.copy_buffer_to_buffer(&t.resolve, 0, &t.readback, 0, 16);
         }
         gpu.queue.submit(std::iter::once(enc.finish()));
-        let src = if values { &self.out_val } else { &self.out_px };
-        let bytes = crate::gpu::readback::read_bytes(&gpu.device, &gpu.queue, src, u64::from(self.out_w) * u64::from(self.out_h) * 4, &self.staging)?;
+        let pixels = u64::from(self.out_w) * u64::from(self.out_h);
+        let (src, len) = match pass {
+            Pass::Rgb => (&self.out_px, pixels * 4),
+            Pass::Values => (&self.out_val, pixels * 4),
+            Pass::Weights => (&self.out_wt, pixels * WEIGHT_SLOTS as u64 * 4),
+        };
+        let bytes = crate::gpu::readback::read_bytes(&gpu.device, &gpu.queue, src, len, &self.staging)?;
         if let Some(t) = ts {
             if let Some(ns) = crate::gpu::readback::read_timestamp_ns(gpu, t) {
                 self.shader_ms.set(self.shader_ms.get() + ns / 1e6);
@@ -317,12 +362,20 @@ impl Assembler {
 
     /// One frame as RGBA8, top row first.
     pub fn frame(&self, gpu: &GpuCtx, f: &AsmFrame) -> MbResult<Vec<u8>> {
-        self.dispatch(gpu, f, false)
+        self.dispatch(gpu, f, Pass::Rgb)
     }
 
     /// The smooth value at each pixel centre (−1 = interior).
     pub fn values(&self, gpu: &GpuCtx, f: &AsmFrame) -> MbResult<Vec<f32>> {
-        Ok(bytemuck::cast_slice::<u8, f32>(&self.dispatch(gpu, f, true)?).to_vec())
+        Ok(bytemuck::cast_slice::<u8, f32>(&self.dispatch(gpu, f, Pass::Values)?).to_vec())
+    }
+
+    /// What each pixel's colour is made of: [`WEIGHT_SLOTS`] entries per pixel,
+    /// top row first, each `index << 16 | weight` (`u32::MAX` = unused), index
+    /// 0..1023 a palette entry or [`INSIDE_INDEX`], weights summing to
+    /// `8192 * sub * sub`. Needs an assembler made with `weights`.
+    pub fn weights(&self, gpu: &GpuCtx, f: &AsmFrame) -> MbResult<Vec<u32>> {
+        Ok(bytemuck::cast_slice::<u8, u32>(&self.dispatch(gpu, f, Pass::Weights)?).to_vec())
     }
 
     /// GPU time of every assembly pass so far, from timestamps (0 without them).

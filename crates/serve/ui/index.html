@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Rosie_Mandlebrot</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/ui/style.css">
+<script type="module" src="/ui/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">Rosie_Mandlebrot</div>
+  <nav class="menu" aria-label="Pages">
+    <a href="#/library" data-route="library">Library</a>
+    <a href="#/new" data-route="new">New render</a>
+    <a href="#/runs" data-route="runs">Runs<span class="badge" id="runs-badge" hidden></span></a>
+    <a href="#/colours" data-route="colours">Colours</a>
+    <a href="#/settings" data-route="settings">Settings</a>
+  </nav>
+  <div class="gpu-chip" id="gpu-chip" role="status" aria-live="polite"><span class="dot"></span><span class="gpu-text">Connecting…</span></div>
+</header>
+<div id="view"></div>
+<noscript><p style="padding:28px">This page needs JavaScript.</p></noscript>
+</body>
+</html>

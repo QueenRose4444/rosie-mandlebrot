@@ -17,6 +17,7 @@ rosie_mandlebrot_ref.workspace = true
 rosie_mandlebrot_render.workspace = true
 rosie_mandlebrot_store.workspace = true
 rosie_mandlebrot_run.workspace = true
+rosie_mandlebrot_serve.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 ctrlc.workspace = true

@@ -50,6 +50,22 @@ pub struct GpuTiming {
     pub readback: wgpu::Buffer,
 }
 
+/// The name of the GPU a render would use, without opening it (no GPU memory
+/// is taken). None when there is no usable adapter.
+pub fn adapter_name() -> Option<String> {
+    let mut idesc = wgpu::InstanceDescriptor::new_without_display_handle();
+    idesc.backends = wgpu::Backends::all();
+    let instance = wgpu::Instance::new(idesc);
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+        apply_limit_buckets: false,
+    }))
+    .ok()?;
+    Some(adapter.get_info().name)
+}
+
 impl GpuCtx {
     pub fn new(shader_dir: Option<&std::path::Path>, allow_software: bool) -> MbResult<Self> {
         Self::new_with_engine(shader_dir, rosie_mandlebrot_core::config::DeepEngine::default(), allow_software)
