@@ -257,6 +257,11 @@ async fn shutdown(app: Arc<App>) {
 const RESUME_MARKER: &str = "resume-on-start";
 
 pub fn open_browser(url: &str) {
+    // For automated tests of the double-click start, which must not open pages.
+    if std::env::var_os("ROSIE_MANDLEBROT_NO_BROWSER").is_some() {
+        tracing::info!("not opening a browser (ROSIE_MANDLEBROT_NO_BROWSER is set): {url}");
+        return;
+    }
     #[cfg(windows)]
     let r = std::process::Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler", url]).spawn();
     #[cfg(target_os = "macos")]

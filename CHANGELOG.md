@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.0 — 2026-10-26
+
+**The app.** Rosie_Mandlebrot now has a page in your browser that does everything the command line
+does, on Windows and on a server alike.
+
+- **Windows: double-click the exe.** The app opens in your browser at http://127.0.0.1:8460 with an
+  icon by the clock (Open, Pause, Quit). `rosie_mandlebrot serve --open` does the same from a terminal.
+- **Library:** every preset as a card with a picture rendered on your GPU, favourites and your own
+  lists. **New render:** size (square, wide, phone, 4K or your own), how deep, colours, zoom speed and
+  fps, with the time, disk, memory and GPU memory it will take shown before you start (estimated
+  from your own earlier runs once there are some).
+- **Runs:** the render live, with a snapshot each time it gets deeper that you can scroll or play
+  back; one GPU job at a time, the rest wait in order; watch, download, resume or delete runs.
+- **Recolour a finished run instantly.** A palette editor (colour stops, an inside-the-set colour,
+  the built-in palettes to start from) recolours a frame in the browser as you drag, exactly as
+  the video will look, then makes the new video in seconds without rendering anything again.
+- **Letterbox bars**: a smaller picture in a bigger frame, with blurred, solid or truly transparent
+  bars (transparent needs WebM or MOV, which keep an alpha channel).
+- **Shares the GPU:** pauses while a game is full screen (Windows), or while a file named `pause`
+  exists in the data folder; a paused render steps off the GPU completely and carries on later.
+- **When a run finishes:** a Discord webhook message, and/or an upload of the video to a URL of your
+  own.
+- **Server:** `docker-compose.yml` is now one self-contained file for Portainer or `docker compose
+  up -d`; the image starts the app by default (port 8460, data in `/data`). `docker stop` pauses a
+  running render and the next start carries on with it. Render options still run a command-line
+  render.
+
+**Settings** in the app for the trade-offs: strip piece size, snapshot size, colouring, video
+format, CPU limit, deleting a run's render data once its video is made.
+
+New command-line options: `--palette-stops`, `--inside-colour`, `--bars`, `--picture`,
+`--bar-colour`, `--chunk-size`, `--memory-limit`, `--previews`, `--events`, and the `webm` and `mov`
+containers (with the `prores` codec). `mp4` videos can be played while they download.
+
+**Faster by default:** the strip is now rendered a whole octave at a time instead of half (measured
+8–18% less render time; frames change only invisibly and score equal or slightly closer to a
+supersampled ideal). `--chunk-size half` (or Settings in the app) gives exactly 0.2's output.
+
+Smaller fixes: a run that already exists is refused with every way out (`--resume`, `--new-run`,
+`--run-dir`), without doubled backslashes; "logging to …" lines go to standard output, so PowerShell
+no longer shows them as red errors; the log says why the strip goes deeper than the video.
+
 ## 0.2.1 — 2026-10-17
 
 Fixes from an outside test of 0.2.0 with nothing but the repository's URL:
