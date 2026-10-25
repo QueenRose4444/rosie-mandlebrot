@@ -134,7 +134,8 @@ fn blurred_backdrop(pic: &[u8], pw: u32, ph: u32, w: u32, h: u32) -> Vec<u8> {
     let (sw, sh) = (w.div_ceil(8).max(1), h.div_ceil(8).max(1));
     let cover = (f64::from(sw) / f64::from(pw)).max(f64::from(sh) / f64::from(ph));
     let (cw, ch) = (((f64::from(pw) * cover).ceil() as u32).max(sw), ((f64::from(ph) * cover).ceil() as u32).max(sh));
-    let scaled = imageops::resize(&src, cw, ch, FilterType::Triangle);
+    // A box-filtered thumbnail when shrinking (fast); a real resize otherwise.
+    let scaled = if cw <= pw && ch <= ph { imageops::thumbnail(&src, cw, ch) } else { imageops::resize(&src, cw, ch, FilterType::Triangle) };
     let small = imageops::crop_imm(&scaled, (cw - sw) / 2, (ch - sh) / 2, sw, sh).to_image();
     let mut blurred = imageops::blur(&small, 2.5);
     for p in blurred.pixels_mut() {
@@ -143,7 +144,34 @@ fn blurred_backdrop(pic: &[u8], pw: u32, ph: u32, w: u32, h: u32) -> Vec<u8> {
         }
         p.0[3] = 255;
     }
-    imageops::resize(&blurred, w, h, FilterType::Triangle).into_raw()
+    upscale_bilinear(&blurred, w, h)
+}
+
+/// Bilinear scaling up to `w`x`h`, rows in parallel: the backdrop is blurred,
+/// so nothing finer is needed, and it runs once per video frame.
+fn upscale_bilinear(img: &image::RgbaImage, w: u32, h: u32) -> Vec<u8> {
+    use rayon::prelude::*;
+    let (iw, ih) = (img.width() as usize, img.height() as usize);
+    let src = img.as_raw();
+    let (sx, sy) = (iw as f32 / w as f32, ih as f32 / h as f32);
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    out.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
+        let fy = ((y as f32 + 0.5) * sy - 0.5).clamp(0.0, (ih - 1) as f32);
+        let (y0, ty) = (fy as usize, fy.fract());
+        let y1 = (y0 + 1).min(ih - 1);
+        for (x, px) in row.chunks_exact_mut(4).enumerate() {
+            let fx = ((x as f32 + 0.5) * sx - 0.5).clamp(0.0, (iw - 1) as f32);
+            let (x0, tx) = (fx as usize, fx.fract());
+            let x1 = (x0 + 1).min(iw - 1);
+            for c in 0..4 {
+                let at = |xx: usize, yy: usize| f32::from(src[(yy * iw + xx) * 4 + c]);
+                let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
+                let bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
+                px[c] = (top + (bottom - top) * ty + 0.5) as u8;
+            }
+        }
+    });
+    out
 }
 
 /// [`WINDOW_BUDGET`], or `MANDELBROT_ASM_BUDGET_MB` for measuring the thinned path.
@@ -939,4 +967,27 @@ mod tests {
         assert_eq!(video_name(out, "mkv", false), out.join("zoom.mkv"));
     }
 
+
+    #[test]
+    fn bars_frame_the_picture_in_every_style() {
+        let (pw, ph, w, h) = (4u32, 4u32, 8u32, 6u32);
+        let pic: Vec<u8> = (0..pw * ph).flat_map(|i| [200, (i * 10) as u8, 50, 255]).collect();
+        for style in [BarStyle::Solid, BarStyle::Blur, BarStyle::Transparent] {
+            let out = compose_bars(&pic, pw, ph, w, h, &Bars { style, colour: [1, 2, 3], picture: (pw, ph) });
+            assert_eq!(out.len(), (w * h * 4) as usize);
+            // The picture sits in the middle, untouched.
+            for y in 0..ph {
+                let o = (((1 + y) * w + 2) * 4) as usize;
+                let i = (y * pw * 4) as usize;
+                assert_eq!(&out[o..o + 16], &pic[i..i + 16], "{style:?} row {y}");
+            }
+            let corner = &out[0..4];
+            match style {
+                BarStyle::Solid => assert_eq!(corner, [1, 2, 3, 255]),
+                BarStyle::Transparent => assert_eq!(corner[3], 0),
+                // A darkened copy of the picture's reds.
+                BarStyle::Blur => assert!(corner[3] == 255 && corner[0] > 40 && corner[0] < 120, "{corner:?}"),
+            }
+        }
+    }
 }
