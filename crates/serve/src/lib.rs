@@ -186,7 +186,10 @@ async fn serve(app: Arc<App>, a: ServeArgs) -> anyhow::Result<()> {
     if a.resume_on_start {
         for meta in runs::list_meta(&app.data) {
             let run = runs::load_run(&app.data, meta.clone(), None);
-            if run.status == "incomplete" {
+            let marker = runs::run_dir(&app.data, &meta.id).join(RESUME_MARKER);
+            let paused_by_shutdown = marker.exists();
+            let _ = std::fs::remove_file(&marker);
+            if run.status == "incomplete" || (paused_by_shutdown && run.status == "stopped") {
                 match api::queue_render(&app, &meta, true, a.previews) {
                     Ok(j) => tracing::info!("resuming run {} (job {})", meta.id, j.id),
                     Err(e) => tracing::warn!("could not resume run {}: {e}", meta.id),
@@ -208,14 +211,50 @@ async fn serve(app: Arc<App>, a: ServeArgs) -> anyhow::Result<()> {
 }
 
 /// Ctrl+C: stop the running job gracefully (its strip is kept and can resume).
+/// Ctrl+C, or SIGTERM (`docker stop`): a running render is paused (it
+/// finishes the chunk in hand, keeps its strip and makes no video) and marked
+/// to carry on at the next start with `--resume-on-start`; any other job is
+/// stopped.
 async fn shutdown(app: Arc<App>) {
-    let _ = tokio::signal::ctrl_c().await;
-    let running: Vec<u64> = app.jobs().iter().filter(|j| j.state == jobs::JobState::Running).map(|j| j.id).collect();
-    for id in running {
-        app.stop(id).await;
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("a SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
     }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
     println!("stopping…");
+    let running: Vec<jobs::Job> = app.jobs().into_iter().filter(|j| j.state == jobs::JobState::Running).collect();
+    for j in &running {
+        if j.kind == "render" {
+            if let Some(run) = &j.run_id {
+                let _ = std::fs::write(runs::run_dir(&app.data, run).join(RESUME_MARKER), b"");
+            }
+        } else {
+            app.stop(j.id).await;
+        }
+    }
+    if running.iter().any(|j| j.kind == "render") {
+        app.set_paused(true, Some("shutting down".into())).await;
+    }
+    // Docker waits 10 seconds before it kills; a chunk usually ends well within that.
+    for _ in 0..90 {
+        if !app.is_busy() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    // Open pages hold their event streams forever, which a graceful HTTP
+    // shutdown would wait for; the jobs are settled, so leave now.
+    std::process::exit(0);
 }
+
+/// A run with this file was paused by a shutdown and resumes at the next start
+/// (with `--resume-on-start`).
+const RESUME_MARKER: &str = "resume-on-start";
 
 pub fn open_browser(url: &str) {
     #[cfg(windows)]
