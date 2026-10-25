@@ -43,7 +43,7 @@ pub(crate) fn render_deep_gpu(gpu: &GpuCtx, req: &FrameRequest) -> MbResult<Fram
         let px_dy = req.span / req.height as f64;
         let half_w = req.width as f64 * 0.5;
         let half_h = req.height as f64 * 0.5;
-        let rug_prec_bits = rosie_mandlebrot_core::precision::rug_bits_for_pixel(req.span);
+        let rug_prec_bits = rosie_mandlebrot_core::precision::pixel_bits_for_span(req.span);
         // Switch the live bar over to rug-fallback work, which is the part of
         // a deep frame that actually takes minutes. After GPU the bar would
         // otherwise sit at "1166400/1166400 px" the whole time the rug loop
@@ -65,7 +65,7 @@ pub(crate) fn render_deep_gpu(gpu: &GpuCtx, req: &FrameRequest) -> MbResult<Fram
                 let y = (i as u32) / req.width;
                 let delta_re = (x as f64 - half_w) * px_dx;
                 let delta_im = (y as f64 - half_h) * px_dy;
-                let px = iterate_single_pixel_rug(
+                let px = iterate_single_pixel_exact(
                     &req.center_re,
                     &req.center_im,
                     delta_re,

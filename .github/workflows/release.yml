@@ -18,15 +18,15 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - name: GNU toolchain (rug needs it on Windows)
+      - name: GNU toolchain (rust-toolchain.toml selects it)
         run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
-      # gmp-mpfr-sys compiles GMP and MPFR from C, which needs MSYS2's tools.
+      # The bundled SQLite and zstd are C, compiled with MinGW's gcc.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: false
           install: >-
-            diffutils m4 make mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gcc
       - name: Build
         shell: msys2 {0}
         run: |
@@ -49,7 +49,7 @@ jobs:
       - name: Build tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential m4 curl ca-certificates git python3 xz-utils
+          apt-get install -y --no-install-recommends build-essential curl ca-certificates git python3 xz-utils
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
       - uses: actions/checkout@v4
       - name: Build

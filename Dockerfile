@@ -3,18 +3,11 @@
 # `rust-version = "1.88"` in Cargo.toml is the MSRV floor, NOT a build pin - it
 # says what a consumer needs, not what the image compiles with.
 FROM rust:1.98-bookworm AS builder
-# gmp-mpfr-sys is pinned with default-features = false and features = ["mpfr"],
-# which compiles GMP and MPFR from its own bundled C source and links them
-# STATICALLY. The distro -dev packages are therefore not used by anything - only
-# m4, which the bundled build scripts genuinely need.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        m4 \
-    && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 
 # Dependency pre-build. The workspace manifest plus every member manifest is
 # copied first, with stub sources standing in for the real code, so the whole
-# dependency graph (wgpu, rug/GMP, rusqlite) caches in a layer that only busts
+# dependency graph (wgpu, rusqlite) caches in a layer that only busts
 # when a Cargo.toml changes. presets.toml comes along because the core crate
 # include_str!s it at compile time.
 COPY Cargo.toml Cargo.lock ./
@@ -63,9 +56,6 @@ FROM debian:bookworm-slim
 # renderer that DEPLOY.md explains how to avoid, and with it present a
 # misconfigured GPU passthrough succeeds silently at roughly a hundredth of the
 # speed instead of failing where you can see it. Failing loudly is the intent.
-#
-# libgmp10/libmpfr6/libmpc3 are not needed: GMP and MPFR are linked statically
-# into the binary.
 #
 # vulkan-tools is kept so `vulkaninfo` is available for diagnosing exactly the
 # failure above.

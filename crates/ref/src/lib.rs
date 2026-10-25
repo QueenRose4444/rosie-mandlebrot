@@ -1,7 +1,8 @@
-//! High-precision reference orbit computation using `rug` (GMP/MPFR) and the
-//! 5-term Series Approximation coefficients in f64 (num_complex).
+//! High-precision reference orbit computation and the 5-term Series
+//! Approximation coefficients in f64 (num_complex).
 //!
-//! The orbit is iterated at chosen rug precision until |Z| > 2 or `max_iter`.
+//! The orbit is iterated at a chosen precision until |Z| > 2 or `max_iter`, in
+//! the correctly rounded arithmetic of [`mp`], which gives the bits MPFR would.
 //! With `want_sa` set, each step also iterates the SA coefficients:
 //!     A_{n+1} = 2 Z A + 1
 //!     B_{n+1} = 2 Z B + A^2
@@ -22,14 +23,15 @@
 pub mod bla;
 pub mod exterior;
 pub mod ladder;
+pub mod mp;
 mod xc;
 
 pub use bla::{bla_iterate, build_bla_table, Bla, BlaGpu, BlaResult, BlaTable, BLA_EPSILON_DS, BLA_EPSILON_F64};
 
 use rosie_mandlebrot_core::types::{RefOrbitEntry, RefOrbitEntryF64, SaCoeff};
-use rosie_mandlebrot_core::precision::rug_bits_for_span;
+use rosie_mandlebrot_core::precision::orbit_bits_for_span;
+use mp::{dispatch, LimbsFn, Mp};
 use num_complex::Complex64;
-use rug::{ops::CompleteRound, Float};
 
 #[derive(Debug, Clone)]
 pub struct ReferenceData {
@@ -86,8 +88,8 @@ pub struct RefRequest {
 
 pub fn compute_reference(req: &RefRequest) -> ReferenceData {
     let span_hint = req.max_delta.max(f64::MIN_POSITIVE);
-    let mut prec = rug_bits_for_span(span_hint);
-    // If the orbit terminates before `max_iter` AND `|z|² > 4`, the rug
+    let mut prec = orbit_bits_for_span(span_hint);
+    // If the orbit terminates before `max_iter` AND `|z|² > 4`, the
     // arithmetic ran out of significant bits and the orbit *artificially*
     // escaped. Retry at 2× precision (up to a cap). For a true exterior
     // point the orbit really does escape and no amount of precision will
@@ -123,16 +125,28 @@ fn ends_escaped(data: &ReferenceData) -> bool {
     data.orbit.last().is_some_and(|e| (e.z_mag_sq as f64) > 4.0)
 }
 
-/// Single-precision attempt: iterate the rug orbit at the given precision
-/// for up to `req.max_iter` steps, computing the SA coefficients alongside.
-/// Stops early on `|z|² > 4` (which means *either* the orbit really escapes,
-/// *or* rug ran out of precision and drifted out of bounds — caller checks).
-fn compute_reference_at_prec(req: &RefRequest, prec: u32) -> ReferenceData {
-    let cre = parse_or_zero(&req.center_re, prec);
-    let cim = parse_or_zero(&req.center_im, prec);
+/// Single-precision attempt: iterate the orbit at the given precision for up
+/// to `req.max_iter` steps, computing the SA coefficients alongside. Stops
+/// early on `|z|² > 4` (which means *either* the orbit really escapes, *or*
+/// the arithmetic ran out of precision and drifted out of bounds — caller
+/// checks).
+pub fn compute_reference_at_prec(req: &RefRequest, prec: u32) -> ReferenceData {
+    struct Run<'a>(&'a RefRequest, u32);
+    impl LimbsFn for Run<'_> {
+        type Out = ReferenceData;
+        fn call<const N: usize>(self) -> ReferenceData {
+            orbit_at::<N>(self.0, self.1)
+        }
+    }
+    dispatch(prec, Run(req, prec))
+}
 
-    let mut z_re = Float::with_val(prec, 0);
-    let mut z_im = Float::with_val(prec, 0);
+fn orbit_at<const N: usize>(req: &RefRequest, prec: u32) -> ReferenceData {
+    let cre = parse_or_zero::<N>(&req.center_re, prec);
+    let cim = parse_or_zero::<N>(&req.center_im, prec);
+
+    let mut z_re = Mp::<N>::ZERO;
+    let mut z_im = Mp::<N>::ZERO;
 
     let mut orbit = Vec::with_capacity(req.max_iter as usize);
     let mut orbit_f64 = Vec::with_capacity(req.max_iter as usize);
@@ -166,7 +180,7 @@ fn compute_reference_at_prec(req: &RefRequest, prec: u32) -> ReferenceData {
         let z_im_f = z_im.to_f64();
         let mag_sq_f = z_re_f * z_re_f + z_im_f * z_im_f;
         if n > 0 && mag_sq_f < 1e-70 && tiny.len() < 64 {
-            let log10_z = xc::Xc::from_floats(&z_re, &z_im).abs_log10();
+            let log10_z = xc::Xc::from_mp(&z_re, &z_im).abs_log10();
             if log10_z < F32_MIN_LOG10 {
                 tiny.push(TinyEntry { n, log10_z, log10_a: deriv.abs_log10() });
             }
@@ -216,24 +230,12 @@ fn compute_reference_at_prec(req: &RefRequest, prec: u32) -> ReferenceData {
             e = new_e;
         }
 
-        // Z_{n+1} = Z^2 + C, computed in rug
-        let z_re_sq = (&z_re * &z_re).complete(prec);
-        let z_im_sq = (&z_im * &z_im).complete(prec);
-        let two_z_re_z_im = {
-            let mut t = (&z_re * &z_im).complete(prec);
-            t *= 2;
-            t
-        };
-
-        let mut next_re = z_re_sq;
-        next_re -= &z_im_sq;
-        next_re += &cre;
-
-        let mut next_im = two_z_re_z_im;
-        next_im += &cim;
-
+        // Z_{n+1} = Z^2 + C, each operation rounded to `prec` bits in the
+        // same order as the MPFR loop this replaced, so the same bits.
+        let two_re_im = z_re.mul(&z_im, prec).mul_2exp(1);
+        let next_re = z_re.sqr(prec).sub(&z_im.sqr(prec), prec).add(&cre, prec);
+        z_im = two_re_im.add(&cim, prec);
         z_re = next_re;
-        z_im = next_im;
     }
 
     ReferenceData {
@@ -250,7 +252,7 @@ fn compute_reference_at_prec(req: &RefRequest, prec: u32) -> ReferenceData {
 /// Replay the SA coefficient recurrence over an already-computed reference
 /// orbit and pick `skip_n` for the given `max_delta`. This is the same logic
 /// used inside `compute_reference`, factored out so a cached orbit can have
-/// its SA recomputed cheaply (only Complex64 math; no rug) when `max_delta`
+/// its SA recomputed cheaply (only Complex64 math) when `max_delta`
 /// changes between frames.
 ///
 /// Series-approximation coefficients and the iteration they are valid to.
@@ -345,10 +347,10 @@ pub struct RefCache {
 }
 
 /// Wraps `compute_reference` with a reuse-and-overshoot cache. The first call
-/// for a given center pays the full rug cost at `1.5×` the requested
+/// for a given center pays the full orbit cost at `1.5×` the requested
 /// `max_iter`; subsequent calls at the same center with growing `max_iter`
 /// reuse the cached orbit until the overshoot is exhausted, then recompute
-/// (again with overshoot). For a seahorse-style zoom this turns the rug cost
+/// (again with overshoot). For a seahorse-style zoom this turns the orbit cost
 /// from O(frames × max_iter) into roughly O(frames × max_iter / overshoot).
 pub fn compute_reference_cached(
     req: &RefRequest,
@@ -361,7 +363,7 @@ pub fn compute_reference_cached(
         // frame is not precise enough for a deeper one.
         if c.center_re == req.center_re
             && c.center_im == req.center_im
-            && c.precision_bits >= rug_bits_for_span(req.max_delta.max(f64::MIN_POSITIVE))
+            && c.precision_bits >= orbit_bits_for_span(req.max_delta.max(f64::MIN_POSITIVE))
             && (request_len <= c.orbit.len() || c.escaped)
         {
             let request_len = request_len.min(c.orbit.len());
@@ -428,11 +430,8 @@ pub fn sa_as_gpu_coeffs(sa: &[Complex64; 5]) -> [SaCoeff; 5] {
     out
 }
 
-fn parse_or_zero(s: &str, prec: u32) -> Float {
-    match Float::parse(s) {
-        Ok(p) => p.complete(prec),
-        Err(_) => Float::with_val(prec, 0),
-    }
+fn parse_or_zero<const N: usize>(s: &str, prec: u32) -> Mp<N> {
+    Mp::parse(s, prec).unwrap_or(Mp::ZERO)
 }
 
 
@@ -440,9 +439,8 @@ fn parse_or_zero(s: &str, prec: u32) -> Float {
 // ---------------------------------------------------------------------------
 // Single-pixel high-precision paths.
 //
-// These live here rather than in rosie_mandlebrot_render because this is the crate
-// that owns rug: holding them in the renderer meant the whole graphics crate
-// pulled in GMP/MPFR for two functions that do no rendering.
+// These live here rather than in rosie_mandlebrot_render because this is the
+// crate that owns the high-precision arithmetic.
 // ---------------------------------------------------------------------------
 
 /// Parse a coordinate string that carries more digits than an f64 can hold.
@@ -450,24 +448,20 @@ fn parse_or_zero(s: &str, prec: u32) -> Float {
 /// Used when a plain `str::parse::<f64>()` fails. Parsing at 128 bits and then
 /// rounding keeps the leading digits meaningful instead of returning 0.0.
 pub fn parse_f64_fallback(s: &str) -> f64 {
-    use rug::{ops::CompleteRound, Float};
-    let f = Float::parse(s)
-        .map(|p| p.complete(128))
-        .unwrap_or_else(|_| Float::with_val(128, 0));
-    f.to_f64()
+    Mp::<2>::parse(s, 128).unwrap_or(Mp::ZERO).to_f64()
 }
 
 
-/// Full high-precision Mandelbrot iteration for a single pixel — the "rug
-/// fallback" tier.
+/// Full high-precision Mandelbrot iteration for a single pixel — the exact
+/// fallback tier.
 ///
 /// **Precision-preserving signature**: takes the center as its original
 /// full-precision *string* and the pixel offset as a small f64. The string
-/// is parsed at `prec_bits`, then the offset is added in rug. This is the
-/// only way the rug iteration actually has more precision than f64 at deep
-/// zoom — passing the pre-summed `f64` would strip everything past 15
-/// digits, defeating the point of falling back to rug at all.
-pub fn iterate_single_pixel_rug(
+/// is parsed at `prec_bits`, then the offset is added at that precision. This
+/// is the only way the iteration actually has more precision than f64 at
+/// deep zoom — passing the pre-summed `f64` would strip everything past 15
+/// digits, defeating the point of the fallback.
+pub fn iterate_single_pixel_exact(
     center_re_str: &str,
     center_im_str: &str,
     delta_re: f64,
@@ -475,47 +469,49 @@ pub fn iterate_single_pixel_rug(
     max_iter: u32,
     prec_bits: u32,
 ) -> rosie_mandlebrot_core::types::PixelOut {
-    use rug::{ops::CompleteRound, Float};
-    let mut cre = Float::parse(center_re_str)
-        .map(|p| p.complete(prec_bits))
-        .unwrap_or_else(|_| Float::with_val(prec_bits, 0));
-    let mut cim = Float::parse(center_im_str)
-        .map(|p| p.complete(prec_bits))
-        .unwrap_or_else(|_| Float::with_val(prec_bits, 0));
-    // Add the per-pixel offset *in rug* so we keep all the precision of the
-    // center string. delta_re/delta_im are small (span/2 max) so f64 is fine
-    // to carry them in — the loss is only at the f64 mantissa's tail, far
-    // below the center's significant digits.
-    cre += delta_re;
-    cim += delta_im;
+    struct Run<'a>(&'a str, &'a str, f64, f64, u32, u32);
+    impl LimbsFn for Run<'_> {
+        type Out = rosie_mandlebrot_core::types::PixelOut;
+        fn call<const N: usize>(self) -> Self::Out {
+            single_pixel::<N>(self.0, self.1, self.2, self.3, self.4, self.5)
+        }
+    }
+    dispatch(prec_bits, Run(center_re_str, center_im_str, delta_re, delta_im, max_iter, prec_bits))
+}
 
-    let mut z_re = Float::with_val(prec_bits, 0);
-    let mut z_im = Float::with_val(prec_bits, 0);
+fn single_pixel<const N: usize>(
+    center_re_str: &str,
+    center_im_str: &str,
+    delta_re: f64,
+    delta_im: f64,
+    max_iter: u32,
+    p: u32,
+) -> rosie_mandlebrot_core::types::PixelOut {
+    // Add the per-pixel offset at full precision so we keep all the digits of
+    // the center string. delta_re/delta_im are small (span/2 max) so f64 is
+    // fine to carry them in — the loss is only at the f64 mantissa's tail, far
+    // below the center's significant digits. An f64 is exact in 64 bits.
+    let exact = |x: f64| Mp::<N>::from_f64(x, 64.min(64 * N as u32));
+    let cre = parse_or_zero::<N>(center_re_str, p).add(&exact(delta_re), p);
+    let cim = parse_or_zero::<N>(center_im_str, p).add(&exact(delta_im), p);
+
+    let mut z_re = Mp::<N>::ZERO;
+    let mut z_im = Mp::<N>::ZERO;
 
     for n in 0..max_iter {
-        let z_re_sq = (&z_re * &z_re).complete(prec_bits);
-        let z_im_sq = (&z_im * &z_im).complete(prec_bits);
-        let mag_sq = (&z_re_sq + &z_im_sq).complete(prec_bits);
-        if mag_sq.to_f64() > 4.0 {
-            let mag_sq_f = mag_sq.to_f64();
-            let smooth = (n as f64) + 1.0 - (mag_sq_f.ln() * 0.5).ln() / 2.0_f64.ln();
+        let z_re_sq = z_re.sqr(p);
+        let z_im_sq = z_im.sqr(p);
+        let mag_sq = z_re_sq.add(&z_im_sq, p).to_f64();
+        if mag_sq > 4.0 {
+            let smooth = (n as f64) + 1.0 - (mag_sq.ln() * 0.5).ln() / 2.0_f64.ln();
             return rosie_mandlebrot_core::types::PixelOut {
                 iter: n,
                 smooth_val: smooth as f32,
             };
         }
-        let two_z_re_z_im = {
-            let mut t = (&z_re * &z_im).complete(prec_bits);
-            t *= 2;
-            t
-        };
-        let mut next_re = z_re_sq;
-        next_re -= &z_im_sq;
-        next_re += &cre;
-        let mut next_im = two_z_re_z_im;
-        next_im += &cim;
-        z_re = next_re;
-        z_im = next_im;
+        let two_re_im = z_re.mul(&z_im, p).mul_2exp(1);
+        z_re = z_re_sq.sub(&z_im_sq, p).add(&cre, p);
+        z_im = two_re_im.add(&cim, p);
     }
     rosie_mandlebrot_core::types::PixelOut {
         iter: max_iter,
@@ -621,7 +617,7 @@ mod cache_tests {
         let deep = RefRequest { max_delta: 1e-30, ..req(1000) };
         let first = compute_reference_cached(&shallow, &mut cache);
         let second = compute_reference_cached(&deep, &mut cache);
-        let needed = rug_bits_for_span(1e-30);
+        let needed = orbit_bits_for_span(1e-30);
         assert!(first.precision_bits < needed);
         assert!(second.precision_bits >= needed, "served {} bits, needs {needed}", second.precision_bits);
     }
@@ -688,7 +684,7 @@ mod escape_tests {
         let data = compute_reference(&req);
         assert!(data.escaped);
         assert_eq!(data.orbit.len(), 3086);
-        let start = rug_bits_for_span(req.max_delta);
+        let start = orbit_bits_for_span(req.max_delta);
         assert!(data.precision_bits <= 2 * start, "climbed from {start} to {} bits", data.precision_bits);
     }
 
@@ -753,14 +749,14 @@ mod single_pixel_tests {
 
     #[test]
     fn origin_is_inside_the_set() {
-        let px = iterate_single_pixel_rug("0", "0", 0.0, 0.0, 500, 128);
+        let px = iterate_single_pixel_exact("0", "0", 0.0, 0.0, 500, 128);
         assert_eq!(px.iter, 500, "c=0 never escapes");
         assert_eq!(px.smooth_val, 0.0);
     }
 
     #[test]
     fn two_escapes_immediately() {
-        let px = iterate_single_pixel_rug("2", "0", 0.0, 0.0, 500, 128);
+        let px = iterate_single_pixel_exact("2", "0", 0.0, 0.0, 500, 128);
         assert!(px.iter < 5, "c=2 escapes within a few iterations, got {}", px.iter);
         assert!(px.smooth_val.is_finite());
     }
@@ -771,8 +767,8 @@ mod single_pixel_tests {
         // addition happens in rug. If the centre were pre-summed in f64 these two
         // would be indistinguishable, which is the bug the signature prevents.
         let deep = "-0.7436438870371587047521915061147";
-        let a = iterate_single_pixel_rug(deep, "0.1318259042053119704931320563851", 0.0, 0.0, 400, 256);
-        let b = iterate_single_pixel_rug(deep, "0.1318259042053119704931320563851", 1e-20, 0.0, 400, 256);
+        let a = iterate_single_pixel_exact(deep, "0.1318259042053119704931320563851", 0.0, 0.0, 400, 256);
+        let b = iterate_single_pixel_exact(deep, "0.1318259042053119704931320563851", 1e-20, 0.0, 400, 256);
         // Not asserting they differ - at this depth they may agree - only that
         // both are well-formed and the offset path does not panic or NaN.
         assert!(a.smooth_val.is_finite() || a.iter == 400);
@@ -783,7 +779,7 @@ mod single_pixel_tests {
     fn a_garbage_centre_does_not_panic() {
         // The CLI rejects such a centre before it gets here (`is_decimal`);
         // this only checks the orbit code does not unwrap on one.
-        let _ = iterate_single_pixel_rug("not-a-number", "also-not", 0.0, 0.0, 50, 64);
+        let _ = iterate_single_pixel_exact("not-a-number", "also-not", 0.0, 0.0, 50, 64);
     }
 
     #[test]

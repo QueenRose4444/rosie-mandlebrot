@@ -7,12 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Enables `rug` (GMP/MPFR) for the reference orbit at deep zooms. Without it the
-# f32 and double-single tiers still work; the deep tier will refuse to run.
-
 [dependencies]
 rosie_mandlebrot_core.workspace = true
 num-complex.workspace = true
 tracing.workspace = true
-rug.workspace = true
-gmp-mpfr-sys.workspace = true

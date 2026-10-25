@@ -4,8 +4,7 @@
 use rosie_mandlebrot_core::precision::{coordinate_digits, EXACT_DIGITS};
 use rosie_mandlebrot_core::presets::{load_presets, Kind, Preset};
 use rosie_mandlebrot_ref::ladder::{atom_ladder, depth_floor_log10, misiurewicz_check_log10};
-use rug::float::Constant;
-use rug::Float;
+use rosie_mandlebrot_ref::mp::Mp;
 
 fn presets(kind: Kind) -> Vec<Preset> {
     let all: Vec<Preset> = load_presets(None).unwrap().into_iter().filter(|p| p.kind == Some(kind)).collect();
@@ -55,17 +54,77 @@ fn every_misiurewicz_point_lands_on_its_cycle_at_its_preperiod() {
     }
 }
 
+type F = Mp<8>;
+const P: u32 = 480;
+
+fn int(x: i64) -> F {
+    F::from_i64(x, P)
+}
+
+/// Below this a series term no longer changes a 480-bit sum.
+fn negligible(t: &F) -> bool {
+    t.log2_abs() < -(P as f64) - 8.0
+}
+
+/// atan(1/x) by its series.
+fn atan_inv(x: i64) -> F {
+    let x2 = int(x * x);
+    let mut term = int(1).div(&int(x), P);
+    let mut sum = term;
+    for k in 1.. {
+        term = term.div(&x2, P);
+        let t = term.div(&int(2 * k + 1), P);
+        if negligible(&t) {
+            break;
+        }
+        sum = if k % 2 == 1 { sum.sub(&t, P) } else { sum.add(&t, P) };
+    }
+    sum
+}
+
+/// Machin: π = 16 atan(1/5) − 4 atan(1/239).
+fn pi() -> F {
+    atan_inv(5).mul_2exp(4).sub(&atan_inv(239).mul_2exp(2), P)
+}
+
+/// Taylor series for sin and cos (|x| ≤ 2π here).
+fn sin_cos(x: &F) -> (F, F) {
+    let x2 = x.sqr(P);
+    let (mut s, mut c) = (*x, int(1));
+    let (mut ts, mut tc) = (*x, int(1));
+    for k in 1..1000i64 {
+        ts = ts.mul(&x2, P).div(&int(2 * k * (2 * k + 1)), P).neg();
+        tc = tc.mul(&x2, P).div(&int((2 * k - 1) * 2 * k), P).neg();
+        s = s.add(&ts, P);
+        c = c.add(&tc, P);
+        if negligible(&ts) && negligible(&tc) {
+            break;
+        }
+    }
+    (s, c)
+}
+
 /// The root of the p/q bulb on the main cardioid is exactly
 /// `e^{iθ}/2 − e^{2iθ}/4` with `θ = 2πp/q`; on the period-2 disc it is
 /// `−1 + e^{iθ}/4`.
-fn bulb_root(on_period2: bool, p: u32, q: u32, prec: u32) -> (Float, Float) {
-    let theta = Float::with_val(prec, Constant::Pi) * 2u32 * p / q;
-    let (s1, c1) = theta.clone().sin_cos(Float::new(prec));
+fn bulb_root(on_period2: bool, p: u32, q: u32) -> (F, F) {
+    let theta = pi().mul_2exp(1).mul(&int(p as i64), P).div(&int(q as i64), P);
+    let (s1, c1) = sin_cos(&theta);
     if on_period2 {
-        return (c1 / 4u32 - 1u32, s1 / 4u32);
+        return (c1.mul_2exp(-2).sub(&int(1), P), s1.mul_2exp(-2));
     }
-    let (s2, c2) = (theta * 2u32).sin_cos(Float::new(prec));
-    (c1 / 2u32 - c2 / 4u32, s1 / 2u32 - s2 / 4u32)
+    let (s2, c2) = sin_cos(&theta.mul_2exp(1));
+    (c1.mul_2exp(-1).sub(&c2.mul_2exp(-2), P), s1.mul_2exp(-1).sub(&s2.mul_2exp(-2), P))
+}
+
+#[test]
+fn the_series_give_known_values() {
+    assert!(pi().sub(&F::parse("3.14159265358979323846264338327950288419716939937510582097494459230781640628620899862803482534211706798", P).unwrap(), P).log2_abs() < -330.0);
+    // sin(π/6) = 1/2, cos(π/3) = 1/2.
+    let (s, _) = sin_cos(&pi().div(&int(6), P));
+    let (_, c) = sin_cos(&pi().div(&int(3), P));
+    assert!(s.sub(&F::from_f64(0.5, P), P).log2_abs() < -470.0);
+    assert!(c.sub(&F::from_f64(0.5, P), P).log2_abs() < -470.0);
 }
 
 #[test]
@@ -83,10 +142,10 @@ fn every_bulb_root_matches_its_closed_form() {
     let landmarks = presets(Kind::Landmark);
     for (name, on2, p, q) in roots {
         let preset = landmarks.iter().find(|x| x.name == name).unwrap_or_else(|| panic!("{name} missing"));
-        let (re, im) = bulb_root(on2, p, q, 400);
+        let (re, im) = bulb_root(on2, p, q);
         let tol = 10f64.powi(-(written_digits(preset) as i32));
         for (written, exact) in [(&preset.center_re, re), (&preset.center_im, im)] {
-            let err = (Float::with_val(400, Float::parse(written).unwrap()) - exact).abs().to_f64();
+            let err = F::parse(written, P).unwrap().sub(&exact, P).abs().to_f64();
             assert!(err <= tol, "{name}: {written} is {err:e} from the closed form");
         }
     }

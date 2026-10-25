@@ -11,8 +11,8 @@
 //! runs out of new structure: past it you are either inside that minibrot's
 //! body or have walked away from every minibrot.
 
+use crate::mp::{dispatch, LimbsFn, Mp};
 use crate::xc::Xc;
-use rug::{Assign, Float};
 
 /// One rung: a minibrot whose atom domain contains the centre.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,33 +73,46 @@ pub fn atom_ladder(center_re: &str, center_im: &str, max_iter: u32) -> Vec<Rung>
 pub fn misiurewicz_check_log10(center_re: &str, center_im: &str, preperiod: u32, period: u32) -> (f64, f64) {
     let digits = written_digits(center_re).max(written_digits(center_im));
     let prec = (digits as f64 * 3.33) as u32 * 2 + 256;
-    let parse = |s: &str| Float::with_val(prec, Float::parse(s).expect("centre validated as decimal"));
-    let (cre, cim) = (parse(center_re), parse(center_im));
-    let mut zr = Float::with_val(prec, 0);
-    let mut zi = Float::with_val(prec, 0);
-    let mut t = Float::new(prec);
-    let (mut kr, mut ki) = (Float::new(prec), Float::new(prec));
+    struct Run<'a>(&'a str, &'a str, u32, u32, u32);
+    impl LimbsFn for Run<'_> {
+        type Out = (f64, f64);
+        fn call<const N: usize>(self) -> (f64, f64) {
+            misiurewicz_at::<N>(self.0, self.1, self.2, self.3, self.4)
+        }
+    }
+    dispatch(prec, Run(center_re, center_im, preperiod, period, prec))
+}
+
+fn misiurewicz_at<const N: usize>(center_re: &str, center_im: &str, preperiod: u32, period: u32, prec: u32) -> (f64, f64) {
+    let (cre, cim) = (parse::<N>(center_re, prec), parse::<N>(center_im, prec));
+    let (mut zr, mut zi) = (Mp::<N>::ZERO, Mp::<N>::ZERO);
+    let (mut kr, mut ki) = (Mp::<N>::ZERO, Mp::<N>::ZERO);
     let one = Xc::from_f64(1.0, 0.0);
     let (mut dc, mut dk) = (Xc::ZERO, Xc::ZERO);
     for n in 1..=preperiod + period {
-        dc = Xc::from_floats(&zr, &zi).mul(dc).scale2(1).add(one);
-        t.assign(&zr * &zi);
-        zr.square_mut();
-        zi.square_mut();
-        zr -= &zi;
-        zr += &cre;
-        zi.assign(&t * 2u32);
-        zi += &cim;
+        dc = Xc::from_mp(&zr, &zi).mul(dc).scale2(1).add(one);
+        (zr, zi) = step(&zr, &zi, &cre, &cim, prec);
         if n == preperiod {
-            kr.assign(&zr);
-            ki.assign(&zi);
+            (kr, ki) = (zr, zi);
             dk = dc;
         }
     }
-    zr -= &kr;
-    zi -= &ki;
-    let residual = Xc::from_floats(&zr, &zi).abs_log10();
+    let residual = Xc::from_mp(&zr.sub(&kr, prec), &zi.sub(&ki, prec)).abs_log10();
     (residual, residual - dc.add(dk.neg()).abs_log10())
+}
+
+/// One step `z² + c`, rounded operation by operation in the order the MPFR
+/// version used.
+#[inline(always)]
+pub(crate) fn step<const N: usize>(zr: &Mp<N>, zi: &Mp<N>, cre: &Mp<N>, cim: &Mp<N>, prec: u32) -> (Mp<N>, Mp<N>) {
+    let t = zr.mul(zi, prec);
+    let re = zr.sqr(prec).sub(&zi.sqr(prec), prec).add(cre, prec);
+    let im = t.mul_2exp(1).add(cim, prec);
+    (re, im)
+}
+
+fn parse<const N: usize>(s: &str, prec: u32) -> Mp<N> {
+    Mp::parse(s, prec).expect("centre validated as decimal")
 }
 
 /// Digits actually written, which sets the arithmetic precision. An exact zero
@@ -121,11 +134,19 @@ fn agree(a: &[Rung], b: &[Rung]) -> bool {
 }
 
 fn ladder_at_prec(center_re: &str, center_im: &str, max_iter: u32, prec: u32) -> Vec<Rung> {
-    let parse = |s: &str| Float::with_val(prec, Float::parse(s).expect("centre validated as decimal"));
-    let (cre, cim) = (parse(center_re), parse(center_im));
-    let mut zr = Float::with_val(prec, 0);
-    let mut zi = Float::with_val(prec, 0);
-    let mut t = Float::new(prec);
+    struct Run<'a>(&'a str, &'a str, u32, u32);
+    impl LimbsFn for Run<'_> {
+        type Out = Vec<Rung>;
+        fn call<const N: usize>(self) -> Vec<Rung> {
+            ladder_at::<N>(self.0, self.1, self.2, self.3)
+        }
+    }
+    dispatch(prec, Run(center_re, center_im, max_iter, prec))
+}
+
+fn ladder_at<const N: usize>(center_re: &str, center_im: &str, max_iter: u32, prec: u32) -> Vec<Rung> {
+    let (cre, cim) = (parse::<N>(center_re, prec), parse::<N>(center_im, prec));
+    let (mut zr, mut zi) = (Mp::<N>::ZERO, Mp::<N>::ZERO);
 
     let one = Xc::from_f64(1.0, 0.0);
     let mut dc = Xc::ZERO; // dz_n/dc
@@ -135,19 +156,12 @@ fn ladder_at_prec(center_re: &str, center_im: &str, max_iter: u32, prec: u32) ->
     let mut rungs = Vec::new();
 
     for n in 1..=max_iter {
-        let z_prev = Xc::from_floats(&zr, &zi);
+        let z_prev = Xc::from_mp(&zr, &zi);
         dc = z_prev.mul(dc).scale2(1).add(one);
 
-        // z = z² + c
-        t.assign(&zr * &zi);
-        zr.square_mut();
-        zi.square_mut();
-        zr -= &zi;
-        zr += &cre;
-        zi.assign(&t * 2u32);
-        zi += &cim;
+        (zr, zi) = step(&zr, &zi, &cre, &cim, prec);
 
-        let z = Xc::from_floats(&zr, &zi);
+        let z = Xc::from_mp(&zr, &zi);
         let abs_log10 = z.abs_log10();
         if abs_log10 > 2f64.log10() {
             break;

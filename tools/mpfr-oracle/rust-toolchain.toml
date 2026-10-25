@@ -1,0 +1,3 @@
+[toolchain]
+# gmp-mpfr-sys does not build with MSVC.
+channel = "stable-x86_64-pc-windows-gnu"

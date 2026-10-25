@@ -39,7 +39,6 @@ def main() -> None:
     files = [(binary, exe)]
     for f in ["README.md", "LICENSE", "THIRD-PARTY-LICENSES.md", "minisign.pub"]:
         files.append((ROOT / f, f))
-    files += [(p, f"licenses/{p.name}") for p in sorted((ROOT / "licenses").glob("*"))]
     missing = [str(p) for p, _ in files if not p.is_file()]
     if missing:
         raise SystemExit(f"missing: {missing}")

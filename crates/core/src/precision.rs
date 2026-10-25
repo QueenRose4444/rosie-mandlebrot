@@ -89,7 +89,7 @@ pub fn select_tier(span: f64, width: u32) -> Tier {
 /// The iteration count is deliberately not part of the formula: demanding
 /// `4 × max_iter` bits would put every deep run on the 32,768-bit cap, about
 /// 24 s per orbit rebuild at a 200k iteration cap.
-pub fn rug_bits_for_span(span: f64) -> u32 {
+pub fn orbit_bits_for_span(span: f64) -> u32 {
     let decimals = (-span.log10()).max(0.0) + 20.0;
     let bits_for_span = (decimals * std::f64::consts::LOG2_10).ceil() as u32;
     (bits_for_span + 64).clamp(53, 32_768)
@@ -105,7 +105,7 @@ pub fn rug_bits_for_span(span: f64) -> u32 {
 ///   span > 1e-50 → 256 bits
 ///   span > 1e-100 → 512 bits
 ///   otherwise   → 1024 bits
-pub fn rug_bits_for_pixel(span: f64) -> u32 {
+pub fn pixel_bits_for_span(span: f64) -> u32 {
     if span > 1e-25 {
         128
     } else if span > 1e-50 {
@@ -149,11 +149,11 @@ mod tests {
     fn rug_bits_scales_with_span_and_iter() {
         // At least 53 + log2(1/span) at every depth, and growing with it.
         for span in [1.0, 1e-13, 1e-32, 1e-100, 1e-300] {
-            assert!(rug_bits_for_span(span) as f64 >= 53.0 + (1.0 / span).log2(), "{span:e}");
+            assert!(orbit_bits_for_span(span) as f64 >= 53.0 + (1.0 / span).log2(), "{span:e}");
         }
-        assert!(rug_bits_for_span(1e-200) > rug_bits_for_span(1e-100));
+        assert!(orbit_bits_for_span(1e-200) > orbit_bits_for_span(1e-100));
         // Not the iteration count: a 1e-32 view needs ~240 bits, not 32,768.
-        assert!(rug_bits_for_span(1e-32) < 300);
+        assert!(orbit_bits_for_span(1e-32) < 300);
     }
 }
 

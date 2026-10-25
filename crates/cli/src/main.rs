@@ -590,7 +590,7 @@ fn oracle_check(cfg: &RunConfig, pixels: &[rosie_mandlebrot_core::types::PixelOu
     let px_dx = span * (w / h) / w;
     let px_dy = span / h;
     let side = (n as f64).sqrt().ceil() as u32;
-    let prec = rosie_mandlebrot_core::precision::rug_bits_for_span(span) + 256;
+    let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span) + 256;
     let samples: Vec<(u32, u32)> = (0..side * side)
         .map(|i| {
             let x = ((i % side) as f64 + 0.5) / side as f64 * w;
@@ -605,7 +605,7 @@ fn oracle_check(cfg: &RunConfig, pixels: &[rosie_mandlebrot_core::types::PixelOu
             let gpu = pixels[(y * cfg.width + x) as usize].iter.min(max_iter);
             let d_re = (x as f64 - w * 0.5) * px_dx;
             let d_im = (y as f64 - h * 0.5) * px_dy;
-            let truth = rosie_mandlebrot_ref::iterate_single_pixel_rug(&cfg.center_re, &cfg.center_im, d_re, d_im, max_iter, prec);
+            let truth = rosie_mandlebrot_ref::iterate_single_pixel_exact(&cfg.center_re, &cfg.center_im, d_re, d_im, max_iter, prec);
             (gpu, truth.iter.min(max_iter))
         })
         .collect();

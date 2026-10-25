@@ -645,8 +645,8 @@ fn oracle_check(m: &Manifest, g: &StripGeometry, row0: u64, rows: u32, pixels: &
             let ln_r = g.ln_radius((row0 + u64::from(y)) as f64);
             let r = ln_r.exp();
             let a = f64::from(x) * d;
-            let prec = rosie_mandlebrot_core::precision::rug_bits_for_span(r) + 256;
-            let truth = rosie_mandlebrot_ref::iterate_single_pixel_rug(&m.center_re, &m.center_im, r * a.cos(), r * a.sin(), max_iter, prec);
+            let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(r) + 256;
+            let truth = rosie_mandlebrot_ref::iterate_single_pixel_exact(&m.center_re, &m.center_im, r * a.cos(), r * a.sin(), max_iter, prec);
             (pixels[(y * g.cols + x) as usize].iter.min(max_iter), truth.iter.min(max_iter))
         })
         .collect();

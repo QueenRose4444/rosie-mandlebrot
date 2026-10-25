@@ -1,9 +1,10 @@
 [toolchain]
-# `rug` (GMP/MPFR) can't build on MSVC — the gmp-mpfr-sys build script
-# explicitly rejects it. Pin the full GNU/MinGW triple as the channel so
-# `cargo build` from this directory always uses the GNU toolchain.
-# (Plain `channel = "stable"` would resolve to the default host, which may be
-# MSVC.)
+# Windows releases are built with the GNU/MinGW toolchain. Switching to MSVC
+# would change the C runtime, and with it the maths library under the CPU
+# parts of the renderer, so it would need its own output-identity check first.
+# The full triple is the channel so `cargo build` from this directory always
+# uses it (plain `channel = "stable"` would resolve to the default host, which
+# may be MSVC).
 # Linux/Docker builds ignore this file — the Dockerfile uses its own
 # `rust` base image.
 channel = "stable-x86_64-pc-windows-gnu"

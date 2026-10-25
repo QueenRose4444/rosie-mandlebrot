@@ -16,8 +16,9 @@
 //! this bound is wider than the frame, no point of the set is in the frame or
 //! in any frame after it: everything left is smooth gradient.
 
+use crate::ladder::step;
+use crate::mp::{dispatch, LimbsFn, Mp};
 use crate::xc::{ldexp, Xc};
-use rug::{Assign, Float};
 
 /// Where iteration stops after escaping: far enough out that `G` and `G'`
 /// have converged, close enough that `|z|²` stays inside f64.
@@ -51,25 +52,28 @@ struct Escape {
 }
 
 fn escape_at_prec(center_re: &str, center_im: &str, max_iter: u32, prec: u32) -> Option<Escape> {
-    let parse = |s: &str| Float::with_val(prec, Float::parse(s).expect("centre validated as decimal"));
+    struct Run<'a>(&'a str, &'a str, u32, u32);
+    impl LimbsFn for Run<'_> {
+        type Out = Option<Escape>;
+        fn call<const N: usize>(self) -> Option<Escape> {
+            escape_at::<N>(self.0, self.1, self.2, self.3)
+        }
+    }
+    dispatch(prec, Run(center_re, center_im, max_iter, prec))
+}
+
+fn escape_at<const N: usize>(center_re: &str, center_im: &str, max_iter: u32, prec: u32) -> Option<Escape> {
+    let parse = |s: &str| Mp::<N>::parse(s, prec).expect("centre validated as decimal");
     let (cre, cim) = (parse(center_re), parse(center_im));
-    let mut zr = Float::with_val(prec, 0);
-    let mut zi = Float::with_val(prec, 0);
-    let mut t = Float::new(prec);
+    let (mut zr, mut zi) = (Mp::<N>::ZERO, Mp::<N>::ZERO);
     let one = Xc::from_f64(1.0, 0.0);
     let mut dc = Xc::ZERO; // dz_n/dc
 
     let mut escaped_at = None;
     for n in 1..=max_iter {
-        dc = Xc::from_floats(&zr, &zi).mul(dc).scale2(1).add(one);
-        t.assign(&zr * &zi);
-        zr.square_mut();
-        zi.square_mut();
-        zr -= &zi;
-        zr += &cre;
-        zi.assign(&t * 2u32);
-        zi += &cim;
-        if Xc::from_floats(&zr, &zi).abs_log10() > 2f64.log10() {
+        dc = Xc::from_mp(&zr, &zi).mul(dc).scale2(1).add(one);
+        (zr, zi) = step(&zr, &zi, &cre, &cim, prec);
+        if Xc::from_mp(&zr, &zi).abs_log10() > 2f64.log10() {
             escaped_at = Some(n);
             break;
         }

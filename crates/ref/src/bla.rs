@@ -347,7 +347,7 @@ mod tests {
         let (span, max_iter) = (1e-26, 20_000);
         let o = orbit(ULTRA_RE, ULTRA_IM, span, max_iter);
         let t = build_bla_table(&o, span * std::f64::consts::FRAC_1_SQRT_2, BLA_EPSILON_F64);
-        let prec = rosie_mandlebrot_core::precision::rug_bits_for_span(span) + 256;
+        let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span) + 256;
         let score = |r: BlaResult, truth: u32| match r {
             BlaResult::Escaped { iter, .. } if truth < max_iter => (iter == truth, false),
             BlaResult::Inside if truth >= max_iter => (true, false),
@@ -355,7 +355,7 @@ mod tests {
         };
         let (mut n, mut plain_ok, mut bla_ok, mut flips) = (0u32, 0u32, 0u32, 0u32);
         for dc in grid(span, 12) {
-            let truth = crate::iterate_single_pixel_rug(ULTRA_RE, ULTRA_IM, dc.re, dc.im, max_iter, prec).iter;
+            let truth = crate::iterate_single_pixel_exact(ULTRA_RE, ULTRA_IM, dc.re, dc.im, max_iter, prec).iter;
             n += 1;
             let (p_ok, p_flip) = score(plain(&o, dc, max_iter), truth);
             let (b_ok, b_flip) = score(bla_iterate(&t, &o, dc, max_iter), truth);

@@ -238,14 +238,15 @@ cd rosie-mandlebrot
 cargo build --release          # binary: target/release/rosie_mandlebrot
 ```
 
-- **Windows:** the `rug` crate (GMP/MPFR) needs the GNU toolchain, which `rust-toolchain.toml`
-  selects for you (`stable-x86_64-pc-windows-gnu`). Build from inside the repository folder.
+- **Windows:** releases are built with the GNU toolchain, which `rust-toolchain.toml` selects
+  for you (`stable-x86_64-pc-windows-gnu`); the bundled SQLite and zstd need MinGW's `gcc` on
+  the PATH. Build from inside the repository folder.
 - **Linux:** `rust-toolchain.toml` names the Windows toolchain, so override it:
-  `RUSTUP_TOOLCHAIN=stable cargo build --release`. You need a C compiler and `m4` for GMP.
+  `RUSTUP_TOOLCHAIN=stable cargo build --release`. You need a C compiler.
 - `cargo test --workspace` runs the test suite, including the checks on every preset.
 - `tools/release-build.sh` makes a release build without local paths embedded in the binary.
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE). The binaries include GMP and MPFR (LGPL) and other third-party code;
-see [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+MIT, see [LICENSE](LICENSE). The binaries include third-party code; see
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).

@@ -7,19 +7,11 @@ following software, under the licences listed.
 
 | library | licence | source | use |
 |---|---|---|---|
-| GMP 6.3.0 | LGPL-3.0-or-later OR GPL-2.0-or-later | https://gmplib.org/ | statically linked through gmp-mpfr-sys, for the high-precision reference orbit |
-| MPFR 4.2.2 | LGPL-3.0-or-later | https://www.mpfr.org/ | statically linked through gmp-mpfr-sys |
 | Zstandard (libzstd) | BSD-3-Clause OR GPL-2.0-only | https://facebook.github.io/zstd/ | statically linked through zstd-sys, to compress the keyframe strip |
 | SQLite | Public domain | https://sqlite.org/ | statically linked through rusqlite's bundled build, for the checkpoint database |
 | mingw-w64 runtime (Windows builds only) | ZPL-2.1 and MIT | https://www.mingw-w64.org/ | statically linked C runtime and winpthreads |
 
-**GMP and MPFR are under the GNU LGPL**, and are linked statically. As the LGPL requires, you
-may replace them: the complete source of this program is public at
-<https://github.com/QueenRose4444/rosie-mandlebrot>, and `cargo build --release` relinks it
-against whatever GMP and MPFR you point `gmp-mpfr-sys` at (see its documentation for using
-system libraries). The full GPL and LGPL texts are in `licenses/`.
-
-## Rust crates (285)
+## Rust crates (282)
 
 | crate | version | licence | repository |
 |---|---|---|---|
@@ -38,7 +30,6 @@ system libraries). The full GPL and LGPL texts are in `licenses/`.
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT | https://github.com/smol-rs/atomic-waker |
 | axum | 0.8.9 | MIT | https://github.com/tokio-rs/axum |
 | axum-core | 0.5.6 | MIT | https://github.com/tokio-rs/axum |
-| az | 1.3.0 | MIT/Apache-2.0 | https://gitlab.com/tspiteri/az |
 | base64 | 0.23.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | bit-set | 0.10.0 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-set |
 | bit-vec | 0.9.1 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-vec |
@@ -80,8 +71,8 @@ system libraries). The full GPL and LGPL texts are in `licenses/`.
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | https://github.com/image-rs/fdeflate |
 | flate2 | 1.1.10 | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs |
 | fnv | 1.0.7 | Apache-2.0 / MIT | https://github.com/servo/rust-fnv |
-| foldhash | 0.1.5 | Zlib | https://github.com/orlp/foldhash |
 | foldhash | 0.2.0 | Zlib | https://github.com/orlp/foldhash |
+| foldhash | 0.1.5 | Zlib | https://github.com/orlp/foldhash |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | futures-macro | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
@@ -91,11 +82,10 @@ system libraries). The full GPL and LGPL texts are in `licenses/`.
 | getrandom | 0.2.17 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | glow | 0.17.0 | MIT OR Apache-2.0 OR Zlib | https://github.com/grovesNL/glow |
 | glutin_wgl_sys | 0.6.1 | Apache-2.0 | https://github.com/rust-windowing/glutin |
-| gmp-mpfr-sys | 1.6.8 | LGPL-3.0+ | https://gitlab.com/tspiteri/gmp-mpfr-sys |
 | gpu-allocator | 0.28.0 | MIT OR Apache-2.0 | https://github.com/Traverse-Research/gpu-allocator |
 | half | 2.7.1 | MIT OR Apache-2.0 | https://github.com/VoidStarKat/half-rs |
-| hashbrown | 0.16.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
+| hashbrown | 0.16.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashlink | 0.10.0 | MIT OR Apache-2.0 | https://github.com/kyren/hashlink |
 | heck | 0.5.0 | MIT OR Apache-2.0 | https://github.com/withoutboats/heck |
@@ -134,8 +124,8 @@ system libraries). The full GPL and LGPL texts are in `licenses/`.
 | memory-stats | 1.2.0 | MIT OR Apache-2.0 | https://github.com/Arc-blroth/memory-stats |
 | mime | 0.3.17 | MIT OR Apache-2.0 | https://github.com/hyperium/mime |
 | mime_guess | 2.0.5 | MIT | https://github.com/abonander/mime_guess |
-| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
+| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
 | mio | 1.2.4 | MIT | https://github.com/tokio-rs/mio |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/moxcms.git |
 | naga | 30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
@@ -186,7 +176,6 @@ system libraries). The full GPL and LGPL texts are in `licenses/`.
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex |
 | renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | https://github.com/ebkalderon/renderdoc-rs |
 | ring | 0.17.14 | Apache-2.0 AND ISC | https://github.com/briansmith/ring |
-| rug | 1.28.0 | LGPL-3.0+ | https://gitlab.com/tspiteri/rug |
 | rusqlite | 0.37.0 | MIT | https://github.com/rusqlite/rusqlite |
 | rustc-hash | 1.1.0 | Apache-2.0/MIT | https://github.com/rust-lang-nursery/rustc-hash |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls |
@@ -214,8 +203,8 @@ system libraries). The full GPL and LGPL texts are in `licenses/`.
 | strsim | 0.11.1 | MIT | https://github.com/rapidfuzz/strsim-rs |
 | subtle | 2.6.1 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |
 | symlink | 0.1.0 | MIT/Apache-2.0 | https://gitlab.com/chris-morgan/symlink |
-| syn | 2.0.119 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn |
 | syn | 3.0.5 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn |
+| syn | 2.0.119 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn |
 | sync_wrapper | 1.0.2 | Apache-2.0 | https://github.com/Actyx/sync_wrapper |
 | termcolor | 1.4.1 | Unlicense OR MIT | https://github.com/BurntSushi/termcolor |
 | thiserror | 2.0.20 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
@@ -282,9 +271,9 @@ system libraries). The full GPL and LGPL texts are in `licenses/`.
 | windows-numerics | 0.3.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows-result | 0.4.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows-strings | 0.5.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-sys | 0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows-sys | 0.52.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows-sys | 0.59.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
-| windows-sys | 0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows-targets | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows-threading | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows_aarch64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
@@ -295,8 +284,8 @@ system libraries). The full GPL and LGPL texts are in `licenses/`.
 | windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
-| winnow | 1.0.4 | MIT | https://github.com/winnow-rs/winnow |
 | winnow | 0.7.15 | MIT | https://github.com/winnow-rs/winnow |
+| winnow | 1.0.4 | MIT | https://github.com/winnow-rs/winnow |
 | wrapcenum-derive | 0.4.1 | MIT/Apache-2.0 | https://github.com/Cldfire/wrapcenum-derive |
 | zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy |
 | zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy |

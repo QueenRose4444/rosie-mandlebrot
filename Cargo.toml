@@ -72,15 +72,6 @@ wgpu = "30"
 # machine. Anyone building for their own hardware can set it.
 wide = "0.7"
 
-# `rug` (GMP/MPFR) for the perturbation-theory reference orbit at deep zooms.
-rug = { version = "=1.28.0", default-features = false, features = ["float", "integer", "rational"] }
-# Pin gmp-mpfr-sys to 1.6.8 because 1.7.x dropped the prebuilt Windows-GNU
-# binaries and compiles GMP+MPFR+MPC from C source via autoconf. That compile
-# takes ~10+ minutes and triggers AV heuristics on every conftest.exe it
-# generates; 1.6.8's prebuilt libs unpack in seconds and skip all that.
-# (A source build can also choke on a build path containing parentheses.)
-gmp-mpfr-sys = { version = "=1.6.8", default-features = false, features = ["mpfr"] }
-
 [profile.release]
 lto = "fat"
 codegen-units = 1

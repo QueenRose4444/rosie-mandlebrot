@@ -419,10 +419,10 @@ pub(crate) fn iterate_perturbation_f64(
     })
 }
 
-// iterate_single_pixel_rug lives in rosie_mandlebrot_ref, the crate that owns
+// iterate_single_pixel_exact lives in rosie_mandlebrot_ref, the crate that owns
 // high-precision arithmetic, so this crate does not depend on rug (and
 // therefore on GMP/MPFR) at all.
-pub(crate) use rosie_mandlebrot_ref::iterate_single_pixel_rug;
+pub(crate) use rosie_mandlebrot_ref::iterate_single_pixel_exact;
 
 #[cfg(test)]
 mod kernel_agreement_tests {
