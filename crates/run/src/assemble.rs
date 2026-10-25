@@ -1,12 +1,13 @@
-//! Make the video from a stored strip: at the end of `--keyframes`, or again
-//! later with `--assemble` (another palette, fps or zoom speed, no re-render).
+//! Make the video from a stored strip: at the end of a strip render, or again
+//! later (another palette, fps or zoom speed, no re-render).
 //!
 //! Frames are produced in order. Frame k has span `initial_span·z^k`; it needs
 //! the strip rows from its corner down to [`MIN_RADIUS_PX`] from its centre,
 //! and those rows move about a frame's worth of depth per frame, so chunks are
 //! decoded and uploaded to the GPU ring only as the frames reach them.
 
-use crate::keyframes::{deepest_frame_span, strip_dir, MIN_RADIUS_PX};
+use crate::events::{Event, Events};
+use crate::strip::{deepest_frame_span, strip_dir, MIN_RADIUS_PX};
 use rosie_mandlebrot_core::encode::{measure_tone_range, ToneRange, ToneSmoother};
 use rosie_mandlebrot_core::error::MbError;
 use rosie_mandlebrot_core::palette::ColorScheme;
@@ -15,13 +16,13 @@ use rosie_mandlebrot_render::assembler::{window_bytes, AsmFrame, Assembler, Grou
 use rosie_mandlebrot_render::GpuCtx;
 use rosie_mandlebrot_store::keyframes::{read_block, read_manifest, ChunkStats, Manifest, StripGeometry, BLOCK_ROWS};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How colours are mapped across the zoom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Tone {
+pub enum Tone {
     /// One range per depth of the strip (smoothed over depth): a location has
     /// the same colour in every frame that shows it.
     Location,
@@ -30,7 +31,7 @@ pub(crate) enum Tone {
     PerFrame,
 }
 
-pub(crate) struct Options {
+pub struct Options {
     pub palette: ColorScheme,
     pub fps: u32,
     pub zoom_factor: Option<f64>,
@@ -50,32 +51,6 @@ pub(crate) struct Options {
     /// `zoom.<container>` (true for `--assemble`; the run's own video is
     /// replaced, because a resumed run's video covers more).
     pub keep_existing: bool,
-}
-
-impl Options {
-    pub(crate) fn from_cli(cli: &crate::config::Cli, cfg: &rosie_mandlebrot_core::config::RunConfig) -> anyhow::Result<Options> {
-        let tone = match cli.tone.as_str() {
-            "location" => Tone::Location,
-            "per-frame" => Tone::PerFrame,
-            other => {
-                return Err(MbError::InvalidArg { flag: "--tone", reason: format!("{other:?}: expected location or per-frame") }.into())
-            }
-        };
-        Ok(Options {
-            palette: cfg.palette,
-            fps: cfg.video_fps,
-            zoom_factor: cli.zoom_factor,
-            codec: cfg.video_codec.clone(),
-            container: cfg.video_container.clone(),
-            sub: 2,
-            tone,
-            tone_smoothing: cli.tone_smoothing,
-            frames_png: cli.frames_png.clone(),
-            compare: cli.compare_frames.clone(),
-            video: !(cfg.no_video || cfg.video_codec == "none"),
-            keep_existing: cli.assemble,
-        })
-    }
 }
 
 /// [`WINDOW_BUDGET`], or `MANDELBROT_ASM_BUDGET_MB` for measuring the thinned path.
@@ -127,7 +102,7 @@ fn location_tone(m: &Manifest) -> Vec<[f32; 2]> {
 /// GPU memory the assembler aims to stay within. A frame's window is about
 /// twelve octaves of strip rows: 293 MB at 1920x1080 with every column kept,
 /// 2.2 GB at 4096x4096, so big frames thin the columns of their deeper rows.
-pub(crate) const WINDOW_BUDGET: u64 = 512 << 20;
+pub const WINDOW_BUDGET: u64 = 512 << 20;
 
 /// Rows of margin around each group's band, for the second row of taps.
 const MARGIN: f64 = 4.0;
@@ -227,29 +202,26 @@ fn video_name(output: &Path, container: &str, keep_existing: bool) -> std::path:
     (2..).map(|n| output.join(format!("zoom-{n}.{container}"))).find(|p| !p.exists()).expect("an unused name")
 }
 
-/// [`run`] for a command line: logs the outcome and returns the exit code (0,
-/// 3 when ffmpeg failed, 1 for anything else).
-pub(crate) fn run_logged(gpu: &GpuCtx, output: &Path, size: Option<(u32, u32)>, opt: &Options, stop: &AtomicBool) -> i32 {
-    match run(gpu, output, size, opt, stop) {
-        Ok(_) => 0,
-        Err(e) => {
-            let video = matches!(e.downcast_ref::<MbError>(), Some(MbError::Ffmpeg(_)));
-            tracing::error!(
-                "{}: {e:#}",
-                if video { "video encode failed (the strip is kept; install ffmpeg and run again with --assemble)" } else { "assembly failed" }
-            );
-            if video { 3 } else { 1 }
-        }
-    }
+/// What an assembly produced.
+#[derive(Debug)]
+pub struct AssembleOutcome {
+    /// The video, when one was asked for.
+    pub video: Option<PathBuf>,
+    /// Frames assembled (fewer than planned after a stop).
+    pub frames: u64,
 }
 
-pub(crate) fn run(
+/// Assemble the strip in `output` into a video at `size` (default: the
+/// strip's own), and any frames `opt` asks for as PNGs.
+pub fn run(
     gpu: &GpuCtx,
     output: &Path,
     size: Option<(u32, u32)>,
     opt: &Options,
     stop: &AtomicBool,
-) -> anyhow::Result<()> {
+    ev: &dyn Events,
+) -> anyhow::Result<AssembleOutcome> {
+    let started = std::time::Instant::now();
     let dir = strip_dir(output);
     let m = read_manifest(&dir)?.ok_or_else(|| MbError::InvalidArg {
         flag: "--assemble",
@@ -281,6 +253,7 @@ pub(crate) fn run(
         plan.full_octaves,
         if plan.groups.len() > 1 { format!(", then {} thinner groups", plan.groups.len() - 1) } else { String::new() }
     );
+    ev.emit(Event::Started { stage: "assemble", width: w, height: h, frames: Some(frames) });
 
     let video_path = video_name(output, &opt.container, opt.keep_existing);
     let mut ffmpeg = if opt.video {
@@ -386,11 +359,13 @@ pub(crate) fn run(
             let path = output.join(format!("assembled_{k:06}.png"));
             image::save_buffer(&path, &rgba, w, h, image::ExtendedColorType::Rgba8)
                 .map_err(|e| MbError::io(&path, std::io::Error::other(e)))?;
+            ev.emit(Event::Image { path: path.display().to_string(), k });
         }
         if let Some(p) = ffmpeg.as_mut() {
             p.stdin.as_mut().expect("piped stdin").write_all(&rgba).map_err(|e| MbError::Ffmpeg(format!("writing to ffmpeg: {e}")))?;
         }
         done += 1;
+        ev.emit(Event::Frame { k, frames: Some(frames), span });
         if k % 25 == 0 {
             let _ = sys.memory();
         }
@@ -407,12 +382,20 @@ pub(crate) fn run(
             return Err(MbError::Ffmpeg(format!("ffmpeg exited with {status}")).into());
         }
         tracing::info!("video: {}", video_path.display());
+        ev.emit(Event::Video { path: video_path.display().to_string(), frames: done });
     }
     tracing::info!("assembly GPU time {:.1} ms over {done} frames", asm.shader_ms());
     if let Some((_, peak)) = sys.memory() {
         tracing::info!("assembly peak RAM {:.0} MB", peak as f64 / 1048576.0);
     }
-    Ok(())
+    let stopped = done < frames;
+    ev.emit(Event::Finished {
+        stage: "assemble",
+        status: "stopped",
+        reason: if stopped { "stdin/signal".into() } else { "assembled".into() },
+        elapsed_secs: started.elapsed().as_secs_f64(),
+    });
+    Ok(AssembleOutcome { video: opt.video.then_some(video_path), frames: done })
 }
 
 /// Everything needed to colour a directly rendered sample exactly as the

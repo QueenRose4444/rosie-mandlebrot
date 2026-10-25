@@ -1,0 +1,29 @@
+[package]
+name = "rosie_mandlebrot_run"
+description = "The run API: rendering a strip, assembling a video from it, and the frame-by-frame run, as typed stages."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rosie_mandlebrot_core.workspace = true
+rosie_mandlebrot_ref.workspace = true
+rosie_mandlebrot_render.workspace = true
+rosie_mandlebrot_store.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+humantime.workspace = true
+image.workspace = true
+indicatif.workspace = true
+memory-stats.workspace = true
+num_cpus.workspace = true
+nvml-wrapper.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

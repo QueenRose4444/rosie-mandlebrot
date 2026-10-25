@@ -381,55 +381,6 @@ impl Cli {
     }
 }
 
-/// A resumed run keeps the look it was started with: frame size, palette and
-/// save cadence come from the checkpoint, so the frames and the video stay
-/// consistent. Asking explicitly for a different one is an error rather than a
-/// silent change halfway through a run.
-pub fn adopt_saved_look(cli: &Cli, current: &mut RunConfig, saved: &RunConfig) -> Result<(), String> {
-    let size_given = cli.res.is_some() || cli.width.is_some() || cli.height.is_some();
-    if size_given && (current.width, current.height) != (saved.width, saved.height) {
-        return Err(format!(
-            "this run was rendered at {}x{}; a resume keeps that size (start a new run in another --run-dir for {}x{})",
-            saved.width, saved.height, current.width, current.height
-        ));
-    }
-    if cli.palette.is_some() && current.palette != saved.palette {
-        return Err(format!(
-            "this run uses the {:?} palette; a resume keeps it (start a new run to change it)",
-            saved.palette
-        ));
-    }
-    current.width = saved.width;
-    current.height = saved.height;
-    current.palette = saved.palette;
-    current.save_every = saved.save_every;
-    Ok(())
-}
-
-/// A new run must not share its output folder with an earlier one: frames are
-/// named by index, so it would overwrite some of them and the video would mix
-/// both runs.
-pub fn refuse_used_output(out: &std::path::Path) -> Result<(), String> {
-    let frames = std::fs::read_dir(out)
-        .map(|d| {
-            d.filter_map(Result::ok)
-                .filter(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    n.starts_with("frame_") && n.ends_with(".png")
-                })
-                .count()
-        })
-        .unwrap_or(0);
-    if frames > 0 {
-        return Err(format!(
-            "{} already holds {frames} frames from an earlier run. Add --resume to carry on with it, or give this run its own folder with --run-dir NAME",
-            out.display()
-        ));
-    }
-    Ok(())
-}
-
 /// Merge CLI flags, an optional `--config` profile, the chosen preset and the
 /// built-in defaults into the `RunConfig` the rest of the program reads.
 ///
@@ -670,20 +621,22 @@ mod tests {
 
     #[test]
     fn a_resume_keeps_the_size_and_palette_it_was_started_with() {
+        use rosie_mandlebrot_run::per_frame::adopt_saved_look;
         let saved = run_config_from_cli(&cli(&["--res", "720p", "--palette", "ember"])).unwrap();
         // `--resume` alone: the defaults (4096, the preset's palette) must not win.
         let plain = cli(&["--resume"]);
         let mut current = run_config_from_cli(&plain).unwrap();
-        adopt_saved_look(&plain, &mut current, &saved).unwrap();
+        adopt_saved_look(crate::stages::explicit_look(&plain), &mut current, &saved).unwrap();
         assert_eq!((current.width, current.height, current.palette), (720, 720, ColorScheme::Ember));
         // Asking for another size on resume is refused, not applied halfway.
         let resized = cli(&["--resume", "--res", "4k"]);
         let mut current = run_config_from_cli(&resized).unwrap();
-        assert!(adopt_saved_look(&resized, &mut current, &saved).is_err());
+        assert!(adopt_saved_look(crate::stages::explicit_look(&resized), &mut current, &saved).is_err());
     }
 
     #[test]
     fn a_new_run_refuses_a_folder_with_frames_in_it() {
+        use rosie_mandlebrot_run::per_frame::refuse_used_output;
         let dir = std::env::temp_dir().join("mb-cli-used-output");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(refuse_used_output(&dir).is_ok(), "a missing folder is fine");

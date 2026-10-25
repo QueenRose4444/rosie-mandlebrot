@@ -1339,18 +1339,15 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
- "crossbeam-channel",
  "ctrlc",
  "humantime",
  "image",
- "indicatif",
- "memory-stats",
  "num_cpus",
- "nvml-wrapper",
  "rayon",
  "rosie_mandlebrot_core",
  "rosie_mandlebrot_ref",
  "rosie_mandlebrot_render",
+ "rosie_mandlebrot_run",
  "rosie_mandlebrot_store",
  "tempfile",
  "time",
@@ -1399,6 +1396,29 @@ dependencies = [
  "tracing",
  "wgpu",
  "wide",
+]
+
+[[package]]
+name = "rosie_mandlebrot_run"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "humantime",
+ "image",
+ "indicatif",
+ "memory-stats",
+ "num_cpus",
+ "nvml-wrapper",
+ "rayon",
+ "rosie_mandlebrot_core",
+ "rosie_mandlebrot_ref",
+ "rosie_mandlebrot_render",
+ "rosie_mandlebrot_store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
