@@ -24,8 +24,9 @@ COPY crates/ref/Cargo.toml    crates/ref/
 COPY crates/render/Cargo.toml crates/render/
 COPY crates/store/Cargo.toml  crates/store/
 COPY crates/run/Cargo.toml    crates/run/
+COPY crates/serve/Cargo.toml  crates/serve/
 COPY crates/cli/Cargo.toml    crates/cli/
-RUN for c in core ref render store run; do \
+RUN for c in core ref render store run serve; do \
         mkdir -p "crates/$c/src"; \
         : > "crates/$c/src/lib.rs"; \
     done; \
@@ -34,9 +35,9 @@ RUN for c in core ref render store run; do \
     cargo build --release --locked; \
     cargo clean --release \
         -p rosie_mandlebrot_core -p rosie_mandlebrot_ref -p rosie_mandlebrot_render \
-        -p rosie_mandlebrot_store -p rosie_mandlebrot_run -p rosie_mandlebrot; \
+        -p rosie_mandlebrot_store -p rosie_mandlebrot_run -p rosie_mandlebrot_serve -p rosie_mandlebrot; \
     rm -rf crates/core/src crates/ref/src \
-           crates/render/src crates/store/src crates/run/src \
+           crates/render/src crates/store/src crates/run/src crates/serve/src \
            crates/cli/src
 
 COPY crates ./crates
