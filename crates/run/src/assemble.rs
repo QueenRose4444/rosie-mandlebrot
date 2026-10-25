@@ -159,7 +159,7 @@ fn upscale_bilinear(img: &image::RgbaImage, w: u32, h: u32) -> Vec<u8> {
         let fy = ((y as f32 + 0.5) * sy - 0.5).clamp(0.0, (ih - 1) as f32);
         let (y0, ty) = (fy as usize, fy.fract());
         let y1 = (y0 + 1).min(ih - 1);
-        for (x, px) in row.chunks_exact_mut(4).enumerate() {
+        for (x, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let fx = ((x as f32 + 0.5) * sx - 0.5).clamp(0.0, (iw - 1) as f32);
             let (x0, tx) = (fx as usize, fx.fract());
             let x1 = (x0 + 1).min(iw - 1);
