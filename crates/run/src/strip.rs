@@ -86,7 +86,8 @@ pub fn video_end(m: &Manifest) -> f64 {
 /// The video frames (at the strip's own zoom speed) the rows so far can serve.
 pub fn frames_served(m: &Manifest) -> u64 {
     let frames_to = |span: f64| ((span / m.initial_span).ln() / m.zoom_factor.ln()).floor().max(0.0) as u64 + 1;
-    if m.chunks.is_empty() {
+    // Until the rows reach the first frame's centre, no frame is complete.
+    if m.chunks.is_empty() || deepest_frame_span(m) > m.initial_span {
         0
     } else {
         let served = frames_to(deepest_frame_span(m));
@@ -528,7 +529,8 @@ impl StripRun {
                 index,
                 rows: manifest.next_row(),
                 frames: frames_served(&manifest),
-                span: video_end(&manifest),
+                // The deepest complete frame, or the first frame before any is complete.
+                span: video_end(&manifest).min(manifest.initial_span),
                 max_iter,
                 shader_ms,
                 render_ms,
@@ -747,6 +749,16 @@ mod tests {
         assert!((mb(&g1080, 1.0) - 240.0).abs() < 1.0 && (mb(&g1080, 0.125) - 240.0).abs() < 1.0);
         assert_eq!(chunk_time_factor(1.0), 1.0);
         assert!(chunk_time_factor(0.5) > 1.1 && chunk_time_factor(0.125) > chunk_time_factor(0.25));
+    }
+
+    #[test]
+    fn no_frame_counts_until_the_first_one_is_complete() {
+        // Row 0 is the first frame's corner (span 3); its centre is ~12 octaves deeper.
+        let rho = 640f64.hypot(360.0) / 2.0;
+        let g = StripGeometry::new(640, 360, (rho * 3.0 / 360.0).ln());
+        let octave = g.rows_per_octave().round() as u32;
+        assert_eq!(frames_served(&manifest(g.clone(), &[octave; 4])), 0, "4 octaves cannot show the first frame");
+        assert!(frames_served(&manifest(g, &[octave; 16])) > 1, "16 octaves can");
     }
 
     #[test]

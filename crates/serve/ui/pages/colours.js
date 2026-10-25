@@ -71,7 +71,7 @@ export function mount(root, params, { go }) {
         h('span', null, 'Click the bar to add a stop; drag a stop, or focus it and use the arrow keys, to move it. Delete removes the focused stop.'),
         h('label', { class: 'check' }, 'Inside the set', insideInput))),
     h('div', { class: 'row', style: { gap: '12px' } }, makeBtn, saveBtn,
-      h('span', { class: 'hint' }, 'Takes seconds; the old video is kept.')),
+      h('span', { class: 'hint' }, 'No rendering, only assembling and encoding: much quicker than the render. The old video is kept.')),
     saveForm, actionNote);
   root.append(h('div', { class: 'split' },
     h('section', { class: 'col-side', style: { flex: '1 1 420px', gap: '12px' } },

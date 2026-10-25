@@ -673,6 +673,11 @@ impl Snapshotter {
             return Ok(None);
         }
         let g = &m.geometry;
+        // Not even the first frame is complete yet: a shot now would show rows
+        // that are not there.
+        if deepest_frame_span(m) > m.initial_span {
+            return Ok(None);
+        }
         let end_span = deepest_frame_span(m).max(m.video_end_span.unwrap_or(0.0));
         let k = ((end_span / m.initial_span).ln() / m.zoom_factor.ln()).floor().max(0.0) as u64;
         if self.last_k == Some(k) {

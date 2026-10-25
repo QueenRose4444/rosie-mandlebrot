@@ -3,8 +3,8 @@
 Deep zooms into the Mandelbrot set, rendered on your GPU, made into a video, from a page in your
 browser. It renders the zoom once, as a log-polar "keyframe" strip that holds every depth, and
 assembles the video from it: about six times less GPU work than drawing every frame, smoother
-(antialiased, with no colour pumping), and new colours, speed or frame rate later cost seconds
-instead of a re-render. It can keep going for days and picks up where it left off after a crash or
+(antialiased, with no colour pumping), and new colours, speed or frame rate later cost a fraction
+of a re-render: the zoom is never rendered again. It can keep going for days and picks up where it left off after a crash or
 a reboot.
 
 This page describes the latest release. Each release's zip carries the README for that version,
@@ -52,19 +52,22 @@ and [CHANGELOG.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/C
    press **Play** to look back), then the finished video: **Watch video**, **Download**, or
    **Recolour**.
 5. **Recolour** changes the colours of a finished run with a palette editor; the preview changes
-   as you drag, and **Make the video in these colours** makes a new video in seconds without
-   rendering anything again. The earlier video is kept.
+   as you drag, and **Make the video in these colours** makes a new video without rendering anything
+   again, most of the time going into encoding it (measured on an RTX 3060 Ti: 14 s for 625 frames at
+   1080×1080 whose render took 35 s; about a minute for 1,900 frames). The earlier video is kept;
+   **Runs** lists every video of a run.
 
 Only one job uses the GPU at a time; others wait in **Runs**. With **Pause rendering while a game is
 full screen** on (Settings), a render steps off the GPU completely while a game is in front and
-carries on afterwards. Everything lives beside the exe in `app\runs\<date>-<place>\`: the video
+carries on afterwards. Everything lives beside the exe in `app\runs\<date>-<time>-<place>\`: the video
 in `out\` (`zoom.mp4`, then `zoom-2.mp4` …), the strip in `out\keyframes\`, the snapshots in
-`out\previews\`, the log in `logs\`. The strip is what makes recolouring possible; once you have
+`out\previews\`, the colour editor's preview data in `out\values\`, the log in `logs\`. The strip is what makes recolouring possible; once you have
 the video you want you may delete the run's `out\keyframes\` folder (or the whole run, from Runs) to
 get the disk back.
 
 From a terminal, `.\rosie_mandlebrot.exe serve --open` starts the same app with its log in the
-terminal (Ctrl+C stops it); [The command line](#the-command-line) renders without the app.
+terminal (Ctrl+C stops it); leave out `--open` to start it without opening a browser, then open
+<http://127.0.0.1:8460> yourself; [The command line](#the-command-line) renders without the app.
 
 ## A server with Docker
 
@@ -193,7 +196,7 @@ and `--ladder` says so.
 | `--resume` / `--new-run` | | continue the last run in that directory, or start over |
 | `--cpu-percent 50` | | use at most that share of the CPU |
 | `--no-video` | | render the strip only; make the video later with `--assemble` |
-| `--assemble` | | make the video again from the strip in `--run-dir`, with any `--palette`, `--video-fps`, `--zoom-factor` or size: seconds, nothing re-rendered |
+| `--assemble` | | make the video again from the strip in `--run-dir`, with any `--palette`, `--video-fps`, `--zoom-factor` or size: nothing re-rendered, mostly video-encoding time |
 | `--per-frame` | | render every frame as a PNG and stitch them, the 0.1 way (needed for PNG frames or `--save-every`) |
 | `--palette-stops "0:#000000,0.5:#ff4400,1:#ffffff"` | | your own palette as colour stops (positions 0–1); `--inside-colour #rrggbb` for inside the set |
 | `--bars blur` / `solid` / `transparent` | | keep a smaller `--picture WxH` (default: a square) inside the frame; `transparent` needs `--video-container webm` or `mov` |
@@ -208,7 +211,7 @@ far, and `--resume` carries on from there. Exit codes: 0 finished or stopped, 1 
 
 **Another look without re-rendering:** the strip keeps the raw iteration counts, so
 `rosie_mandlebrot --run-dir NAME --assemble --palette electric --zoom-factor 0.95 --video-fps 60`
-makes a new video from the same run in seconds, as `zoom-2.mkv` (then `zoom-3.mkv` …), so the
+makes a new video from the same run without rendering anything again, as `zoom-2.mkv` (then `zoom-3.mkv` …), so the
 first one is kept. `--tone per-frame` gives the 0.1 colouring, where
 each frame stretches its own colours (it pumps brighter and darker as the zoom goes on); the default
 keeps every point's colour fixed.

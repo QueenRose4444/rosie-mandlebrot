@@ -71,7 +71,7 @@ export function mount(root) {
     const rendering = h('fieldset', { class: 'box' }, h('legend', null, 'Rendering'),
       choice('Strip pieces', 'chunk_size', [
         ['octave', 'Whole octaves (recommended: fastest)'],
-        ['half', 'Half octaves (exactly the 0.2 output)'],
+        ['half', 'Half octaves (exactly what earlier versions made)'],
         ['quarter', 'Quarter octaves (a little less memory, slower)'],
         ['eighth', 'Eighth octaves (least memory, slowest)'],
       ], 'How much of the zoom is rendered at a time. Whole octaves measured 8–18% faster than half; the frames differ only invisibly. Applies to new renders.'),
@@ -84,7 +84,7 @@ export function mount(root) {
       ], 'Saved as a render goes deeper, at most one a second, to look back over in Runs.', (v) => (v === '' ? null : Number(v))),
       choice('Colouring', 'tone', [
         ['location', 'By location (recommended: a point keeps its colour)'],
-        ['per-frame', 'Per frame (the 0.1 look: each frame stretches its own colours)'],
+        ['per-frame', 'Per frame (the older look: each frame stretches its own colours, so brightness pumps)'],
       ], 'Used for new videos; recolouring a run keeps whatever you choose then.'),
       choice('Video format', 'video_format', [
         ['mp4', 'MP4 (recommended: plays in the browser)'],

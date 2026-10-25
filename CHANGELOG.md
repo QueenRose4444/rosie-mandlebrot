@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.1 — 2026-10-26
+
+Fixes from an outside test of 0.3.0 with nothing but the repository's URL (it made, recoloured and
+downloaded a video through the app in about 8 minutes, with no blockers):
+
+- The live preview no longer shows a half-made picture before the first frame of the zoom is complete,
+  and the progress line no longer shows a view width larger than where the zoom starts; it now says
+  "View width: start … now … end …".
+- While a new video is being made from a finished render, Runs says so (and in which colours) instead
+  of showing the render's old-colour pictures.
+- Every video of a run is listed on its card, newest first, each with Watch and download; when nothing
+  is on the GPU, Runs plays the newest video large.
+- The Settings' video format now applies to renders started from New render (it was always MP4).
+- The "Making card pictures" note goes away when the pictures are done.
+- No version jargon in Settings; the server's log uses local time like every other log.
+- README: a recolour costs no rendering but still encodes the video (measured: 14 s for 625 frames at
+  1080×1080, about a minute for 1,900), how to start the app without opening a browser, and the run
+  folder's real name.
+
 ## 0.3.0 — 2026-10-26
 
 **The app.** Rosie_Mandlebrot now has a page in your browser that does everything the command line

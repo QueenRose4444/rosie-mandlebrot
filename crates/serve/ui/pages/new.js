@@ -200,7 +200,7 @@ export function mount(root, params, { go }) {
       h('label', { class: 'field' }, 'Colours', colourSel),
       h('label', { class: 'field' }, h('span', null, 'Zoom speed · ', speedText), speed),
       h('label', { class: 'field' }, 'Frames per second', fpsSel),
-      h('p', { class: 'hint full' }, 'Colours, speed, fps and size can all be changed after the render, in seconds, without rendering again.'));
+      h('p', { class: 'hint full' }, 'Colours, speed, fps and size can all be changed after the render without rendering it again.'));
   }
 
   function renderMemoryLabel() {
@@ -306,7 +306,8 @@ export function mount(root, params, { go }) {
       kind: 'render', preset: preset.name, center: null, width: w, height: hh,
       zoom_end: ze, max_frames: f.depthMode === 'seconds' ? Math.round(f.seconds * f.fps) : null,
       zoom_factor: ZOOM_FACTORS[f.speed - 1], fps: f.fps, palette, stops, inside,
-      format: transparent ? 'webm' : 'mp4', memory_limit_mb: MEMORY_STEPS[f.memory],
+      // Without transparent bars the Settings' video format applies.
+      format: transparent ? 'webm' : null, memory_limit_mb: MEMORY_STEPS[f.memory],
       bars: barsOn() ? { style: f.barStyle, colour: f.barStyle === 'solid' ? f.barColour : '#000000', picture_w: pd.w, picture_h: pd.h } : null,
     };
     busySubmitting = true;

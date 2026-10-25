@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytemuck",
  "clap",
@@ -1622,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_ref"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "gmp-mpfr-sys",
  "num-complex",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_render"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytemuck",
  "naga",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_run"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1672,7 +1672,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_serve"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "rosie_mandlebrot_store"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "image",
  "rosie_mandlebrot_core",

@@ -16,6 +16,7 @@ export function mount(root) {
   let detailTimer = null;
   let current = null; // the running job's view, rebuilt when the job changes
   let emptyShown = false;
+  let shownIdle = '';
 
   const mainCol = h('section', { class: 'col-main', style: { flex: '999 1 600px', gap: '16px' } });
   const waitingList = h('div', { class: 'stack' });
@@ -39,12 +40,22 @@ export function mount(root) {
     clear(mainCol);
     if (!job) {
       current = null;
-      mainCol.append(
-        h('h1', null, 'Runs'),
-        h('div', { class: 'preview-empty', style: { aspectRatio: '16 / 9' } },
-          h('div', { class: 'stack', style: { alignItems: 'center' } },
-            h('span', null, 'Nothing is on the GPU right now.'),
-            h('a', { class: 'btn primary', href: '#/library' }, 'Pick a place to render'))));
+      const latest = newestFinished();
+      const vid = latest ? newestVideo(latest)[0] : null;
+      mainCol.append(h('h1', null, 'Runs'));
+      if (vid) {
+        mainCol.append(
+          h('video', { src: vid.url, controls: true, preload: 'metadata', playsinline: true, class: 'main-video',
+            'aria-label': `Video of ${latest.label || latest.preset}` }),
+          h('p', { class: 'hint' }, `The newest video: ${latest.label || latest.preset}, ${vid.name}. Nothing is on the GPU right now.`),
+          h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '#/library' }, 'Pick a place to render')));
+      } else {
+        mainCol.append(
+          h('div', { class: 'preview-empty', style: { aspectRatio: '16 / 9' } },
+            h('div', { class: 'stack', style: { alignItems: 'center' } },
+              h('span', null, 'Nothing is on the GPU right now.'),
+              h('a', { class: 'btn primary', href: '#/library' }, 'Pick a place to render'))));
+      }
       return;
     }
     const v = { job, mode: 'live', index: 0, playTimer: null, preload: [] };
@@ -102,17 +113,28 @@ export function mount(root) {
         h('span', null, h('span', { class: 'num' }, `${Math.round(frac * 100)}%`)));
     } else {
       v.depthLabels.append(
-        h('span', null, 'Depth ', h('span', { class: 'num' }, fmtSpan(pr.start_span ?? run?.start_span))),
-        h('span', null, 'now ', h('span', { class: 'num' }, fmtSpan(pr.span))),
+        h('span', null, 'View width: start ', h('span', { class: 'num' }, fmtSpan(pr.start_span ?? run?.start_span))),
+        h('span', null, 'now ', h('span', { class: 'num' }, fmtSpan(pr.span ?? pr.start_span ?? run?.start_span))),
         h('span', null, 'end ', h('span', { class: 'num' }, fmtSpan(pr.end_span ?? run?.end_span))));
     }
     const fps = run?.fps || run?.settings?.fps || 60;
     const stat = (label, value) => h('div', { class: 'stat' }, h('div', { class: 'label' }, label), h('div', { class: 'big', style: { fontSize: '18px' } }, value));
-    clear(v.stats).append(
+    // A new video from a finished render, a colour preview or the card pictures:
+    // the render's own pictures (in its old colours) would only mislead.
+    const other = job.kind !== 'render';
+    v.wrap.hidden = other;
+    v.snapBox.hidden = other;
+    if (other) {
+      v.caption.textContent = job.kind === 'assemble'
+        ? `Making ${job.label || 'a new video'} from the finished render: nothing is rendered again. It appears under Finished when it is done, beside the earlier video.`
+        : job.kind === 'values' ? 'Preparing the colour preview for the Colours page.' : 'Drawing the Library\'s card pictures.';
+    }
+    clear(v.stats).append(...[
       stat('Time left', pr.eta_secs === null || pr.eta_secs === undefined ? 'measuring…' : duration(pr.eta_secs)),
       stat('Video so far', pr.frames ? clock(pr.frames / fps) : '0:00.0'),
       stat('Frames', pr.frames_total && assembling ? `${pr.frames ?? 0} / ${pr.frames_total}` : String(pr.frames ?? 0)),
-      stat('On disk', bytes(pr.bytes)));
+      other ? null : stat('On disk', bytes(pr.bytes)),
+    ].filter(Boolean));
     if (!v.stopBtn.dataset.stopping) {
       v.stopBtn.textContent = job.kind === 'render' && !assembling ? 'Stop and make the video' : 'Stop';
     }
@@ -124,6 +146,7 @@ export function mount(root) {
 
   function showLive() {
     const v = current;
+    if (v.job.kind !== 'render') return;
     const src = v.job.preview || runDetail?.preview || null;
     v.tag.textContent = 'Latest';
     if (src && v.img.getAttribute('src') !== src) v.img.src = src;
@@ -311,6 +334,11 @@ export function mount(root) {
     finishedNote.textContent = list.length ? '' : 'Finished runs show up here, with their videos.';
   }
 
+  function newestFinished() {
+    return runs.filter((r) => FINISHED.has(r.status) && Array.isArray(r.videos) && r.videos.length)
+      .sort((a, b) => (b.created || 0) - (a.created || 0))[0] || null;
+  }
+
   function newestVideo(run) {
     const vids = Array.isArray(run.videos) ? [...run.videos] : [];
     vids.sort((a, b) => (b.modified || 0) - (a.modified || 0));
@@ -339,11 +367,18 @@ export function mount(root) {
 
     function renderPlayer() {
       clear(player);
-      if (!item.open || !video) return;
-      player.append(h('video', { src: video.url, controls: true, preload: 'metadata', playsinline: true, 'aria-label': `Video of ${run.label || run.preset}` }));
+      const shown = (item.which && vids.find((vd) => vd.url === item.which)) || video;
+      if (item.open && shown) {
+        player.append(h('video', { src: shown.url, controls: true, preload: 'metadata', playsinline: true, 'aria-label': `Video of ${run.label || run.preset}: ${shown.name}` }));
+      }
       if (vids.length > 1) {
-        player.append(h('div', { class: 'row small' }, h('span', { class: 'muted' }, 'All videos:'),
-          vids.map((vd) => h('a', { href: vd.url, download: vd.name || '' }, `${vd.name || 'video'} (${bytes(vd.bytes)})`))));
+        // Every video of the run, newest first: watch any of them, or download it.
+        player.append(h('div', { class: 'stack small', style: { gap: '4px' } }, h('span', { class: 'muted' }, 'Videos (newest first):'),
+          vids.map((vd) => h('div', { class: 'row', style: { gap: '8px' } },
+            h('button', { type: 'button', class: 'btn quiet', 'aria-pressed': String(item.open && shown === vd),
+              onclick: () => { item.open = true; item.which = vd.url; renderPlayer(); player.querySelector('video')?.play().catch(() => {}); } },
+            `Watch ${vd.name || 'video'}`),
+            h('a', { href: vd.url, download: vd.name || '' }, `download (${bytes(vd.bytes)})`)))));
       }
     }
     if (video) {
@@ -415,7 +450,9 @@ export function mount(root) {
     const jobs = jobsOf(s);
     const running = jobs.find((j) => j.state === 'running') || null;
     if (!running) {
-      if (current || !emptyShown) { runDetail = null; detailFor = ''; buildCurrent(null); emptyShown = true; }
+      const latest = newestFinished();
+      const idleKey = latest ? `${latest.id}|${newestVideo(latest)[0]?.url || ''}` : '';
+      if (current || !emptyShown || idleKey !== shownIdle) { runDetail = null; detailFor = ''; buildCurrent(null); emptyShown = true; shownIdle = idleKey; }
     } else if (!current || current.job.id !== running.id) {
       runDetail = runDetail?.id === running.run_id ? runDetail : null;
       buildCurrent(running);

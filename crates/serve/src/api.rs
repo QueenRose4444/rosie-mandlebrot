@@ -239,7 +239,12 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             let meta = meta_of(app, &b.run_id)?;
             let size = (meta.settings.width, meta.settings.height);
             let args = jobs::assemble_args(&b, &runs::run_dir(&app.data, &b.run_id), size).map_err(bad)?;
-            app.enqueue("assemble", Some(b.run_id.clone()), format!("new video of {}", meta.label), args, false, Progress::default())
+            let colours = match (&b.stops, &b.palette) {
+                (Some(_), _) => " in your colours".to_string(),
+                (None, Some(p)) => format!(" in {p}"),
+                (None, None) => String::new(),
+            };
+            app.enqueue("assemble", Some(b.run_id.clone()), format!("new video of {}{colours}", meta.label), args, false, Progress::default())
         }
         JobBody::Values(b) => {
             let meta = meta_of(app, &b.run_id)?;

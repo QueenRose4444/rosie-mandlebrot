@@ -146,8 +146,12 @@ fn init_tracing(
 /// The web UI logs to the terminal only; each job's child writes its own log file.
 fn init_serve_logging() {
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=warn,naga=warn,tower_http=warn".into());
+    // Local time, like every other log the program writes.
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    let format = time::format_description::parse_borrowed::<2>("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]").expect("static time format");
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_new(filter).unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")))
+        .with_timer(tracing_subscriber::fmt::time::OffsetTime::new(offset, format))
         .with_target(false)
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .try_init();

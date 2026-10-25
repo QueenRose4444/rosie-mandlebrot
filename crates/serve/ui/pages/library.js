@@ -92,7 +92,8 @@ export function mount(root) {
   async function makePictures() {
     try {
       await post('/api/jobs', { kind: 'heroes', presets: null });
-      status.textContent = 'Making card pictures. They appear here as they are done.';
+      // The bar above the cards shows the progress, and goes when it is done.
+      status.textContent = '';
     } catch (err) {
       status.textContent = `Could not start: ${err.message}`;
     }
