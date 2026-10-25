@@ -659,6 +659,9 @@ fn oracle_check(m: &Manifest, g: &StripGeometry, row0: u64, rows: u32, pixels: &
         results.len(),
         100.0 * exact as f64 / results.len() as f64
     );
+    for (gpu, truth) in results.iter().filter(|(a, b)| (*a >= max_iter) != (*b >= max_iter)).take(4) {
+        println!("  inside/outside: GPU {gpu}, exact {truth} (cap {max_iter})");
+    }
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ pub mod ladder;
 pub mod mp;
 mod xc;
 
-pub use bla::{bla_iterate, build_bla_table, Bla, BlaGpu, BlaResult, BlaTable, BLA_EPSILON_DS, BLA_EPSILON_F64};
+pub use bla::{bla_iterate, bla_walk, build_bla_table, Bla, BlaGpu, BlaResult, BlaTable, BLA_EPSILON_DS, BLA_EPSILON_F64};
 
 use rosie_mandlebrot_core::types::{RefOrbitEntry, RefOrbitEntryF64, SaCoeff};
 use rosie_mandlebrot_core::precision::orbit_bits_for_span;

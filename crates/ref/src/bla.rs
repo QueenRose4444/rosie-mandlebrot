@@ -16,15 +16,20 @@
 //! entry starting at `m` exists and admits `|dz|`, and stops at the first miss:
 //! a level's radius never exceeds the radius of the level below it.
 //!
-//! `ε` must match the arithmetic that applies the skip — `2^-48` for the
-//! double-single kernels, `2^-53` for f64 — or the approximation error rises
-//! above the kernel's own rounding.
+//! `ε` bounds the approximation error of a skip. `2^-53` is used for both the
+//! f64 walk and the double-single kernels: matching `ε` to the kernels'
+//! 48-bit mantissa was measured to misclassify pixels that linger near a deep
+//! minibrot for 10^5 iterations (see [`BLA_EPSILON_DS`]).
 
 use num_complex::Complex64;
 use rosie_mandlebrot_core::types::{BlaEntryGpu, RefOrbitEntryF64};
 
-/// `ε` for the double-single GPU kernels (DS and SE3 both carry a 48-bit mantissa).
-pub const BLA_EPSILON_DS: f64 = 1.0 / 281_474_976_710_656.0; // 2^-48
+/// `ε` for the double-single GPU kernels. They carry a 48-bit mantissa, but
+/// `ε = 2^-48` was measured too loose: beside a deep minibrot (seahorse_deep
+/// near 1e-32, 200,000 iterations) it called 50 of 7,168 exact-orbit samples
+/// inside that escape, against 4 at `2^-53` (and 7 at `2^-56`; plain
+/// perturbation 1). The CPU walk in f64 is right on all of them at `2^-53`.
+pub const BLA_EPSILON_DS: f64 = 1.0 / 9_007_199_254_740_992.0; // 2^-53
 /// `ε` for f64 arithmetic.
 pub const BLA_EPSILON_F64: f64 = f64::EPSILON * 0.5; // 2^-53
 
@@ -182,19 +187,27 @@ const BAILOUT_SQ: f64 = 4.0;
 /// the exact step is taken instead), else one exact perturbation step; then
 /// escape if `|Z_n + dz|² > 4`, and rebase (`dz ← Z_n + dz`, `n ← 0`) when the
 /// perturbed orbit is nearer 0 than `dz` or the reference runs out. Rebasing
-/// is exact, so there is no glitch to detect and no rug fallback.
+/// is exact, so there is no glitch to detect and no exact-arithmetic fallback.
 pub fn bla_iterate(table: &BlaTable, orbit: &[RefOrbitEntryF64], delta_c: Complex64, max_iter: u32) -> BlaResult {
+    bla_walk(table, orbit, delta_c, max_iter).0
+}
+
+/// [`bla_iterate`], also returning how many passes of the loop it took (a skip
+/// or an exact step each): the work a kernel does for this pixel.
+pub fn bla_walk(table: &BlaTable, orbit: &[RefOrbitEntryF64], delta_c: Complex64, max_iter: u32) -> (BlaResult, u32) {
     let ref_len = orbit.len();
     if ref_len < 2 {
-        return BlaResult::Inside;
+        return (BlaResult::Inside, 0);
     }
     let mut dz = Complex64::new(0.0, 0.0);
     let mut n = 0usize;
     let mut iter = 0u32;
+    let mut passes = 0u32;
     loop {
         if iter >= max_iter {
-            return BlaResult::Inside;
+            return (BlaResult::Inside, passes);
         }
+        passes += 1;
         match table.lookup(n, dz.norm(), ref_len, max_iter - iter).filter(|b| b.len >= 2) {
             Some(b) => {
                 dz = b.a * dz + b.b * delta_c;
@@ -212,7 +225,7 @@ pub fn bla_iterate(table: &BlaTable, orbit: &[RefOrbitEntryF64], delta_c: Comple
         let w2 = w.norm_sqr();
         if w2 > BAILOUT_SQ {
             let smooth = iter as f64 + 1.0 - (w2.ln() * 0.5).log2();
-            return BlaResult::Escaped { iter, smooth };
+            return (BlaResult::Escaped { iter, smooth }, passes);
         }
         if w2 < dz.norm_sqr() || n >= ref_len - 1 {
             dz = w;
@@ -366,5 +379,34 @@ mod tests {
         eprintln!("against MPFR: plain {plain_ok}/{n} exact, BLA {bla_ok}/{n}");
         assert_eq!(flips, 0, "BLA changed inside/outside where the plain walk did not");
         assert!(bla_ok + (n - plain_ok) >= plain_ok, "BLA {bla_ok}/{n} vs plain {plain_ok}/{n}");
+    }
+
+    /// Beside seahorse_deep's period-16014 minibrot (radius 5e-33 to 2.5e-33
+    /// from the centre, 200,000 iterations) pixels linger near the cycle for
+    /// 10^5 iterations before escaping. With `ε = 2^-48` the walk called 17 of
+    /// these 64 points inside that plain perturbation (and the exact orbit)
+    /// sees escape.
+    #[test]
+    fn bla_agrees_with_plain_beside_a_deep_minibrot() {
+        let (re, im) = ("-0.743643887037158704752191506114774", "0.131825904205311970493132056385139");
+        let (ln_r0, cols, row0, rows) = (1.1182819959481258f64, 2304.0f64, 27686.0f64, 254usize);
+        let d = std::f64::consts::TAU / cols;
+        let max_iter = 200_000;
+        let r_top = (ln_r0 - row0 * d).exp();
+        let r_bot = (ln_r0 - (row0 + rows as f64 - 1.0) * d).exp();
+        let o = orbit(re, im, 2.0 * r_bot, max_iter);
+        let table = build_bla_table(&o, r_top, BLA_EPSILON_DS);
+        let (mut flips, mut escaping) = (0, 0);
+        for i in 0..64 {
+            let (x, y) = ((i % 8) as f64 * cols / 8.0, ((i / 8) * rows / 8) as f64);
+            let r = (ln_r0 - (row0 + y) * d).exp();
+            let dc = Complex64::new(r * (x * d).cos(), r * (x * d).sin());
+            let out = |res: BlaResult| matches!(res, BlaResult::Escaped { .. });
+            let p = out(plain(&o, dc, max_iter));
+            escaping += usize::from(p);
+            flips += usize::from(p != out(bla_iterate(&table, &o, dc, max_iter)));
+        }
+        assert_eq!(escaping, 17, "the points this test was measured on");
+        assert_eq!(flips, 0, "BLA disagrees with plain perturbation on {flips} of 64 points");
     }
 }

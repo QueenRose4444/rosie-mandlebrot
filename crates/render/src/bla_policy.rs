@@ -1,32 +1,29 @@
 //! Whether the deep kernels should take BLA skips on this frame.
 //!
-//! Compiling the skip into the kernel costs about 2x at depths where skips are
-//! short (measured: 2.2-2.5x slower at 1e-20, still ~2.2x with an empty table,
-//! so the cost is the compiled code, not the lookups), while deep frames gain
-//! 2-13x (1e-31 to 1e-60). Where the crossover falls depends on the location,
-//! so it is measured rather than guessed: every `RECALIBRATE_EVERY` deep frames
-//! a quarter-resolution probe of the frame is rendered both ways, interleaved,
-//! and the faster pipeline is kept until the next probe.
+//! Compiling the skip into the kernel costs about 2x per loop pass (measured:
+//! 2.2-2.5x slower at 1e-20, still ~2.2x with an empty table, so the cost is
+//! the compiled code, not the lookups), while deep frames need far fewer
+//! passes. Where the crossover falls depends on the location, so it is
+//! measured per frame — as work, not time: a CPU walk of a 4x4 grid of the
+//! frame's pixels with the table the GPU will use counts the loop passes BLA
+//! takes against the iterations plain perturbation would take. The answer
+//! depends only on the frame, so the same render comes out the same on any
+//! machine, however busy, and a resumed run decides as an unbroken one does.
 //!
 //! `MANDELBROT_BLA=0` / `=1` forces it off / on, for A/B measurements.
 
 use crate::frame::*;
-use crate::gpu::GpuCtx;
-use crate::gpu_path::{dispatch_pass_with, StripSpec};
-use rosie_mandlebrot_core::precision::Tier;
+use crate::gpu_path::StripSpec;
+use num_complex::Complex64;
+use rosie_mandlebrot_ref::{bla_walk, build_bla_table, BlaResult, BlaTable, ReferenceData};
 use std::sync::Mutex;
 
-const RECALIBRATE_EVERY: u32 = 32;
-/// BLA must win by this margin to be chosen, so timing noise between two
-/// near-equal pipelines does not flip the choice back and forth.
-const MARGIN: f64 = 0.9;
-
-struct Policy {
-    choice: bool,
-    frames_left: u32,
-}
-
-static POLICY: Mutex<Option<Policy>> = Mutex::new(None);
+/// BLA is used when its passes are at most this share of the plain
+/// iterations. Measured on seven deep presets: the BLA kernel's time over the
+/// plain kernel's was 1.21 at a pass ratio of 0.63, 0.79 at 0.46, 0.65 at 0.37
+/// and 0.50 at 0.30, so 0.45 keeps BLA to frames where it saves about 10% or
+/// more, as the wall-time probe this replaced required.
+pub(crate) const PASS_RATIO: f64 = 0.45;
 
 /// The environment override, if any.
 fn forced() -> Option<bool> {
@@ -37,62 +34,64 @@ fn forced() -> Option<bool> {
     }
 }
 
-pub(crate) fn choose(gpu: &GpuCtx, req: &FrameRequest, strip: Option<&StripSpec>) -> bool {
+pub(crate) fn choose(req: &FrameRequest, strip: Option<&StripSpec>, reference: &ReferenceData, max_delta: f64) -> bool {
     if let Some(f) = forced() {
         return f;
     }
-    {
-        let mut guard = POLICY.lock().expect("BLA policy mutex poisoned");
-        if let Some(p) = guard.as_mut().filter(|p| p.frames_left > 0) {
-            p.frames_left -= 1;
-            return p.choice;
-        }
-    }
-    let choice = calibrate(gpu, req, strip).unwrap_or(false);
-    *POLICY.lock().expect("BLA policy mutex poisoned") = Some(Policy { choice, frames_left: RECALIBRATE_EVERY - 1 });
-    choice
+    let (passes, iters) = cpu_cost(req, strip, reference, max_delta);
+    let on = (passes as f64) <= PASS_RATIO * iters as f64;
+    tracing::debug!("frame {} bla: {passes} passes for {iters} iterations -> {}", req.frame_idx, if on { "on" } else { "off" });
+    on
 }
 
-/// Render a quarter-resolution copy of the frame (for a strip chunk, its first
-/// quarter of columns and rows) without and with BLA, twice each, interleaved;
-/// true when BLA was faster by [`MARGIN`]. The probe's time is kept out of the
-/// frame's own timers.
-fn calibrate(gpu: &GpuCtx, req: &FrameRequest, strip: Option<&StripSpec>) -> Option<bool> {
-    let probe = FrameRequest {
-        frame_idx: req.frame_idx,
-        width: (req.width / 4).max(64),
-        height: (req.height / 4).max(36),
-        center_re: req.center_re.clone(),
-        center_im: req.center_im.clone(),
-        span: req.span,
-        max_iter: req.max_iter,
-        max_retries: 0,
-        stop_flag: None,
-        progress: None,
-        deep_engine: req.deep_engine,
-        interior_exit: req.interior_exit,
-    };
-    let saved = save_gpu_timers();
-    let mut ms = [0.0f64; 2];
-    for _ in 0..2 {
-        for (arm, bla) in [false, true].into_iter().enumerate() {
-            reset_gpu_timer();
-            dispatch_pass_with(gpu, &probe, Tier::DeepPerturb, &probe.center_re, &probe.center_im, Some(bla), strip).ok()?;
-            // Shader timestamps when the adapter has them, dispatch wall time otherwise.
-            let t = last_frame_shader_ms();
-            ms[arm] += if t > 0.0 { t } else { last_frame_gpu_ms() };
+/// The table for the CPU walk, kept while the reference is the same and the
+/// frame's `max_delta` is within 4x below the one it was built for (a table
+/// built for a larger delta only has smaller radii, so it stays valid).
+fn table_for(reference: &ReferenceData, max_delta: f64) -> std::sync::Arc<BlaTable> {
+    struct Cached {
+        key: (usize, u64, u64),
+        built_for: f64,
+        table: std::sync::Arc<BlaTable>,
+    }
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+    let o = &reference.orbit_f64;
+    let key = (o.len(), o.get(1).map_or(0, |e| e.z_re.to_bits()), o.last().map_or(0, |e| e.z_im.to_bits()));
+    let mut cache = CACHE.lock().expect("BLA policy cache poisoned");
+    if let Some(c) = cache.as_ref().filter(|c| c.key == key && max_delta <= c.built_for && max_delta * 4.0 > c.built_for) {
+        return c.table.clone();
+    }
+    let table = std::sync::Arc::new(build_bla_table(o, max_delta, crate::gpu_path::bla_epsilon()));
+    *cache = Some(Cached { key, built_for: max_delta, table: table.clone() });
+    table
+}
+
+/// The kernels' work for a 4×4 grid of the frame's pixels (or the chunk's):
+/// loop passes with BLA, and the iterations they cover (the passes plain
+/// perturbation would take).
+fn cpu_cost(req: &FrameRequest, strip: Option<&StripSpec>, reference: &ReferenceData, max_delta: f64) -> (u64, u64) {
+    let table = table_for(reference, max_delta);
+    let (mut passes, mut iters) = (0u64, 0u64);
+    for j in 0..4 {
+        for i in 0..4 {
+            let (fx, fy) = ((i as f64 + 0.5) / 4.0, (j as f64 + 0.5) / 4.0);
+            let dc = match strip {
+                Some(s) => {
+                    let r = (s.ln_r_top - fy * req.height as f64 * s.d).exp();
+                    let dir = s.col_dir[((fx * req.width as f64) as usize).min(s.col_dir.len() - 1)];
+                    Complex64::new(r * dir[0] as f64, r * dir[1] as f64)
+                }
+                None => {
+                    let aspect = req.width as f64 / req.height as f64;
+                    Complex64::new((fx - 0.5) * req.span * aspect, (fy - 0.5) * req.span)
+                }
+            };
+            let (res, p) = bla_walk(&table, &reference.orbit_f64, dc, req.max_iter);
+            passes += u64::from(p);
+            iters += u64::from(match res {
+                BlaResult::Escaped { iter, .. } => iter,
+                _ => req.max_iter,
+            });
         }
     }
-    restore_gpu_timers(saved);
-    let on = ms[1] < MARGIN * ms[0];
-    tracing::debug!(
-        "frame {} bla calibration at {}x{}: plain {:.2} ms, bla {:.2} ms -> {}",
-        req.frame_idx,
-        probe.width,
-        probe.height,
-        ms[0],
-        ms[1],
-        if on { "on" } else { "off" }
-    );
-    Some(on)
+    (passes, iters)
 }

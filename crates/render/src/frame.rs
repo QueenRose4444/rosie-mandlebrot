@@ -55,18 +55,6 @@ pub(crate) fn reset_gpu_timer() {
     FRAME_ORBIT_MS.with(|c| c.set(0.0));
 }
 
-/// This frame's three timers, so a side measurement (the BLA calibration
-/// probe) can run without being billed to the frame.
-pub(crate) fn save_gpu_timers() -> [f64; 3] {
-    [FRAME_GPU_MS.with(|c| c.get()), FRAME_SHADER_MS.with(|c| c.get()), FRAME_ORBIT_MS.with(|c| c.get())]
-}
-
-pub(crate) fn restore_gpu_timers([gpu, shader, orbit]: [f64; 3]) {
-    FRAME_GPU_MS.with(|c| c.set(gpu));
-    FRAME_SHADER_MS.with(|c| c.set(shader));
-    FRAME_ORBIT_MS.with(|c| c.set(orbit));
-}
-
 /// Time a reference-orbit computation into this frame's orbit total.
 pub(crate) fn timed_orbit<T>(f: impl FnOnce() -> T) -> T {
     let t = std::time::Instant::now();

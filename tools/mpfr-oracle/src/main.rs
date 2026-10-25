@@ -575,13 +575,19 @@ fn bla_check() {
         ];
         let capped = |t: &BlaTable, lv: usize| BlaTable { levels: t.levels.iter().take(lv + 1).cloned().collect() };
         let caps: Vec<(String, BlaTable)> = [4usize, 8, 12].iter().map(|&lv| (format!("2^-48, len<=2^{lv}"), capped(&tables[0].1, lv))).collect();
-        let n = 48;
+        let grid = std::env::var("GRID").is_ok();
+        let n = if grid { 64 } else { 48 };
         let mut agree_plain = 0;
         let mut agree: Vec<(String, usize, usize)> = tables.iter().map(|(s, _)| (s.to_string(), 0, 0)).chain(caps.iter().map(|(s, _)| (s.clone(), 0, 0))).collect();
         let mut escaping = 0;
-        for _ in 0..n {
-            let row = row0 as f64 + rng.below(rows as u64) as f64;
-            let ang = std::f64::consts::TAU * (rng.below(cols as u64) as f64 + 0.5) / cols;
+        for i in 0..n {
+            // GRID: the 8x8 samples the strip's --probe-oracle checks.
+            let (row, ang) = if grid {
+                let (x, y) = ((i % 8) as f64 * cols / 8.0, ((i / 8) * rows as usize / 8) as f64);
+                (row0 as f64 + y, x.floor() * d)
+            } else {
+                (row0 as f64 + rng.below(rows as u64) as f64, std::f64::consts::TAU * (rng.below(cols as u64) as f64 + 0.5) / cols)
+            };
             let r = (ln_r0 - row * d).exp();
             let dc = Complex64::new(r * ang.cos(), r * ang.sin());
             let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(2.0 * r_bot) + 256;
@@ -593,6 +599,11 @@ fn bla_check() {
             let inside = |res: BlaResult| !matches!(res, BlaResult::Escaped { .. });
             if inside(bla_iterate(&BlaTable::default(), orbit, dc, max_iter)) == t_in {
                 agree_plain += 1;
+            }
+            if grid && !t_in {
+                let r53 = bla_iterate(&tables[1].1, orbit, dc, max_iter);
+                let r48 = bla_iterate(&tables[0].1, orbit, dc, max_iter);
+                println!("    sample {i}: exact {}, BLA 2^-53 {r53:?}, 2^-48 {r48:?}", truth.iter);
             }
             for (i, t) in tables.iter().map(|x| &x.1).chain(caps.iter().map(|x| &x.1)).enumerate() {
                 let res = bla_iterate(t, orbit, dc, max_iter);
@@ -611,6 +622,92 @@ fn bla_check() {
     }
 }
 
+/// The GPU's 48-bit rounding emulated on the CPU walk, to find which rounding
+/// breaks BLA at 2^-53: the coefficients, the orbit the steps read, or both.
+fn bla_ds() {
+    use num_complex::Complex64;
+    use rosie_mandlebrot_core::types::{f64_to_ds, RefOrbitEntryF64};
+    use rosie_mandlebrot_ref::{bla_iterate, build_bla_table, BlaResult, BlaTable};
+    let ds = |x: f64| {
+        let (h, l) = f64_to_ds(x);
+        h as f64 + l as f64
+    };
+    let dsc = |z: Complex64| Complex64::new(ds(z.re), ds(z.im));
+    let (re, im) = ("-0.743643887037158704752191506114774", "0.131825904205311970493132056385139");
+    let (ln_r0, cols) = (1.1182819959481258f64, 2304f64);
+    let d = std::f64::consts::TAU / cols;
+    let max_iter = 200_000u32;
+    let eps = 2f64.powi(-53);
+    for (row0, rows) in [(27432u32, 254u32), (27686, 254), (27940, 254), (28194, 254)] {
+        let r_top = (ln_r0 - row0 as f64 * d).exp();
+        let r_bot = (ln_r0 - (row0 + rows - 1) as f64 * d).exp();
+        let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: 2.0 * r_bot }).orbit_f64;
+        let orbit_ds: Vec<RefOrbitEntryF64> = orbit.iter().map(|e| RefOrbitEntryF64 { z_re: ds(e.z_re), z_im: ds(e.z_im), ..*e }).collect();
+        let round_coeffs = |t: BlaTable| BlaTable {
+            levels: t.levels.into_iter().map(|l| l.into_iter().map(|mut b| { b.a = dsc(b.a); b.b = dsc(b.b); b }).collect()).collect(),
+        };
+        let variants: Vec<(&str, BlaTable, &Vec<RefOrbitEntryF64>)> = vec![
+            ("f64 orbit, f64 coefficients", build_bla_table(&orbit, r_top, eps), &orbit),
+            ("f64 orbit, 48-bit coefficients", round_coeffs(build_bla_table(&orbit, r_top, eps)), &orbit),
+            ("48-bit orbit for steps, table from f64 orbit, 48-bit coefficients", round_coeffs(build_bla_table(&orbit, r_top, eps)), &orbit_ds),
+            ("48-bit orbit for steps and table, 48-bit coefficients", round_coeffs(build_bla_table(&orbit_ds, r_top, eps)), &orbit_ds),
+            ("48-bit orbit, plain (no BLA)", BlaTable::default(), &orbit_ds),
+        ];
+        let mut wrong = vec![0usize; variants.len()];
+        let mut escaping = 0;
+        for i in 0..64 {
+            let (x, y) = ((i % 8) as f64 * cols / 8.0, ((i / 8) * rows as usize / 8) as f64);
+            let (row, ang) = (row0 as f64 + y, x.floor() * d);
+            let r = (ln_r0 - row * d).exp();
+            let dc = Complex64::new(r * ang.cos(), r * ang.sin());
+            let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(2.0 * r_bot) + 256;
+            let t_in = rosie_mandlebrot_ref::iterate_single_pixel_exact(re, im, dc.re, dc.im, max_iter, prec).iter >= max_iter;
+            escaping += usize::from(!t_in);
+            for (k, (_, table, o)) in variants.iter().enumerate() {
+                let inside = !matches!(bla_iterate(table, o, dc, max_iter), BlaResult::Escaped { .. });
+                wrong[k] += usize::from(inside != t_in);
+            }
+        }
+        println!("rows {row0}..{}: {escaping}/64 escape", row0 + rows);
+        for (k, (name, _, _)) in variants.iter().enumerate() {
+            println!("  {name}: {} wrong", wrong[k]);
+        }
+    }
+}
+
+/// How many of the oracle's grid samples change inside/outside when the
+/// sample point moves as little as an f32 rounding of its offset: the noise
+/// floor of the strip kernels, which form each pixel's offset in f32.
+fn position_floor() {
+    use num_complex::Complex64;
+    let (re, im) = ("-0.743643887037158704752191506114774", "0.131825904205311970493132056385139");
+    let (ln_r0, cols) = (1.1182819959481258f64, 2304f64);
+    let d = std::f64::consts::TAU / cols;
+    let max_iter = 200_000u32;
+    for (row0, rows) in [(1524u32, 254u32), (27432, 254), (27686, 254), (27940, 254), (28194, 254)] {
+        let r_bot = (ln_r0 - (row0 + rows - 1) as f64 * d).exp();
+        let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(2.0 * r_bot) + 256;
+        let mut changed = 0;
+        let mut escaping = 0;
+        for i in 0..64 {
+            let (x, y) = ((i % 8) as f64 * cols / 8.0, ((i / 8) * rows as usize / 8) as f64);
+            let (row, ang) = (row0 as f64 + y, x.floor() * d);
+            let r = (ln_r0 - row * d).exp();
+            let dc = Complex64::new(r * ang.cos(), r * ang.sin());
+            // The same offset with each part rounded to f32, as the kernel holds it.
+            let dc32 = Complex64::new(dc.re as f32 as f64, dc.im as f32 as f64);
+            let a = rosie_mandlebrot_ref::iterate_single_pixel_exact(re, im, dc.re, dc.im, max_iter, prec).iter;
+            let b = rosie_mandlebrot_ref::iterate_single_pixel_exact(re, im, dc32.re, dc32.im, max_iter, prec).iter;
+            escaping += usize::from(a < max_iter);
+            if (a >= max_iter) != (b >= max_iter) {
+                changed += 1;
+                println!("    sample {i}: exact {a} at the f64 offset, {b} at the f32-rounded offset");
+            }
+        }
+        println!("rows {row0}..{}: {escaping}/64 escape; {changed} change inside/outside when the offset is rounded to f32", row0 + rows);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -619,6 +716,8 @@ fn main() {
         Some("speed") => speed(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(7)),
         Some("bare") => bare(),
         Some("bla") => bla_check(),
+        Some("bla-ds") => bla_ds(),
+        Some("position") => position_floor(),
         _ => eprintln!("usage: mpfr-oracle ops [COUNT] | orbit | speed [REPS] | bare"),
     }
 }

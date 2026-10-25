@@ -251,9 +251,17 @@ pub(crate) fn dispatch_pass_with(
     let eff_engine = rosie_mandlebrot_core::precision::effective_deep_engine(req.span, req.deep_engine);
 
     // Decided before the timer starts: a calibration probe is not this frame's work.
+    // Every |dc| in the frame is at most its half-diagonal plus any shift of
+    // the reference; the BLA table is built for that.
+    let max_delta = match strip {
+        Some(s) => s.ln_r_top.exp(),
+        None => 0.5 * span_x.hypot(span_y) + ref_offset_x.hypot(ref_offset_y),
+    };
     let use_bla = tier == Tier::DeepPerturb
         && matches!(eff_engine, rosie_mandlebrot_core::config::DeepEngine::GpuDs | rosie_mandlebrot_core::config::DeepEngine::GpuFe)
-        && bla.unwrap_or_else(|| crate::bla_policy::choose(gpu, req, strip));
+        && bla.unwrap_or_else(|| {
+            crate::bla_policy::choose(req, strip, reference.as_ref().expect("reference computed for deep tier"), max_delta)
+        });
 
     // Time only the GPU tile loop (submit + blocking readback) for the CPU-vs-GPU
     // work split; the CPU reference orbit above is deliberately excluded.
@@ -321,14 +329,9 @@ pub(crate) fn dispatch_pass_with(
         (None, None)
     };
 
-    // BLA table for the DS and SE3 kernels. Every |dc| in the frame is at most
-    // its half-diagonal plus any shift of the reference.
+    // BLA table for the DS and SE3 kernels.
     let bla_buf = (tier == Tier::DeepPerturb).then(|| {
         let r = reference.as_ref().expect("reference computed for deep tier");
-        let max_delta = match strip {
-            Some(s) => s.ln_r_top.exp(),
-            None => 0.5 * span_x.hypot(span_y) + ref_offset_x.hypot(ref_offset_y),
-        };
         bla_buffers(gpu, req, r, ref_re, ref_im, use_bla.then_some(max_delta))
     });
 
@@ -575,6 +578,12 @@ pub(crate) fn dispatch_pass_with(
     Ok(out_pixels)
 }
 
+/// The BLA tolerance for the GPU kernels; `MANDELBROT_BLA_EPS_LOG2=-53` (say)
+/// overrides it for A/B measurements.
+pub(crate) fn bla_epsilon() -> f64 {
+    std::env::var("MANDELBROT_BLA_EPS_LOG2").ok().and_then(|v| v.parse::<i32>().ok()).map_or(BLA_EPSILON_DS, |k| 2f64.powi(k))
+}
+
 /// The BLA table's three GPU buffers (entries, levels, radii) for `max_delta`,
 /// or the one-empty-level stand-in when `max_delta` is `None`.
 ///
@@ -625,7 +634,7 @@ fn bla_buffers(
         }
     }
     let t0 = std::time::Instant::now();
-    let bla = build_bla_table(&r.orbit_f64, max_delta, BLA_EPSILON_DS).to_gpu();
+    let bla = build_bla_table(&r.orbit_f64, max_delta, bla_epsilon()).to_gpu();
     let buffers = upload(&bla);
     tracing::debug!(
         "frame {} bla: {} entries in {} levels, {:.2} ms",
