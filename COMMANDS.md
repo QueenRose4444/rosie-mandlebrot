@@ -76,7 +76,7 @@ While a run is going, type into its terminal (`docker attach` for a container):
 | `--preset NAME` | `seahorse` | a location; `--list-presets` shows them all |
 | `--center RE,IM` | from the preset | decimal strings, e.g. `--center="-0.7436438870371587,0.1318259042053120"`; one digit per decade of zoom |
 | `--initial-span S` | from the preset (usually 3) | the starting view width; 3 shows the whole set |
-| `--palette NAME` | from the preset | `hot`, `grayscale`, `electric`, `rainbow`, `ember` |
+| `--palette NAME` | from the preset | `hot`, `grayscale`, `electric`, `rainbow`, `ember`, `spectrum`, `neon`, `aurora`, `sunset`, `wine`, `deepspace` |
 | `--presets FILE` | built in | a presets file of your own (format: `crates/core/presets.toml`) |
 | `--config FILE` | | settings from a TOML file; precedence is option > config file > preset > default |
 

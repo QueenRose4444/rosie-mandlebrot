@@ -10,7 +10,7 @@
 #                      preperiod and period of the cycle it lands on
 #   center_re/im       decimal strings, parsed at the run's precision
 #   initial_span       starting view width (3 = the whole set)
-#   suggested_palette  hot | grayscale | electric | rainbow | ember
+#   suggested_palette  hot | grayscale | electric | rainbow | ember | spectrum | neon | aurora | sunset | wine | deepspace
 #   suggested_zoom_end how deep the location keeps producing structure. It can
 #                      be written as a string ("1e-400") to go past f64.
 #   zoom_factor, iter_per_depth, iter_exponent

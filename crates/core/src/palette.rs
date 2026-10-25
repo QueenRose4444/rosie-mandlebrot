@@ -9,6 +9,12 @@ pub enum ColorScheme {
     Electric,
     Rainbow,
     Ember,
+    Spectrum,
+    Neon,
+    Aurora,
+    Sunset,
+    Wine,
+    Deepspace,
 }
 
 impl ColorScheme {
@@ -19,6 +25,12 @@ impl ColorScheme {
             "electric" => Ok(Self::Electric),
             "rainbow" => Ok(Self::Rainbow),
             "ember" => Ok(Self::Ember),
+            "spectrum" => Ok(Self::Spectrum),
+            "neon" => Ok(Self::Neon),
+            "aurora" => Ok(Self::Aurora),
+            "sunset" => Ok(Self::Sunset),
+            "wine" => Ok(Self::Wine),
+            "deepspace" | "deep-space" | "deep_space" => Ok(Self::Deepspace),
             other => Err(MbError::UnknownPalette(other.to_string())),
         }
     }
@@ -30,11 +42,61 @@ impl ColorScheme {
             Self::Electric => "electric",
             Self::Rainbow => "rainbow",
             Self::Ember => "ember",
+            Self::Spectrum => "spectrum",
+            Self::Neon => "neon",
+            Self::Aurora => "aurora",
+            Self::Sunset => "sunset",
+            Self::Wine => "wine",
+            Self::Deepspace => "deepspace",
         }
+    }
+
+    /// The schemes defined as stop lists (dark outside, white inside). Their
+    /// palette is `lut_from_stops` of these, exactly what the web UI computes.
+    fn stop_table(self) -> Option<&'static [(f64, u32)]> {
+        Some(match self {
+            Self::Rainbow => &[
+                (0.0, 0x000000), (0.03, 0x3a0070), (0.06, 0x1a3cff), (0.09, 0x00c8ff), (0.12, 0x20ff60),
+                (0.16, 0xffee00), (0.21, 0xff3010), (0.27, 0xb0007a), (0.34, 0x3a3cff), (0.42, 0x00e0ff),
+                (0.51, 0x40ff60), (0.62, 0xffee00), (0.76, 0xff3010), (1.0, 0xffffff),
+            ],
+            Self::Spectrum => &[
+                (0.0, 0x000000), (0.04, 0x3a0070), (0.10, 0x1a3cff), (0.18, 0x00c8ff), (0.28, 0x20ff60),
+                (0.42, 0xffee00), (0.62, 0xff3010), (1.0, 0xffffff),
+            ],
+            Self::Neon => &[
+                (0.0, 0x000000), (0.04, 0x40004a), (0.10, 0x8a00ff), (0.18, 0x2a5bff), (0.28, 0x00f0ff),
+                (0.42, 0x7dff00), (0.62, 0xff2d95), (1.0, 0xffffff),
+            ],
+            Self::Aurora => &[
+                (0.0, 0x000000), (0.04, 0x002a2a), (0.10, 0x00805a), (0.18, 0x00e08a), (0.28, 0x00d8ff),
+                (0.42, 0x7a5cff), (0.62, 0xff4fd8), (1.0, 0xffffff),
+            ],
+            Self::Sunset => &[
+                (0.0, 0x000000), (0.04, 0x1e0050), (0.10, 0x7a00a0), (0.18, 0xe0007a), (0.28, 0xff3a1a),
+                (0.42, 0xff9a00), (0.62, 0xffe066), (1.0, 0xffffff),
+            ],
+            Self::Wine => &[
+                (0.0, 0x12000a), (0.04, 0x55002e), (0.10, 0x5a1aff), (0.18, 0x00c8ff), (0.28, 0x20ff60),
+                (0.42, 0xffee00), (0.62, 0xff3010), (1.0, 0xffffff),
+            ],
+            Self::Deepspace => &[
+                (0.0, 0x02020c), (0.05, 0x1a0a4a), (0.12, 0x2040ff), (0.20, 0x00c8ff), (0.30, 0x30ffa0),
+                (0.45, 0xfff060), (0.65, 0xff5030), (1.0, 0xffffff),
+            ],
+            Self::Hot | Self::Grayscale | Self::Electric | Self::Ember => return None,
+        })
+    }
+
+    fn table_stops(table: &[(f64, u32)]) -> Vec<Stop> {
+        table.iter().map(|&(pos, c)| Stop { pos, rgb: [(c >> 16) as u8, (c >> 8) as u8, c as u8] }).collect()
     }
 
     pub fn sample(self, t: f64) -> [u8; 3] {
         let t = t.clamp(0.0, 1.0);
+        if self.stop_table().is_some() {
+            return self.lut_1024()[(t * 1023.0).round() as usize];
+        }
         match self {
             Self::Hot => hot(t),
             Self::Grayscale => {
@@ -42,12 +104,15 @@ impl ColorScheme {
                 [v, v, v]
             }
             Self::Electric => electric(t),
-            Self::Rainbow => rainbow(t),
             Self::Ember => ember(t),
+            _ => unreachable!("stop-list schemes return above"),
         }
     }
 
     pub fn lut_1024(self) -> [[u8; 3]; 1024] {
+        if let Some(table) = self.stop_table() {
+            return lut_from_stops(&Self::table_stops(table));
+        }
         let mut lut = [[0u8; 3]; 1024];
         for (i, slot) in lut.iter_mut().enumerate() {
             *slot = self.sample(i as f64 / 1023.0);
@@ -95,22 +160,6 @@ fn electric(t: f64) -> [u8; 3] {
         [1.00, 1.00, 1.00],
     ];
     multi_stop(t, &stops)
-}
-
-// HSV(t*360, 1, 1)
-fn rainbow(t: f64) -> [u8; 3] {
-    let h = (t * 6.0).clamp(0.0, 6.0);
-    let c = 1.0_f64;
-    let x = c * (1.0 - ((h % 2.0) - 1.0).abs());
-    let (r, g, b) = match h as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
 }
 
 // black -> deep red -> orange -> pale yellow -> white
@@ -169,16 +218,30 @@ impl Palette {
 }
 
 impl ColorScheme {
-    pub const ALL: [ColorScheme; 5] = [Self::Hot, Self::Grayscale, Self::Electric, Self::Rainbow, Self::Ember];
+    pub const ALL: [ColorScheme; 11] = [
+        Self::Hot,
+        Self::Grayscale,
+        Self::Electric,
+        Self::Rainbow,
+        Self::Ember,
+        Self::Spectrum,
+        Self::Neon,
+        Self::Aurora,
+        Self::Sunset,
+        Self::Wine,
+        Self::Deepspace,
+    ];
 
     /// The scheme as stops at its own corners: a starting point for editing.
     /// Their palette matches the scheme's to within one level per channel.
     pub fn stops(self) -> Vec<Stop> {
+        if let Some(table) = self.stop_table() {
+            return Self::table_stops(table);
+        }
         let pos: &[f64] = match self {
             Self::Hot => &[0.0, 0.375, 0.75, 1.0],
             Self::Grayscale => &[0.0, 1.0],
-            Self::Electric | Self::Ember => &[0.0, 0.25, 0.5, 0.75, 1.0],
-            Self::Rainbow => &[0.0, 1.0 / 6.0, 2.0 / 6.0, 3.0 / 6.0, 4.0 / 6.0, 5.0 / 6.0, 1.0],
+            _ => &[0.0, 0.25, 0.5, 0.75, 1.0],
         };
         pos.iter().map(|&p| Stop { pos: p, rgb: self.sample(p) }).collect()
     }
@@ -264,8 +327,21 @@ mod tests {
 
     #[test]
     fn parse_round_trip() {
-        for scheme in [ColorScheme::Hot, ColorScheme::Grayscale, ColorScheme::Electric, ColorScheme::Rainbow, ColorScheme::Ember] {
+        for scheme in ColorScheme::ALL {
             assert_eq!(ColorScheme::parse(scheme.name()).unwrap(), scheme);
+        }
+        assert_eq!(ColorScheme::parse("deep-space").unwrap(), ColorScheme::Deepspace);
+    }
+
+    #[test]
+    fn stop_list_schemes_are_dark_outside_white_inside_and_match_the_ui_rule() {
+        let luma = |c: [u8; 3]| 0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2]);
+        for scheme in ColorScheme::ALL.into_iter().filter(|s| s.stop_table().is_some()) {
+            let lut = scheme.lut_1024();
+            // The browser builds the palette from the API's stops with lut_from_stops.
+            assert_eq!(lut, lut_from_stops(&scheme.stops()), "{scheme:?}");
+            assert!(luma(lut[0]) < 12.0, "{scheme:?} starts at {:?}, not dark", lut[0]);
+            assert_eq!(lut[1023], [255, 255, 255], "{scheme:?} inside is not white");
         }
     }
 

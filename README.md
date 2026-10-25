@@ -191,7 +191,7 @@ and `--ladder` says so.
 | `--res 1080p` | 4096×4096 | `720p`, `1080p`, `2k`, `4k`, `8k`… (square); or `--width` / `--height` |
 | `--max-frames N` / `--duration 2h` / `--zoom-end 1e-20` | none | when to stop; without any of them it runs until the location runs out |
 | `--zoom-factor 0.98` | 0.98 | each frame's width relative to the last: 0.9 dives quickly, 0.98 smoothly |
-| `--palette hot` | per preset | `hot`, `grayscale`, `electric`, `rainbow`, `ember` |
+| `--palette hot` | per preset | `hot`, `grayscale`, `electric`, `rainbow`, `ember`, `spectrum`, `neon`, `aurora`, `sunset`, `wine`, `deepspace` |
 | `--run-dir DIR` | | keep this run's frames, state and log together in `DIR` |
 | `--resume` / `--new-run` | | continue the last run in that directory, or start over |
 | `--cpu-percent 50` | | use at most that share of the CPU |

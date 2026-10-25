@@ -139,7 +139,8 @@ pub struct Cli {
     #[arg(long)]
     pub blank_stop_after: Option<f64>,
 
-    /// Colour palette: hot, grayscale, electric, rainbow or ember [default: the preset's].
+    /// Colour palette: hot, grayscale, electric, rainbow, ember, spectrum, neon, aurora, sunset, wine or deepspace
+    /// [default: the preset's].
     #[arg(long)]
     pub palette: Option<String>,
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2 — 2026-10-26
+
+**New colours.**
+
+- `rainbow` is new: the old one went once round the colour wheel from red back to red, so the empty
+  space around the set and the set itself both came out red. The new rainbow starts black, runs the
+  rainbow twice (blue edges, then warm centres to the spirals) and ends white inside the set. Videos
+  already made keep their colours; make one again from a finished render to get the new look.
+- Six more built-in palettes in the same style, dark outside and white inside: `spectrum` (the rainbow
+  once, packed low so the thin outer filaments get colour), `neon`, `aurora`, `sunset`, `wine` (a dark
+  wine-red background) and `deepspace` (dark navy, a little softer). All of them are in the app's
+  Colours page and work with `--palette`.
+
 ## 0.3.1 — 2026-10-26
 
 Fixes from an outside test of 0.3.0 with nothing but the repository's URL (it made, recoloured and
