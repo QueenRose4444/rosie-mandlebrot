@@ -66,6 +66,12 @@ pub struct Cli {
     #[arg(long, value_parser = parse_byte_size)]
     pub memory_limit: Option<u64>,
 
+    /// How much of the zoom a keyframe run renders at a time: octave (the
+    /// default: fastest), half (the 0.2 size: exactly 0.2's strips), quarter or
+    /// eighth (less memory, slower).
+    #[arg(long, default_value = "octave")]
+    pub chunk_size: String,
+
     /// Multiplicative span change per frame. (default 0.98; preset/--config may set it)
     #[arg(long)]
     pub zoom_factor: Option<f64>,

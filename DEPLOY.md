@@ -1,7 +1,7 @@
-# Running a long render in Docker (Linux, NVIDIA)
+# Running Rosie_Mandlebrot on a server (Docker, Linux, NVIDIA)
 
-For a render that runs for days, restarts itself and resumes. The quick one-off command is in the
-[README](README.md#linux-with-docker).
+The web UI in a container that restarts itself and resumes interrupted renders. The short version is
+in the [README](README.md#a-server-with-docker).
 
 ## 1. The host: driver and container toolkit
 
@@ -29,27 +29,33 @@ or reload the module with nothing using the GPU
 
 ## 2. Run it
 
-[`docker-compose.yml`](docker-compose.yml) runs one render with a 2 GB memory cap, restarting on
-failure and resuming where it stopped. It and the optional gallery live in the repository,
-so start from a clone:
+[`docker-compose.yml`](docker-compose.yml) is the whole install: the web UI on port 8460, a 2 GB
+memory cap, a four-core CPU cap, the GPU, and a named volume for everything it keeps. Paste it into
+Portainer (Stacks -> Add stack -> Web editor) or save it and run:
 
 ```bash
-git clone https://github.com/QueenRose4444/rosie-mandlebrot && cd rosie-mandlebrot
-mkdir -p mandelbrot_out mandelbrot_state
-sudo chown 10001:10001 mandelbrot_out mandelbrot_state   # the image runs as user 10001
 docker compose up -d
 docker compose logs -f
 ```
 
-Change the render in the compose file's `command:` (for example
-`--preset seahorse_deep --res 4k --max-storage 100GB`). The video (`zoom.mkv`), the keyframe strip
-it is made from (`keyframes/`, which is also the checkpoint) and `progress.json` land in
-`mandelbrot_out/`; the log in `mandelbrot_state/rosie-mandlebrot/logs/`. A run started frame by
-frame (with 0.1 or `--per-frame`) carries on frame by frame, with its checkpoint in `mandelbrot_state/`.
+Open `http://<server>:8460`. Renders are started, watched, recoloured and downloaded from the page;
+each render is a child process of the server, one at a time. A render interrupted by `docker stop`
+or a reboot carries on when the container starts again (`--resume-on-start`). Runs live in the
+volume under `runs/<date>-<place>/` (`out/` holds the video, the strip in `keyframes/` and the
+snapshots; `logs/` the render's log).
 
-When a run finishes, the container idles instead of starting over. A run that was stopped (`stop`,
-`docker stop`, a reboot) or that failed is resumed on the next start. To start a new run, empty
-both folders and `docker compose up -d` again.
+The page has no password. Keep 8460 on your own network, or put a proxy with its own login (or a
+tunnel with access control) in front of it.
+
+**Sharing the GPU:** while a file named `pause` exists in the volume (`docker exec rosie_mandlebrot
+touch /data/pause`), a running render finishes the chunk in hand and exits without making its video,
+so the GPU and all its memory are free for something else; remove the file and it carries on.
+
+**A command-line render instead:** give render options as the container's command, e.g.
+`command: --preset seahorse_deep --res 4k --max-storage 100GB` with volumes for `/out` and `/state`
+(`sudo chown 10001:10001` them first; the image runs as user 10001). The entrypoint then adds
+`--output /out --state /state/state.db --resume`; a finished run idles instead of starting over, and
+a stopped or failed one is resumed on the next start.
 
 ## 3. Check it is on the GPU
 
@@ -97,22 +103,16 @@ toolkit mounts the Vulkan driver.
 
 ## 5. The video
 
-The render makes the video itself when the run ends. To make it again from the strip, for example
-with another palette, speed or codec (seconds to minutes, nothing is re-rendered):
+The app makes each video when its render ends, and **Recolour** makes new ones from the strip
+(another palette, speed or size: seconds to minutes, nothing is re-rendered). For a command-line
+render, `--assemble` does the same, e.g. `docker compose run --rm rosie_mandlebrot --assemble
+--palette electric --video-codec h265` with the same volumes. For a `--per-frame` run use
+`--encode-only --run 1`; ffmpeg reads the frames as a stream, so even 100 GB of 4K frames encodes
+within the memory cap.
 
-```bash
-docker compose run --rm mandelbrot --assemble --palette electric --video-codec h265
-```
-
-For a `--per-frame` run use `--encode-only --run 1` instead; ffmpeg reads the frames as a stream, so
-even 100 GB of 4K frames encodes within the memory cap.
-
-## 6. A gallery (optional)
+## 6. A gallery of saved frames (optional)
 
 [`gallery/`](gallery) is a small nginx page showing the newest frame and a grid of the rest, with
-server-side thumbnails so 4K frames load quickly. It needs saved frames, so it shows `--per-frame`
-runs only:
-
-```bash
-docker compose --profile gallery up -d      # then open http://localhost:8080
-```
+server-side thumbnails so 4K frames load quickly. It reads the PNG frames of a `--per-frame`
+command-line render (mount that render's `out/` at `/usr/share/nginx/html/frames`); the app's own
+Runs page replaces it for everything else.

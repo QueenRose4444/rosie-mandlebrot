@@ -173,6 +173,11 @@ async fn serve(app: Arc<App>, a: ServeArgs) -> anyhow::Result<()> {
         tokio::task::spawn_blocking(move || {
             let name = rosie_mandlebrot_render::gpu::adapter_name();
             *app.gpu_name.lock().unwrap() = name;
+            let ffmpeg = std::process::Command::new("ffmpeg").arg("-version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+            if !ffmpeg {
+                tracing::warn!("ffmpeg is not on PATH: renders are saved, but no video can be made until it is installed");
+            }
+            *app.ffmpeg.lock().unwrap() = Some(ffmpeg);
             app.bump(false);
         });
     }
@@ -230,15 +235,28 @@ pub(crate) fn after_job(app: &Arc<App>, job: &jobs::Job) {
     if job.pausing {
         return;
     }
-    if job.kind == "render" && job.state != jobs::JobState::Failed {
+    let strip_kept = !(store::load::<store::Settings>(&app.data.join("settings.json")).delete_strip_after_video && job.result.video.is_some());
+    if job.kind == "render" && job.state != jobs::JobState::Failed && strip_kept {
         if let Some(run) = &job.run_id {
             let body = jobs::ValuesBody { run_id: run.clone(), k: None, width: Some(640), height: None };
             let args = jobs::values_args(&body, &runs::run_dir(&app.data, run));
             app.enqueue("values", Some(run.clone()), format!("colours of {run}"), args, true, jobs::Progress::default());
         }
     }
+    let settings: store::Settings = store::load(&app.data.join("settings.json"));
+    // "Delete a run's render data once its video is made": the strip goes,
+    // the videos and snapshots stay (the run can no longer be recoloured).
+    if job.kind == "render" && job.state == jobs::JobState::Done && settings.delete_strip_after_video && job.result.video.is_some() {
+        if let Some(run) = &job.run_id {
+            let strip = runs::run_dir(&app.data, run).join("out").join("keyframes");
+            match std::fs::remove_dir_all(&strip) {
+                Ok(()) => tracing::info!("deleted the render data of {run} (the setting is on)"),
+                Err(e) => tracing::warn!("could not delete {}: {e}", strip.display()),
+            }
+            app.bump(true);
+        }
+    }
     if matches!(job.kind, "render" | "assemble") {
-        let settings: store::Settings = store::load(&app.data.join("settings.json"));
         let n = settings.notify;
         if n.discord_webhook.is_empty() && n.upload_url.is_empty() {
             return;

@@ -14,6 +14,7 @@ rosie_mandlebrot --run-dir runs/deep --resume                       # carry on a
 rosie_mandlebrot --preset seahorse_deep --probe-span 1e-25 --res 1080p   # one frame at any depth
 rosie_mandlebrot --run-dir runs/deep --assemble --palette electric  # remake the video, new colours
 rosie_mandlebrot --preset seahorse --res 1080p --per-frame          # every frame as a PNG (the 0.1 way)
+rosie_mandlebrot serve --open                                       # the web UI, in your browser
 ```
 
 Since 0.2 a run renders the zoom once as an exponential-map strip (`keyframes/`) and assembles the
@@ -22,9 +23,10 @@ for saved frames (`--save-every`, `--encode-only`, `--encode-threads`, `--recycl
 `--per-frame` runs only. A run started frame by frame (with 0.1 or `--per-frame`) carries on frame
 by frame when resumed.
 
-In Docker, put the same options after the image name. The entrypoint supplies
-`--output /out --state /state/state.db --resume`, so a container restarted after a crash continues
-its run:
+In Docker the image starts the web UI by default (`serve --host 0.0.0.0 --data /data
+--resume-on-start`, port 8460). Put render options after the image name for a command-line render
+instead; the entrypoint then supplies `--output /out --state /state/state.db --resume`, so a
+container restarted after a crash continues its run:
 
 ```bash
 docker run --rm -it --gpus all --user "$(id -u):$(id -g)" \
@@ -62,6 +64,7 @@ While a run is going, type into its terminal (`docker attach` for a container):
 
 - `status` — print a progress snapshot now
 - `stop` (or `quit`, `exit`) — finish the chunk or frame in hand, write the video, exit
+- `pause` — finish the chunk in hand and exit without the video; `--resume` carries on later
 - `flush` — with `--per-frame`, commit the checkpoint now (it is committed every frame anyway)
 
 ## All options
@@ -132,8 +135,13 @@ Otherwise two featureless checks in a row end it.
 | option | default | |
 |---|---|---|
 | `--video-fps N` | 30 | |
-| `--video-codec` | `h264` | `h264`, `h265`, `vp9`, `none` |
-| `--video-container` | `mkv` | `mkv`, `mp4` |
+| `--video-codec` | `h264` | `h264`, `h265`, `vp9`, `prores`, `none` |
+| `--video-container` | `mkv` | `mkv`, `mp4` (written so a browser can play it while it downloads), `webm` (picks `vp9`), `mov` (picks `prores` 4444); the last two keep an alpha channel |
+| `--palette-stops` | | your own palette for keyframe videos: `"pos:#rrggbb,pos:#rrggbb,…"`, positions 0–1, at least two; overrides `--palette` |
+| `--inside-colour #rrggbb` | the palette's last colour | the colour inside the set (keyframe videos) |
+| `--bars STYLE` | | a smaller picture centred in the frame: `blur` (a blurred, darkened copy of the picture fills the rest), `solid` (`--bar-colour`), `transparent` (needs `webm` or `mov`), `none` |
+| `--picture WxH` | a square as big as fits | the picture's size with `--bars`; the strip is rendered for it, the video at `--width`/`--height` |
+| `--bar-colour #rrggbb` | `#000000` | colour of `solid` bars |
 | `--no-video` | | render only (the strip, or the frames with `--per-frame`) |
 | `--assemble` | | make the video again from the strip in `--run-dir` / `--output`, as `zoom-2.mkv`, `zoom-3.mkv` … (an existing video is never replaced); `--palette`, `--video-fps`, `--zoom-factor`, `--width`/`--height`, `--tone` and the codec options all apply, and nothing is re-rendered |
 | `--tone` | `location` | `location`: every point keeps its colour from frame to frame; `per-frame`: each frame stretches its own range across the palette, as 0.1 did (it pumps brighter and darker during a zoom; `--tone-smoothing` eases it) |
@@ -151,6 +159,7 @@ frame sequence; use `--save-every 1` there or encode the frames yourself.
 | option | default | |
 |---|---|---|
 | `--cpu-percent P` | | use at most P% of the CPU (1–100) |
+| `--memory-limit SIZE` | | keyframe runs: render the strip in smaller pieces to stay near SIZE (`512MiB`, `1GB`); each halving of the piece costs some speed |
 | `--cpu-threads N` | all cores but one | threads for CPU-side rendering work |
 | `--encode-threads N` | half the cores, at most 4 | `--per-frame`: PNG encoders; each holds one frame in memory, so this sets the RAM |
 
@@ -173,6 +182,31 @@ frame sequence; use `--save-every 1` there or encode the frames yourself.
 
 Logging: `RUST_LOG=debug` adds per-frame timings (`shader` time from GPU timestamps, `orbit`
 time for the high-precision reference). `--quiet` drops the progress lines.
+
+## The web UI: `serve`
+
+`rosie_mandlebrot serve` runs the app: a web page and the jobs it starts. Each job (a render, a new
+video from a render, the preset pictures) runs as a separate copy of the program, one at a time;
+the rest wait in order. Double-clicking the exe on Windows does the same with `--tray --open`.
+
+| option | default | |
+|---|---|---|
+| `--host ADDR` | `127.0.0.1` | `0.0.0.0` lets other computers on your network open it (there is no password) |
+| `--port N` | 8460 | |
+| `--data DIR` | `app/` beside the program (portable) or in your data folder | runs (`runs/<date>-<place>/`), preset pictures, `settings.json`, `favourites.json` |
+| `--open` | | open the page in the default browser |
+| `--tray` | | Windows: an icon by the clock with Open, Pause and Quit |
+| `--resume-on-start` | | carry on with renders a restart interrupted (the Docker image sets it) |
+| `--previews N` | 640 | the size of the snapshots a render saves as it goes (0 = none) |
+
+While a file named `pause` exists in the data folder, the queue pauses: a running render finishes the
+chunk in hand and exits without making its video, so the GPU and all its memory are free, and it
+carries on when the file is gone. **Settings** can also pause while a full-screen app is in front
+(Windows), and notify a Discord webhook or upload each finished video to a URL of your own
+(multipart field `file`, with an `X-Api-Key` header if you give a key).
+
+Options the app uses that also work on their own: `--events` prints one JSON object per line for
+each step (`{"ev":"chunk",…}`); `--previews N` saves those snapshots in `out/previews/`.
 
 ## Exit codes
 

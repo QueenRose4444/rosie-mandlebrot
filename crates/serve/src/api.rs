@@ -78,6 +78,7 @@ fn state_json(app: &App) -> serde_json::Value {
         "version": app.version,
         "gpu": { "name": app.gpu_name.lock().unwrap().clone(), "busy": app.is_busy() },
         "paused": app.inner.lock().unwrap().paused,
+        "ffmpeg": *app.ffmpeg.lock().unwrap(),
         "pause_reason": app.inner.lock().unwrap().pause_reason.clone(),
         "jobs": app.jobs(),
         "data_dir": app.data.display().to_string(),
@@ -200,7 +201,8 @@ pub fn queue_render(app: &Arc<App>, meta: &RunMeta, resume: bool, previews: u32)
 /// [`queue_render`], ahead of the queue when `first`.
 pub fn queue_render_with(app: &Arc<App>, meta: &RunMeta, resume: bool, previews: u32, first: bool) -> Result<jobs::Job, String> {
     let dir = runs::run_dir(&app.data, &meta.id);
-    let args = jobs::render_args(&meta.settings, &dir, resume, previews)?;
+    let settings: Settings = store::load(&app.data.join("settings.json"));
+    let args = jobs::render_args(&meta.settings, &dir, resume, settings.previews.unwrap_or(previews))?;
     let (start_span, end_span) = spans(&meta.preset, meta.settings.zoom_end);
     let progress = Progress { start_span, end_span, ..Default::default() };
     Ok(app.enqueue("render", Some(meta.id.clone()), meta.label.clone(), args, first, progress))
@@ -217,7 +219,11 @@ async fn resume_run(State(c): State<Ctx>, UrlPath(id): UrlPath<String>) -> ApiRe
 async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<Json<jobs::Job>> {
     let app = &c.app;
     let job = match body {
-        JobBody::Render(b) => {
+        JobBody::Render(mut b) => {
+            let settings: Settings = store::load(&app.data.join("settings.json"));
+            b.chunk_size = b.chunk_size.or(Some(settings.chunk_size.clone()));
+            b.tone = b.tone.or(Some(settings.tone.clone()));
+            b.format = b.format.or(Some(settings.video_format.clone()));
             // Checked before the run folder exists.
             jobs::render_args(&b, std::path::Path::new("x"), false, 0).map_err(bad)?;
             let id = runs::new_run_id(&app.data, &b.preset, now() + local_offset_secs());
@@ -226,7 +232,10 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             runs::write_meta(&app.data, &meta).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             queue_render(app, &meta, false, c.previews).map_err(bad)?
         }
-        JobBody::Assemble(b) => {
+        JobBody::Assemble(mut b) => {
+            let settings: Settings = store::load(&app.data.join("settings.json"));
+            b.tone = b.tone.or(Some(settings.tone.clone()));
+            b.format = b.format.or(Some(settings.video_format.clone()));
             let meta = meta_of(app, &b.run_id)?;
             let size = (meta.settings.width, meta.settings.height);
             let args = jobs::assemble_args(&b, &runs::run_dir(&app.data, &b.run_id), size).map_err(bad)?;
@@ -289,7 +298,14 @@ async fn estimate(State(c): State<Ctx>, Query(q): Query<EstimateQuery>) -> ApiRe
     let end = q.zoom_end.or_else(|| p.suggested_zoom_end.to_f64()).unwrap_or(1e-300).max(1e-300);
     let zoom = q.zoom_factor.or(p.zoom_factor).unwrap_or(0.98).clamp(0.5, 0.9999);
     let data = c.app.data.clone();
-    let e = tokio::task::spawn_blocking(move || crate::estimate::estimate(&data, q.width, q.height, start, end, zoom, q.memory_limit_mb))
+    let settings: Settings = store::load(&data.join("settings.json"));
+    let octaves = match settings.chunk_size.as_str() {
+        "half" => 0.5,
+        "quarter" => 0.25,
+        "eighth" => 0.125,
+        _ => 1.0,
+    };
+    let e = tokio::task::spawn_blocking(move || crate::estimate::estimate(&data, q.width, q.height, start, end, zoom, octaves, q.memory_limit_mb))
         .await
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(e))

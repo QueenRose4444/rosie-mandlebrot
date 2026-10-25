@@ -21,16 +21,46 @@ pub struct Settings {
     pub cpu_percent: Option<u32>,
     pub notify: Notify,
     pub delete_strip_after_video: bool,
+    /// Strip chunk size for new renders: octave, half, quarter or eighth.
+    pub chunk_size: String,
+    /// Snapshot size while rendering, pixels on the long side (0 = none);
+    /// None = the server's --previews.
+    pub previews: Option<u32>,
+    /// How videos map values to colours: location or per-frame.
+    pub tone: String,
+    /// Video format when a job does not say: mp4, mkv, webm or mov.
+    pub video_format: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { pause_when_fullscreen: true, cpu_percent: None, notify: Notify::default(), delete_strip_after_video: false }
+        Settings {
+            pause_when_fullscreen: true,
+            cpu_percent: None,
+            notify: Notify::default(),
+            delete_strip_after_video: false,
+            chunk_size: "octave".into(),
+            previews: None,
+            tone: "location".into(),
+            video_format: "mp4".into(),
+        }
     }
 }
 
 impl Settings {
     pub fn check(&self) -> Result<(), String> {
+        if !matches!(self.chunk_size.as_str(), "octave" | "half" | "quarter" | "eighth") {
+            return Err(format!("chunk_size {:?}: expected octave, half, quarter or eighth", self.chunk_size));
+        }
+        if !matches!(self.tone.as_str(), "location" | "per-frame") {
+            return Err(format!("tone {:?}: expected location or per-frame", self.tone));
+        }
+        if !matches!(self.video_format.as_str(), "mp4" | "mkv" | "webm" | "mov") {
+            return Err(format!("video_format {:?}: expected mp4, mkv, webm or mov", self.video_format));
+        }
+        if self.previews.is_some_and(|p| p != 0 && !(64..=2048).contains(&p)) {
+            return Err("previews: 0 (none) or 64 to 2048 pixels".into());
+        }
         if let Some(p) = self.cpu_percent {
             if !(1..=100).contains(&p) {
                 return Err(format!("cpu_percent {p}: must be 1 to 100"));

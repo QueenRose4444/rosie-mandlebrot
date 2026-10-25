@@ -166,20 +166,60 @@ pub struct StripRun {
     end_span: Option<f64>,
     end_reason: StopReason,
     memory_limit: Option<u64>,
+    /// Octaves of rows per chunk.
+    chunk_octaves: f64,
 }
 
-/// Peak memory of a strip render, measured: about 219 MB of fixed cost plus
-/// 17.3 bytes per sample of the chunk in hand (241 MB at 1080x1080 and 536 MB
-/// at 4096x4096, both with half-octave chunks).
-const FIXED_BYTES: f64 = 219.0 * 1048576.0;
-const BYTES_PER_CHUNK_SAMPLE: f64 = 17.3;
+/// Octaves per chunk unless asked otherwise. Whole octaves measured 8-18%
+/// faster than half octaves; half octaves reproduce 0.2's strips exactly.
+pub const DEFAULT_CHUNK_OCTAVES: f64 = 1.0;
 
-/// The fraction of an octave each chunk covers: half an octave, or less when
-/// `limit` (bytes) would not hold that, down to a sixteenth.
-pub fn chunk_fraction(g: &StripGeometry, limit: Option<u64>) -> f64 {
-    let mut f = 0.5;
+/// Chunk sizes measured at 4096x4096 (seahorse to 1e-9, RTX 3060 Ti, Windows'
+/// sampled peak, means of 2-4 runs): octaves per chunk, peak MB, and render
+/// time relative to whole octaves.
+pub const CHUNK_MEASURED_4K: [(f64, f64, f64); 4] = [(1.0, 608.0, 1.0), (0.5, 550.0, 1.155), (0.25, 437.0, 1.226), (0.125, 273.0, 1.479)];
+/// Peak memory at 1080x1080, which measured about the same at every chunk size.
+const PEAK_1080_MB: f64 = 240.0;
+
+/// `CHUNK_MEASURED_4K` at `octaves`, linear in log2(octaves) between the
+/// measured sizes and held at the ends: (peak MB at 4K, time factor).
+fn chunk_measured(octaves: f64) -> (f64, f64) {
+    let t = CHUNK_MEASURED_4K;
+    let x = octaves.log2();
+    if x >= 0.0 {
+        return (t[0].1, t[0].2);
+    }
+    for w in t.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (xa, xb) = (a.0.log2(), b.0.log2());
+        if x >= xb {
+            let f = (x - xa) / (xb - xa);
+            return (a.1 + (b.1 - a.1) * f, a.2 + (b.2 - a.2) * f);
+        }
+    }
+    (t[3].1, t[3].2)
+}
+
+/// Estimated peak memory of a strip render, from the measured table: the
+/// 1080x1080 figure and the 4096x4096 one, straight-line in pixel count.
+pub fn strip_peak_bytes(g: &StripGeometry, chunk_octaves: f64) -> f64 {
+    let mpx = f64::from(g.width) * f64::from(g.height) / 1e6;
+    let t = ((mpx - 1.166) / (16.777 - 1.166)).max(0.0);
+    let (peak_4k, _) = chunk_measured(chunk_octaves);
+    (PEAK_1080_MB + (peak_4k - PEAK_1080_MB) * t) * 1048576.0
+}
+
+/// Render time at `chunk_octaves` relative to whole-octave chunks (measured).
+pub fn chunk_time_factor(chunk_octaves: f64) -> f64 {
+    chunk_measured(chunk_octaves).1
+}
+
+/// Octaves per chunk: `want`, halved while the measured peak would pass
+/// `limit` (bytes), down to a sixteenth.
+pub fn chunk_fraction(g: &StripGeometry, want: f64, limit: Option<u64>) -> f64 {
+    let mut f = want;
     if let Some(limit) = limit {
-        while f > 1.0 / 16.0 && FIXED_BYTES + BYTES_PER_CHUNK_SAMPLE * g.rows_per_octave() * f * f64::from(g.cols) > limit as f64 {
+        while f > 1.0 / 16.0 && strip_peak_bytes(g, f) > limit as f64 {
             f /= 2.0;
         }
     }
@@ -254,6 +294,12 @@ pub struct StripOutcome {
 impl StripRun {
     /// Find or create the strip in `cfg.output` and work out where its video ends.
     pub fn open(cfg: &RunConfig, existing: Existing) -> anyhow::Result<StripRun> {
+        Self::open_in(cfg, existing, false)
+    }
+
+    /// [`StripRun::open`]; `own_folder` says the output folder was named for
+    /// this run, which changes the advice when a run is already there.
+    pub fn open_in(cfg: &RunConfig, existing: Existing, own_folder: bool) -> anyhow::Result<StripRun> {
         let dir = strip_dir(&cfg.output);
         let found = read_manifest(&dir)?;
         let manifest = match found {
@@ -268,7 +314,9 @@ impl StripRun {
                 }
                 m
             }
-            Some(_) if existing == Existing::Refuse => return Err(MbError::RunCollision(dir.join("manifest.json")).into()),
+            Some(_) if existing == Existing::Refuse => {
+                return Err(MbError::RunCollision { path: dir.join("manifest.json"), own_folder }.into())
+            }
             _ => {
                 if dir.exists() {
                     std::fs::remove_dir_all(&dir).map_err(|e| MbError::io(&dir, e))?;
@@ -314,12 +362,18 @@ impl StripRun {
                 }
             }
         }
-        Ok(StripRun { cfg: cfg.clone(), dir, manifest, end_span, end_reason, memory_limit: None })
+        Ok(StripRun { cfg: cfg.clone(), dir, manifest, end_span, end_reason, memory_limit: None, chunk_octaves: DEFAULT_CHUNK_OCTAVES })
     }
 
     /// Keep the render's memory near `bytes` by rendering smaller chunks.
     pub fn memory_limit(mut self, bytes: Option<u64>) -> Self {
         self.memory_limit = bytes;
+        self
+    }
+
+    /// Octaves of rows per chunk (1 = whole octaves, 0.5 = 0.2's half octaves).
+    pub fn chunk_octaves(mut self, octaves: f64) -> Self {
+        self.chunk_octaves = octaves;
         self
     }
 
@@ -340,13 +394,13 @@ impl StripRun {
         stop: Arc<AtomicBool>,
         ev: &dyn Events,
     ) -> anyhow::Result<StripOutcome> {
-        let StripRun { cfg, dir, mut manifest, mut end_span, mut end_reason, memory_limit } = self;
+        let StripRun { cfg, dir, mut manifest, mut end_span, mut end_reason, memory_limit, chunk_octaves } = self;
         let cfg = &cfg;
         let g = manifest.geometry.clone();
         // Half an octave per chunk: a chunk's pixels are all in memory at once, and
         // at 4096x4096 a whole octave is ~300 MB of them. Less under a memory limit.
-        let fraction = chunk_fraction(&g, memory_limit);
-        if fraction < 0.5 {
+        let fraction = chunk_fraction(&g, chunk_octaves, memory_limit);
+        if fraction < chunk_octaves {
             tracing::info!("chunks of 1/{} octave to stay within the memory limit", (1.0 / fraction).round());
         }
         let rows_per_chunk = (g.rows_per_octave() * fraction).round().max(1.0) as u32;
@@ -555,6 +609,10 @@ impl StripRun {
             manifest.total_bytes() as f64 / 1e6,
             video_end(&manifest)
         );
+        tracing::info!(
+            "(the strip goes about {:.0} octaves deeper than the last frame's corner on purpose: every frame needs the rows from its corner down to its centre)",
+            (g.half_diagonal_px() / MIN_RADIUS_PX).log2()
+        );
         if stop_reason.is_failure() {
             tracing::error!("the strip stopped: {stop_reason}");
         }
@@ -676,12 +734,19 @@ mod tests {
     #[test]
     fn a_memory_limit_only_ever_makes_chunks_smaller() {
         let g = StripGeometry::new(4096, 4096, 0.0);
-        assert_eq!(chunk_fraction(&g, None), 0.5);
-        assert_eq!(chunk_fraction(&g, Some(4 << 30)), 0.5);
-        let f = chunk_fraction(&g, Some(400 << 20));
-        assert!(f < 0.5, "{f}");
-        assert!(FIXED_BYTES + BYTES_PER_CHUNK_SAMPLE * g.rows_per_octave() * f * f64::from(g.cols) <= f64::from(400u32 << 20));
-        assert_eq!(chunk_fraction(&g, Some(1)), 1.0 / 16.0);
+        assert_eq!(chunk_fraction(&g, 1.0, None), 1.0);
+        assert_eq!(chunk_fraction(&g, 0.5, Some(4 << 30)), 0.5);
+        let f = chunk_fraction(&g, 1.0, Some(500 << 20));
+        assert_eq!(f, 0.25, "{f}");
+        assert!(strip_peak_bytes(&g, f) <= f64::from(500u32 << 20));
+        assert_eq!(chunk_fraction(&g, 1.0, Some(1)), 1.0 / 16.0);
+        // The model reproduces what it was measured on, and 1080x1080 barely moves.
+        let mb = |g: &StripGeometry, o| strip_peak_bytes(g, o) / 1048576.0;
+        assert!((mb(&g, 1.0) - 608.0).abs() < 1.0 && (mb(&g, 0.125) - 273.0).abs() < 1.0);
+        let g1080 = StripGeometry::new(1080, 1080, 0.0);
+        assert!((mb(&g1080, 1.0) - 240.0).abs() < 1.0 && (mb(&g1080, 0.125) - 240.0).abs() < 1.0);
+        assert_eq!(chunk_time_factor(1.0), 1.0);
+        assert!(chunk_time_factor(0.5) > 1.1 && chunk_time_factor(0.125) > chunk_time_factor(0.25));
     }
 
     #[test]

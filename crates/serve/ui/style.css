@@ -323,3 +323,8 @@ table.stops td:last-child { text-align: right; }
 @media (prefers-reduced-motion: reduce) {
   .bar > div { transition: none; }
 }
+
+/* App-wide notices under the menu: paused, ffmpeg missing. */
+.notices { max-width: 1280px; margin: 0 auto; padding: 0 28px; box-sizing: border-box; }
+.notices:empty { display: none; }
+.notices .notice { margin-top: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }

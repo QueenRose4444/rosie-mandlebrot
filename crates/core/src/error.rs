@@ -61,8 +61,10 @@ pub enum MbError {
     #[error("ffmpeg invocation failed: {0}")]
     Ffmpeg(String),
 
-    #[error("a run already exists at {0:?}. Add --resume to carry on with it, or give this run its own folder with --run-dir NAME")]
-    RunCollision(PathBuf),
+    /// A new run in a folder that already holds one. `own_folder`: the folder
+    /// was named with --run-dir, so suggesting another --run-dir is no help.
+    #[error("{}", run_collision_message(path, *own_folder))]
+    RunCollision { path: PathBuf, own_folder: bool },
 
     /// A command-line argument that parsed as text but not as a value.
     ///
@@ -91,16 +93,28 @@ impl MbError {
     }
 }
 
+fn run_collision_message(path: &std::path::Path, own_folder: bool) -> String {
+    let mut m = format!("a run already exists at {}. Add --resume to carry on with it", path.display());
+    if !own_folder {
+        m.push_str(", give this run its own folder with --run-dir NAME");
+    }
+    m.push_str(", or add --new-run to replace it (the earlier run's render data is deleted)");
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn run_collision_points_at_a_separate_folder() {
-        // The obvious way out must not be the one that touches the existing run.
-        let msg = MbError::RunCollision(PathBuf::from("state/state.db")).to_string();
-        assert!(msg.contains("--resume"), "{msg}");
-        assert!(msg.contains("--run-dir"), "{msg}");
-        assert!(!msg.contains("--new-run"), "{msg}");
+    fn run_collision_offers_every_way_out_that_applies() {
+        let path = PathBuf::from(r"runs\dive\state.db");
+        let msg = MbError::RunCollision { path: path.clone(), own_folder: false }.to_string();
+        assert!(msg.contains("--resume") && msg.contains("--run-dir") && msg.contains("--new-run"), "{msg}");
+        // The path as written, not Debug-quoted with doubled backslashes.
+        assert!(msg.contains(r"runs\dive\state.db") && !msg.contains(r"\\"), "{msg}");
+        // Already in a folder of its own: another --run-dir is not the answer.
+        let msg = MbError::RunCollision { path, own_folder: true }.to_string();
+        assert!(!msg.contains("--run-dir") && msg.contains("--new-run"), "{msg}");
     }
 }

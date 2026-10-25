@@ -20,6 +20,8 @@ pub struct App {
     pub exe: PathBuf,
     pub version: &'static str,
     pub gpu_name: Mutex<Option<String>>,
+    /// Whether ffmpeg runs (None until checked).
+    pub ffmpeg: Mutex<Option<bool>>,
     pub inner: Mutex<Inner>,
     /// Bumped on every change: `.0` the state, `.1` the run list.
     pub changed: watch::Sender<(u64, u64)>,
@@ -47,7 +49,7 @@ pub fn now() -> i64 {
 impl App {
     pub fn new(data: PathBuf, exe: PathBuf, version: &'static str, previews: u32) -> Arc<App> {
         let (changed, _) = watch::channel((0, 0));
-        Arc::new(App { data, previews, exe, version, gpu_name: Mutex::new(None), inner: Mutex::new(Inner::default()), changed, wake: Notify::new() })
+        Arc::new(App { data, previews, exe, version, gpu_name: Mutex::new(None), ffmpeg: Mutex::new(None), inner: Mutex::new(Inner::default()), changed, wake: Notify::new() })
     }
 
     /// Tell watchers something changed (`runs` too when the run list did).
@@ -262,8 +264,13 @@ impl App {
 
     async fn run_child(self: &Arc<Self>, job: &Job) -> anyhow::Result<i32> {
         let mut cmd = Command::new(&self.exe);
-        cmd.args(&job.args)
-            .arg("--events")
+        cmd.args(&job.args).arg("--events");
+        // The CPU limit applies to whatever the job is.
+        let settings: crate::store::Settings = crate::store::load(&self.data.join("settings.json"));
+        if let Some(p) = settings.cpu_percent {
+            cmd.args(["--cpu-percent", &p.to_string()]);
+        }
+        cmd
             .current_dir(&self.data)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

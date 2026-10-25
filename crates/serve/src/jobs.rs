@@ -121,6 +121,12 @@ pub struct RenderBody {
     pub memory_limit_mb: Option<u32>,
     #[serde(default)]
     pub bars: Option<BarsBody>,
+    /// Filled from the settings when the run is created, so a resume renders
+    /// the rest of the strip the same way.
+    #[serde(default)]
+    pub chunk_size: Option<String>,
+    #[serde(default)]
+    pub tone: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -144,6 +150,8 @@ pub struct AssembleBody {
     pub format: Option<String>,
     #[serde(default)]
     pub bars: Option<BarsBody>,
+    #[serde(default)]
+    pub tone: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -251,6 +259,14 @@ fn bars_args(bars: &Option<BarsBody>, w: u32, h: u32, format: &str) -> Result<Ve
     Ok(vec!["--bars".into(), b.style.clone(), "--bar-colour".into(), colour, "--picture".into(), format!("{}x{}", b.picture_w, b.picture_h)])
 }
 
+fn tone_args(t: &Option<String>) -> Result<Vec<String>, String> {
+    match t.as_deref() {
+        None => Ok(Vec::new()),
+        Some(t @ ("location" | "per-frame")) => Ok(vec!["--tone".into(), t.into()]),
+        Some(t) => Err(format!("tone {t:?}: expected location or per-frame")),
+    }
+}
+
 /// The child's arguments for a render: a new run, or carrying on with one.
 pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) -> Result<Vec<String>, String> {
     if !valid_name(&b.preset) {
@@ -295,6 +311,13 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
         a.extend(["--memory-limit".into(), format!("{mb}MiB")]);
     }
     a.extend(bars_args(&b.bars, b.width, b.height, format)?);
+    if let Some(c) = &b.chunk_size {
+        if !matches!(c.as_str(), "octave" | "half" | "quarter" | "eighth") {
+            return Err(format!("chunk_size {c:?}: expected octave, half, quarter or eighth"));
+        }
+        a.extend(["--chunk-size".into(), c.clone()]);
+    }
+    a.extend(tone_args(&b.tone)?);
     if previews > 0 {
         a.extend(["--previews".into(), previews.to_string()]);
     }
@@ -328,6 +351,7 @@ pub fn assemble_args(b: &AssembleBody, run_dir: &Path, strip_size: (u32, u32)) -
     }
     a.extend(["--video-container".into(), format.into()]);
     a.extend(bars_args(&b.bars, w, h, format)?);
+    a.extend(tone_args(&b.tone)?);
     Ok(a)
 }
 
@@ -364,6 +388,8 @@ mod tests {
             format: None,
             memory_limit_mb: None,
             bars: None,
+            chunk_size: None,
+            tone: None,
         }
     }
 

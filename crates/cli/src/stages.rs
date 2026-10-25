@@ -106,7 +106,14 @@ pub fn keyframes(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: Ar
         Some(b) => RunConfig { width: b.picture.0, height: b.picture.1, ..cfg.clone() },
         None => cfg.clone(),
     };
-    let strip = StripRun::open(&strip_cfg, existing)?.memory_limit(cli.memory_limit);
+    let octaves = match cli.chunk_size.as_str() {
+        "octave" => 1.0,
+        "half" => 0.5,
+        "quarter" => 0.25,
+        "eighth" => 0.125,
+        other => return Err(MbError::InvalidArg { flag: "--chunk-size", reason: format!("{other:?}: expected octave, half, quarter or eighth") }.into()),
+    };
+    let strip = StripRun::open_in(&strip_cfg, existing, cli.run_dir.is_some())?.memory_limit(cli.memory_limit).chunk_octaves(octaves);
     let gpu = GpuCtx::new_with_engine(shader_dir, cfg.deep_engine, cli.allow_software_gpu)?;
     let previews = (cli.previews > 0).then(|| Previews { long_side: cli.previews, palette: opt.palette.clone(), inside: opt.inside });
     let out = strip.render(&gpu, cli.probe_oracle, previews.as_ref(), stop, ev)?;
@@ -213,6 +220,7 @@ pub fn per_frame_job(cli: &Cli) -> PerFrameJob {
         quiet: cli.quiet,
         tone_smoothing: cli.tone_smoothing,
         cpu_threads: cli.cpu_threads,
+        own_folder: cli.run_dir.is_some(),
     }
 }
 

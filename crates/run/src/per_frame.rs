@@ -96,6 +96,8 @@ pub struct PerFrameJob {
     pub tone_smoothing: f32,
     /// The CPU-thread budget (0 = every core), for the CPU-use figure.
     pub cpu_threads: usize,
+    /// The folder was named for this run (`--run-dir`).
+    pub own_folder: bool,
 }
 
 /// A frame-by-frame run, opened and ready to render.
@@ -163,7 +165,7 @@ impl PerFrameRun {
                     (row.id, row.config.sequence.clone(), cre, cim, next, Duration::from_secs(row.elapsed_secs))
                 }
                 (Some(_row), false, false) => {
-                    return Err(MbError::RunCollision(job.state_path.clone()).into());
+                    return Err(MbError::RunCollision { path: job.state_path.clone(), own_folder: job.own_folder }.into());
                 }
             };
 

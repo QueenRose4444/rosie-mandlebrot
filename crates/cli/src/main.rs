@@ -130,7 +130,7 @@ fn init_tracing(
                     .with_ansi(false)
                     .with_filter(file_filter);
                 let _ = registry.with(file_layer).try_init();
-                eprintln!("logging to {}", path.display());
+                println!("logging to {}", path.display());
                 return Some(guard);
             }
             Err(e) => {
@@ -194,7 +194,7 @@ fn archive_previous_latest_log(path: &std::path::Path) {
         counter += 1;
     }
     if std::fs::rename(path, &final_archived).is_ok() {
-        eprintln!("archived previous log to {}", final_archived.display());
+        println!("archived previous log to {}", final_archived.display());
     }
 }
 
@@ -213,7 +213,7 @@ fn main() -> std::process::ExitCode {
                         | MbError::PresetMissing(_)
                         | MbError::UnknownPalette(_)
                         | MbError::TomlParse { .. }
-                        | MbError::RunCollision(_)
+                        | MbError::RunCollision { .. }
                         | MbError::OutputInUse(_)
                 )
             });

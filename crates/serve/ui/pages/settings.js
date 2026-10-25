@@ -61,7 +61,40 @@ export function mount(root) {
         onchange: (e) => { s.notify[key] = e.target.value.trim(); e.target.value = s.notify[key]; save(label.split(' (')[0].toLowerCase()); } }),
       hint ? h('span', { class: 'hint' }, hint) : null);
 
+    // Rendering: trade-offs with a recommended default, each one a choice.
+    const choice = (label, key, options, hint, toText) => {
+      const sel = h('select', { class: 'input', 'aria-label': label,
+        onchange: (e) => { s[key] = toText ? toText(e.target.value) : e.target.value; save(`${label.toLowerCase()}: ${e.target.selectedOptions[0].textContent}`); } },
+        options.map(([value, text]) => h('option', { value, selected: String(s[key] ?? '') === value }, text)));
+      return h('label', { class: 'field' }, label, sel, hint ? h('span', { class: 'hint' }, hint) : null);
+    };
+    const rendering = h('fieldset', { class: 'box' }, h('legend', null, 'Rendering'),
+      choice('Strip pieces', 'chunk_size', [
+        ['octave', 'Whole octaves (recommended: fastest)'],
+        ['half', 'Half octaves (exactly the 0.2 output)'],
+        ['quarter', 'Quarter octaves (a little less memory, slower)'],
+        ['eighth', 'Eighth octaves (least memory, slowest)'],
+      ], 'How much of the zoom is rendered at a time. Whole octaves measured 8–18% faster than half; the frames differ only invisibly. Applies to new renders.'),
+      choice('Snapshots while rendering', 'previews', [
+        ['', 'The app\'s default (640 pixels)'],
+        ['320', 'Small (320 pixels)'],
+        ['640', 'Medium (640 pixels)'],
+        ['1080', 'Large (1080 pixels)'],
+        ['0', 'None'],
+      ], 'Saved as a render goes deeper, at most one a second, to look back over in Runs.', (v) => (v === '' ? null : Number(v))),
+      choice('Colouring', 'tone', [
+        ['location', 'By location (recommended: a point keeps its colour)'],
+        ['per-frame', 'Per frame (the 0.1 look: each frame stretches its own colours)'],
+      ], 'Used for new videos; recolouring a run keeps whatever you choose then.'),
+      choice('Video format', 'video_format', [
+        ['mp4', 'MP4 (recommended: plays in the browser)'],
+        ['mkv', 'MKV'],
+        ['webm', 'WebM VP9 (keeps transparent bars)'],
+        ['mov', 'MOV ProRes 4444 (keeps transparent bars, large files)'],
+      ], 'For new videos unless a render asks for something else (transparent bars pick WebM).'));
+
     body.append(
+      rendering,
       h('fieldset', { class: 'box' }, h('legend', null, 'Sharing this computer'),
         h('label', { class: 'check-line' },
           h('span', null, 'Pause rendering while a game is full screen', h('br'),
@@ -83,7 +116,8 @@ export function mount(root) {
           delStrip)),
       h('fieldset', { class: 'box' }, h('legend', null, 'When a run finishes'),
         textField('Discord webhook (posts a message, with the video if it is small enough)', 'discord_webhook', 'url', 'https://discord.com/api/webhooks/…'),
-        textField('Upload finished videos to (URL)', 'upload_url', 'url', 'https://…', 'Each finished video is sent here. Leave empty to keep videos on this computer only.')),
+        textField('Upload finished videos to (URL)', 'upload_url', 'url', 'https://…', 'Each finished video is sent here (a form upload, field "file"). Leave empty to keep videos on this computer only.'),
+        textField('Upload key (optional)', 'upload_api_key', 'password', '', 'Sent as an X-Api-Key header with each upload.')),
       h('fieldset', { class: 'box' }, h('legend', null, 'Who can open this page'),
         h('p', null, bindText()),
         h('p', { class: 'hint' }, 'This is set when the app starts, not here. The default is only this computer; starting it with ',

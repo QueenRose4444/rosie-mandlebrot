@@ -1,5 +1,5 @@
 // Entry point: the hash router, the top menu's Runs badge and the GPU chip.
-import { startEvents, on, latestState, isConnected, jobsOf } from './api.js';
+import { startEvents, on, latestState, isConnected, jobsOf, request } from './api.js';
 import { clear, h } from './dom.js';
 import * as library from './pages/library.js';
 import * as newRender from './pages/new.js';
@@ -108,10 +108,27 @@ function renderChip(state) {
   text.textContent = `${gpu.name || 'GPU'} · ${doing}`;
 }
 
+// App-wide notices: paused (with Resume / Pause), and ffmpeg missing.
+function renderNotices(state) {
+  const box = document.getElementById('notices');
+  clear(box);
+  if (!state) return;
+  if (state.paused) {
+    box.append(h('div', { class: 'notice' },
+      h('span', null, `Paused: ${state.pause_reason || 'paused'}. Renders wait; a paused render carries on when this ends. `),
+      h('button', { type: 'button', class: 'btn', onclick: () => request('POST', '/api/pause', { paused: false }) }, 'Resume')));
+  }
+  if (state.ffmpeg === false) {
+    box.append(h('div', { class: 'notice error' },
+      'ffmpeg is not installed, so videos cannot be made (renders are still saved). Install it — on Windows: winget install Gyan.FFmpeg — then restart the app.'));
+  }
+}
+
 function refreshHeader() {
   const s = latestState();
   renderBadge(s);
   renderChip(s);
+  renderNotices(s);
 }
 
 on('state', refreshHeader);
