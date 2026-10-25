@@ -670,6 +670,12 @@ impl Snapshotter {
     }
 }
 
+/// Frames in the strip's video at its own zoom speed.
+pub fn frame_count(m: &Manifest) -> u64 {
+    let end_span = deepest_frame_span(m).max(m.video_end_span.unwrap_or(0.0));
+    ((end_span / m.initial_span).ln() / m.zoom_factor.ln()).floor().max(0.0) as u64 + 1
+}
+
 /// The size of a preview no longer than `long` pixels on its long side, with
 /// the strip's own aspect.
 pub fn preview_size(g: &StripGeometry, long: u32) -> (u32, u32) {
@@ -695,7 +701,7 @@ pub fn write_values(shot: &Shot, path: &Path) -> anyhow::Result<()> {
     }
     out.extend_from_slice(&shot.span.to_le_bytes());
     out.extend_from_slice(&(shot.k.min(u64::from(u32::MAX)) as u32).to_le_bytes());
-    for px in wts.chunks_exact(WEIGHT_SLOTS) {
+    for px in wts.as_chunks::<WEIGHT_SLOTS>().0 {
         let used: Vec<u32> = px.iter().copied().filter(|&e| e != u32::MAX).collect();
         out.push(used.len() as u8);
         for e in used {
@@ -715,7 +721,7 @@ pub fn write_values(shot: &Shot, path: &Path) -> anyhow::Result<()> {
 pub fn recolour_weights(wts: &[u32], lut: &[[u8; 3]; 1024], inside: [u8; 3]) -> Vec<u8> {
     use rosie_mandlebrot_render::assembler::WEIGHT_SLOTS;
     let mut out = Vec::with_capacity(wts.len() / WEIGHT_SLOTS * 4);
-    for px in wts.chunks_exact(WEIGHT_SLOTS) {
+    for px in wts.as_chunks::<WEIGHT_SLOTS>().0 {
         let mut acc = [0f64; 3];
         for &e in px.iter().filter(|&&e| e != u32::MAX) {
             let i = (e >> 16) as usize;
@@ -735,7 +741,7 @@ pub fn recolour_weights(wts: &[u32], lut: &[[u8; 3]; 1024], inside: [u8; 3]) -> 
 
 /// Save RGBA8 as a JPEG (previews).
 pub fn write_jpeg(rgba: &[u8], w: u32, h: u32, path: &Path) -> anyhow::Result<()> {
-    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| MbError::io(parent, e))?;
     }

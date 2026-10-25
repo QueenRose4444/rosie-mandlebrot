@@ -379,6 +379,18 @@ export function mount(root, params, { go }) {
     if (cached) { showValues(cached); return; }
     showEmpty('Preparing the preview…');
     caption.textContent = '';
+    // A values file made when the render finished: no GPU job needed.
+    if (r.values) {
+      try {
+        const parsed = parseRmw(await getBytes(r.values));
+        if (!alive || seq !== loadSeq) return;
+        valuesCache.set(r.id, parsed);
+        showValues(parsed);
+        return;
+      } catch {
+        // Fall through and make a new one.
+      }
+    }
     const dims = valuesSize(r.width, r.height);
     let job;
     try {
@@ -430,7 +442,7 @@ export function mount(root, params, { go }) {
     empty.hidden = true;
     canvas.hidden = false;
     canvas.style.aspectRatio = `${v.width} / ${v.height}`;
-    caption.textContent = `The last frame of the run${Number.isFinite(v.span) ? `, view width ${fmtSpan(v.span)}` : ''}, at ${v.width} × ${v.height}.`;
+    caption.textContent = `Frame ${v.k + 1} of the video${Number.isFinite(v.span) ? `, view width ${fmtSpan(v.span)}` : ''}, at ${v.width} × ${v.height}.`;
     schedule();
   }
 

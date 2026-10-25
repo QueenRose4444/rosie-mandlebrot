@@ -224,6 +224,13 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> anyhow::Result<()> {
     // `serve` is the web UI: its own arguments, its own long-lived process.
+    // Double-clicked in Explorer (no arguments, a console of its own): the web
+    // UI with a tray icon, the browser opened, and no console window left behind.
+    if std::env::args().len() == 1 && rosie_mandlebrot_serve::desktop::launched_by_double_click() {
+        rosie_mandlebrot_serve::desktop::hide_console();
+        init_serve_logging();
+        return rosie_mandlebrot_serve::main(vec!["--tray".into(), "--open".into()], env!("CARGO_PKG_VERSION"));
+    }
     let mut args = std::env::args();
     if args.nth(1).as_deref() == Some("serve") {
         init_serve_logging();
@@ -309,7 +316,9 @@ fn run() -> anyhow::Result<()> {
     }
 
     if cli.assemble {
-        let stop = Arc::new(AtomicBool::new(false));
+        let signals = StdinSignals::default();
+        let _stdin = rosie_mandlebrot_run::signals::spawn_listener(signals.clone());
+        let stop = signals.stop.clone();
         install_stop_handlers(&cli, stop.clone());
         let gpu = GpuCtx::new_with_engine(shader_dir, run_cfg.deep_engine, cli.allow_software_gpu)?;
         let size = cli.width.zip(cli.height);
@@ -326,7 +335,7 @@ fn run() -> anyhow::Result<()> {
         let _stdin = rosie_mandlebrot_run::signals::spawn_listener(signals.clone());
         install_stop_handlers(&cli, signals.stop.clone());
         size_thread_pool(&cli);
-        let code = crate::stages::keyframes(&cli, &run_cfg, shader_dir, signals.stop.clone(), events)?;
+        let code = crate::stages::keyframes(&cli, &run_cfg, shader_dir, signals.stop.clone(), &signals.pause, events)?;
         std::io::stdout().flush().ok();
         std::process::exit(code);
     }

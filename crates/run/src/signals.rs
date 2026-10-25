@@ -1,5 +1,6 @@
 //! Reads commands from stdin on a background thread:
 //!   stop / quit   -> flip the stop flag (graceful drain + video encode)
+//!   pause         -> stop without making the video (the run is resumed later)
 //!   status        -> flip the status flag (main prints current snapshot)
 //!   flush         -> flip the flush flag (force checkpoint commit)
 //!
@@ -14,6 +15,8 @@ use std::thread::JoinHandle;
 pub struct StdinSignals {
     pub stop: Arc<AtomicBool>,
     pub status_request: Arc<AtomicBool>,
+    /// Set with `stop` by `pause`: end without the video step.
+    pub pause: Arc<AtomicBool>,
 }
 
 pub fn spawn_listener(sig: StdinSignals) -> JoinHandle<()> {
@@ -32,6 +35,12 @@ pub fn spawn_listener(sig: StdinSignals) -> JoinHandle<()> {
                         match cmd.as_str() {
                             "stop" | "quit" | "exit" => {
                                 tracing::info!("stop command received from stdin");
+                                sig.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                                break;
+                            }
+                            "pause" => {
+                                tracing::info!("pause command received from stdin: stopping without making the video");
+                                sig.pause.store(true, std::sync::atomic::Ordering::SeqCst);
                                 sig.stop.store(true, std::sync::atomic::Ordering::SeqCst);
                                 break;
                             }

@@ -8,7 +8,7 @@ use rosie_mandlebrot_render::GpuCtx;
 use rosie_mandlebrot_core::palette::{parse_hex, parse_stops, Palette};
 use rosie_mandlebrot_run::assemble::{alpha_codec, BarStyle, Bars, Options, Tone};
 use rosie_mandlebrot_run::per_frame::{Explicit, PerFrameJob};
-use rosie_mandlebrot_run::assemble::{frame_at, preview_size, recolour_weights, write_jpeg, write_values};
+use rosie_mandlebrot_run::assemble::{frame_at, frame_count, preview_size, recolour_weights, write_jpeg, write_values};
 use rosie_mandlebrot_run::strip::{strip_dir, Existing, Previews, StripRun};
 use rosie_mandlebrot_run::{Event, Events};
 use rosie_mandlebrot_store::keyframes::read_manifest;
@@ -90,7 +90,7 @@ pub fn assemble_logged(gpu: &GpuCtx, output: &Path, size: Option<(u32, u32)>, op
 /// Render the strip, then the video from it. Returns the exit code: 0, 1 when
 /// the strip stopped on a failure, 3 when only the video step failed (the
 /// strip is kept; `--assemble` retries it).
-pub fn keyframes(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: Arc<AtomicBool>, ev: &dyn Events) -> anyhow::Result<i32> {
+pub fn keyframes(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: Arc<AtomicBool>, pause: &AtomicBool, ev: &dyn Events) -> anyhow::Result<i32> {
     let existing = if cli.new_run {
         Existing::Replace
     } else if cli.resume {
@@ -113,6 +113,10 @@ pub fn keyframes(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: Ar
     if out.stop_reason.is_failure() {
         return Ok(1);
     }
+    if pause.load(std::sync::atomic::Ordering::SeqCst) {
+        tracing::info!("paused: the strip is kept and resumes where it stopped; no video yet");
+        return Ok(0);
+    }
     if out.stop_reason.is_recycle() || cfg.no_video || cfg.video_codec == "none" {
         return Ok(0);
     }
@@ -124,12 +128,13 @@ pub fn keyframes(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: Ar
 /// `--values`: what frame N's pixels are made of, for recolouring without the
 /// GPU. Writes `<output>/values/v_<k>_<w>x<h>.rmw` and reports it as an image event.
 pub fn values(cli: &Cli, cfg: &RunConfig, which: &str, shader_dir: Option<&Path>, ev: &dyn Events) -> anyhow::Result<()> {
-    let k = match which {
-        "last" => None,
-        n => Some(n.parse::<u64>().map_err(|_| MbError::InvalidArg { flag: "--values", reason: format!("{n:?}: expected a frame number or last") })?),
-    };
     let dir = strip_dir(&cfg.output);
     let m = read_manifest(&dir)?.ok_or_else(|| MbError::InvalidArg { flag: "--values", reason: format!("no strip in {}", dir.display()) })?;
+    let k = match which {
+        "last" => None,
+        "mid" => Some(frame_count(&m) / 2),
+        n => Some(n.parse::<u64>().map_err(|_| MbError::InvalidArg { flag: "--values", reason: format!("{n:?}: expected a frame number, mid or last") })?),
+    };
     let gpu = GpuCtx::new_with_engine(shader_dir, cfg.deep_engine, cli.allow_software_gpu)?;
     let (w, h) = preview_size(&m.geometry, cli.values_size);
     let opt = assemble_options(cli, cfg)?;
@@ -142,7 +147,7 @@ pub fn values(cli: &Cli, cfg: &RunConfig, which: &str, shader_dir: Option<&Path>
     let again = recolour_weights(shot.weights.as_deref().unwrap_or_default(), &lut, opt.inside.unwrap_or(lut[1023]));
     let gpu_rgba = shot.rgba.as_deref().unwrap_or_default();
     let worst = again.iter().zip(gpu_rgba).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
-    let off = again.chunks_exact(4).zip(gpu_rgba.chunks_exact(4)).filter(|(a, b)| a != b).count();
+    let off = again.as_chunks::<4>().0.iter().zip(gpu_rgba.as_chunks::<4>().0).filter(|(a, b)| a != b).count();
     tracing::info!("recolour check: {off} of {} pixels differ from the GPU frame, largest difference {worst}", w * h);
     ev.emit(Event::Image { path: path.display().to_string(), k: shot.k });
     Ok(())
@@ -180,7 +185,7 @@ pub fn heroes(cli: &Cli, dir: &Path, shader_dir: Option<&Path>, ev: &dyn Events)
         };
         let frame = rosie_mandlebrot_render::render_frame(&gpu, &req)?;
         let rgb = rosie_mandlebrot_core::encode::encode_rgb(&frame.pixels, frame.width, frame.height, frame.max_iter, cfg.palette);
-        let rgba: Vec<u8> = rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+        let rgba: Vec<u8> = rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect();
         let path = dir.join(format!("{name}.jpg"));
         write_jpeg(&rgba, frame.width, frame.height, &path)?;
         tracing::info!("{name}: span {span:.2e}, {} iterations -> {}", req.max_iter, path.display());

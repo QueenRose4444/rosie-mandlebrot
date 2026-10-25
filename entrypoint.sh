@@ -1,35 +1,17 @@
 #!/bin/sh
-# Render entrypoint. The container is `restart: unless-stopped`, so when a run
+# Container entrypoint.
+#
+# `serve ...` (the image's default command) starts the web UI: every render is
+# started, watched and resumed from the browser, so there is nothing to guard.
+#
+# Anything else is a command-line render, as before 0.3. The container is
+# `restart: unless-stopped`, so when a run
 # finishes (the binary encodes the video, then exits 0) Docker relaunches it.
 # Without this guard it would resume, immediately re-hit the stop condition,
 # render junk frames and re-encode the video in a loop. So: if the current run
 # already completed (progress.json says status=stopped), idle instead of
 # re-running. Start a new run by clearing /state and /out.
 set -e
-
-# Only a *successfully completed* run idles. status=failed means the binary hit
-# a render error, a dead encode pipeline, or persistent save failures — those are
-# worth retrying, and resuming costs nothing because every frame is checkpointed.
-# Idling on them would retire the container permanently on one transient fault.
-# Re-making the video of a finished run, or asking for a new one, is not a restart loop.
-case " $* " in
-    *" --encode-only "*|*" --assemble "*|*" --new-run "*) explicit=1 ;;
-    *) explicit=0 ;;
-esac
-
-# A run stopped by `stop`, Ctrl+C, `docker stop` or a host shutdown
-# (stop_reason "stdin/signal") is interrupted, not finished: resume it.
-if [ "$explicit" = 0 ] && [ -f /out/progress.json ] \
-   && grep -Eq '"status"[[:space:]]*:[[:space:]]*"stopped"' /out/progress.json \
-   && ! grep -Eq '"stop_reason"[[:space:]]*:[[:space:]]*"stdin/signal"' /out/progress.json; then
-    echo "[entrypoint] run already complete (progress.json status=stopped) — idling."
-    echo "[entrypoint] clear /state and /out to start a new run, then recreate this container."
-    exec sleep infinity
-fi
-
-if [ -f /out/progress.json ] && grep -Eq '"status"[[:space:]]*:[[:space:]]*"failed"' /out/progress.json; then
-    echo "[entrypoint] previous attempt failed; resuming from the last checkpoint."
-fi
 
 # Make sure the Vulkan loader can find the NVIDIA driver.
 #
@@ -87,6 +69,34 @@ if [ ! -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ] \
     printf '%s\n' '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' > "$vendor"
     export __EGL_VENDOR_LIBRARY_FILENAMES="$vendor"
     echo "[entrypoint] no NVIDIA EGL vendor file found; using $vendor"
+fi
+
+if [ "$1" = "serve" ]; then
+    exec nice -n 10 rosie_mandlebrot "$@"
+fi
+
+# Only a *successfully completed* run idles. status=failed means the binary hit
+# a render error, a dead encode pipeline, or persistent save failures — those are
+# worth retrying, and resuming costs nothing because every frame is checkpointed.
+# Idling on them would retire the container permanently on one transient fault.
+# Re-making the video of a finished run, or asking for a new one, is not a restart loop.
+case " $* " in
+    *" --encode-only "*|*" --assemble "*|*" --new-run "*) explicit=1 ;;
+    *) explicit=0 ;;
+esac
+
+# A run stopped by `stop`, Ctrl+C, `docker stop` or a host shutdown
+# (stop_reason "stdin/signal") is interrupted, not finished: resume it.
+if [ "$explicit" = 0 ] && [ -f /out/progress.json ] \
+   && grep -Eq '"status"[[:space:]]*:[[:space:]]*"stopped"' /out/progress.json \
+   && ! grep -Eq '"stop_reason"[[:space:]]*:[[:space:]]*"stdin/signal"' /out/progress.json; then
+    echo "[entrypoint] run already complete (progress.json status=stopped) — idling."
+    echo "[entrypoint] clear /state and /out to start a new run, then recreate this container."
+    exec sleep infinity
+fi
+
+if [ -f /out/progress.json ] && grep -Eq '"status"[[:space:]]*:[[:space:]]*"failed"' /out/progress.json; then
+    echo "[entrypoint] previous attempt failed; resuming from the last checkpoint."
 fi
 
 exec nice -n 10 rosie_mandlebrot --output /out --state /state/state.db --resume "$@"

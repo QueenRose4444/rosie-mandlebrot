@@ -95,7 +95,10 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 # the state volume.
 ENV XDG_DATA_HOME=/state
 
-VOLUME ["/out", "/state"]
+# /data: the web UI's runs, videos and settings. /out and /state: a
+# command-line render's frames and checkpoint.
+VOLUME ["/data", "/out", "/state"]
+EXPOSE 8460
 
 # Do not run as root. A long run writes tens of thousands of frames and a
 # state.db into bind-mounted directories, and as root every one of them lands
@@ -108,10 +111,13 @@ VOLUME ["/out", "/state"]
 # land owned by you. DEPLOY.md and COMMANDS.md both show the flag.
 RUN groupadd --gid 10001 mandelbrot \
  && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin mandelbrot \
- && mkdir -p /out /state \
- && chown -R 10001:10001 /out /state /app
+ && mkdir -p /data /out /state \
+ && chown -R 10001:10001 /data /out /state /app
 USER 10001:10001
 
-# Wrapper that idles when the run is already complete (see entrypoint.sh).
-# The compose `command:` supplies the render profile flags ($@).
+# The web UI by default, carrying on with any render a restart interrupted.
+# Give render flags instead (e.g. `--preset seahorse_deep --res 1080p`) for a
+# command-line render; the entrypoint then guards against re-running a
+# finished one (see entrypoint.sh).
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["serve", "--host", "0.0.0.0", "--data", "/data", "--resume-on-start"]

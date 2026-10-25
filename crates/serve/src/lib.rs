@@ -7,8 +7,10 @@
 
 mod api;
 mod app;
+pub mod desktop;
 mod estimate;
 mod jobs;
+mod notify;
 mod runs;
 mod store;
 mod ui;
@@ -50,7 +52,16 @@ pub struct ServeArgs {
     /// Use the folder beside the program for everything.
     #[arg(long)]
     pub portable: bool,
+
+    /// Windows: show an icon in the notification area (Open, Pause, Quit).
+    #[arg(long)]
+    pub tray: bool,
 }
+
+/// Why the queue is paused, when it was paused from the menu or the page.
+pub(crate) const PAUSED_BY_HAND: &str = "paused by hand";
+const PAUSED_FOR_GAME: &str = "a full-screen app (a game?) is running";
+const PAUSED_BY_FILE: &str = "the pause file exists";
 
 /// Run the server until Ctrl+C. `args` are the arguments after `serve`.
 pub fn main(args: Vec<String>, version: &'static str) -> anyhow::Result<()> {
@@ -63,9 +74,88 @@ pub fn main(args: Vec<String>, version: &'static str) -> anyhow::Result<()> {
     let data = data.canonicalize().unwrap_or(data);
     let data = strip_verbatim(data);
     let exe = std::env::current_exe()?;
-    let app = App::new(data, exe, version);
+    let app = App::new(data, exe, version, a.previews);
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    if a.tray {
+        return with_tray(app, a, rt);
+    }
     rt.block_on(serve(app, a))
+}
+
+/// The server on its own thread, the tray icon's message loop on this one.
+fn with_tray(app: Arc<App>, a: ServeArgs, rt: tokio::runtime::Runtime) -> anyhow::Result<()> {
+    let url = format!("http://{}:{}", if a.host == "0.0.0.0" { "localhost" } else { a.host.as_str() }, a.port);
+    let tray = desktop::Tray::new("Rosie_Mandlebrot")?;
+    let handle = tray.handle();
+    let rt = Arc::new(rt);
+    let server = {
+        let (rt, app) = (rt.clone(), app.clone());
+        std::thread::spawn(move || {
+            let r = rt.block_on(serve(app, a));
+            handle.quit();
+            r
+        })
+    };
+    let state_app = app.clone();
+    let state = move || {
+        let paused = state_app.inner.lock().unwrap().paused;
+        let jobs = state_app.jobs();
+        let status = match jobs.iter().find(|j| j.state == jobs::JobState::Running) {
+            Some(j) => format!("{} {}%", j.label, (j.progress.fraction.unwrap_or(0.0) * 100.0).round()),
+            None if paused => "paused".into(),
+            None => "idle".into(),
+        };
+        desktop::TrayState { paused, status }
+    };
+    let on = |cmd: desktop::TrayCmd| match cmd {
+        desktop::TrayCmd::Open => open_browser(&url),
+        desktop::TrayCmd::Pause => rt.block_on(app.set_paused(true, Some(PAUSED_BY_HAND.into()))),
+        desktop::TrayCmd::Resume => rt.block_on(app.set_paused(false, None)),
+        desktop::TrayCmd::Quit => {
+            // A running render stops gracefully: its strip is kept and resumes next time.
+            rt.block_on(async {
+                if app.is_busy() {
+                    app.set_paused(true, Some(PAUSED_BY_HAND.into())).await;
+                }
+                // Give the child a moment to finish its chunk and exit.
+                for _ in 0..100 {
+                    if !app.is_busy() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            });
+        }
+    };
+    tray.run(state, on)?;
+    drop(server);
+    Ok(())
+}
+
+/// Pause while a full-screen app is in front (when the setting is on) or while
+/// a file named `pause` exists in the data folder (for a server: `touch` it
+/// before another container needs the GPU, delete it afterwards).
+async fn pause_watcher(app: Arc<App>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let settings: store::Settings = store::load(&app.data.join("settings.json"));
+        let reason = if app.data.join("pause").exists() {
+            Some(PAUSED_BY_FILE)
+        } else if settings.pause_when_fullscreen && desktop::fullscreen_busy() {
+            Some(PAUSED_FOR_GAME)
+        } else {
+            None
+        };
+        let (paused, current) = {
+            let inner = app.inner.lock().unwrap();
+            (inner.paused, inner.pause_reason.clone())
+        };
+        match reason {
+            Some(r) if !paused => app.set_paused(true, Some(r.into())).await,
+            None if paused && matches!(current.as_deref(), Some(PAUSED_BY_FILE | PAUSED_FOR_GAME)) => app.set_paused(false, None).await,
+            _ => {}
+        }
+    }
 }
 
 /// `\\?\C:\…` from canonicalize would leak into every path the children see.
@@ -87,6 +177,7 @@ async fn serve(app: Arc<App>, a: ServeArgs) -> anyhow::Result<()> {
         });
     }
     tokio::spawn(app.clone().worker());
+    tokio::spawn(pause_watcher(app.clone()));
     if a.resume_on_start {
         for meta in runs::list_meta(&app.data) {
             let run = runs::load_run(&app.data, meta.clone(), None);
@@ -136,11 +227,29 @@ pub fn open_browser(url: &str) {
 /// What happens when a job ends: a finished render gets its colour-editor
 /// values made straight away, and notifications go out.
 pub(crate) fn after_job(app: &Arc<App>, job: &jobs::Job) {
+    if job.pausing {
+        return;
+    }
     if job.kind == "render" && job.state != jobs::JobState::Failed {
         if let Some(run) = &job.run_id {
             let body = jobs::ValuesBody { run_id: run.clone(), k: None, width: Some(640), height: None };
             let args = jobs::values_args(&body, &runs::run_dir(&app.data, run));
             app.enqueue("values", Some(run.clone()), format!("colours of {run}"), args, true, jobs::Progress::default());
         }
+    }
+    if matches!(job.kind, "render" | "assemble") {
+        let settings: store::Settings = store::load(&app.data.join("settings.json"));
+        let n = settings.notify;
+        if n.discord_webhook.is_empty() && n.upload_url.is_empty() {
+            return;
+        }
+        // The video file, from its /files/… URL.
+        let video = job.result.video.as_deref().and_then(|u| u.strip_prefix("/files/")).map(|rel| app.data.join(rel)).filter(|p| p.exists());
+        let job = job.clone();
+        tokio::task::spawn_blocking(move || {
+            for line in notify::send(&n, &job, video.as_deref()) {
+                tracing::info!("job {}: {line}", job.id);
+            }
+        });
     }
 }

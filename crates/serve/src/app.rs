@@ -14,6 +14,8 @@ const FINISHED_KEPT: usize = 20;
 
 pub struct App {
     pub data: PathBuf,
+    /// Snapshot size for renders (0 = none).
+    pub previews: u32,
     /// This program, run as each job's child.
     pub exe: PathBuf,
     pub version: &'static str,
@@ -30,8 +32,12 @@ pub struct Inner {
     next_id: u64,
     /// The running child's stdin, for a graceful stop.
     stdin: Option<ChildStdin>,
-    /// Paused for a game: the queue holds, and a stopped render is resumed later.
+    /// Paused (a game is full screen, the pause file exists, or someone
+    /// pressed Pause): the queue holds, and a paused render resumes later.
     pub paused: bool,
+    pub pause_reason: Option<String>,
+    /// Runs whose render was paused, to resume when the pause ends.
+    to_resume: Vec<String>,
 }
 
 pub fn now() -> i64 {
@@ -39,9 +45,9 @@ pub fn now() -> i64 {
 }
 
 impl App {
-    pub fn new(data: PathBuf, exe: PathBuf, version: &'static str) -> Arc<App> {
+    pub fn new(data: PathBuf, exe: PathBuf, version: &'static str, previews: u32) -> Arc<App> {
         let (changed, _) = watch::channel((0, 0));
-        Arc::new(App { data, exe, version, gpu_name: Mutex::new(None), inner: Mutex::new(Inner::default()), changed, wake: Notify::new() })
+        Arc::new(App { data, previews, exe, version, gpu_name: Mutex::new(None), inner: Mutex::new(Inner::default()), changed, wake: Notify::new() })
     }
 
     /// Tell watchers something changed (`runs` too when the run list did).
@@ -79,6 +85,7 @@ impl App {
                 priority,
                 stop_requested: false,
                 stage_started: None,
+                pausing: false,
             };
             inner.jobs.push(job.clone());
             job
@@ -160,8 +167,50 @@ impl App {
         self.bump(runs);
     }
 
-    /// Wake the worker (after a pause ends).
-    pub fn kick(&self) {
+    /// Pause or resume the queue. Pausing ends a running render without its
+    /// video step (its strip is kept); resuming queues it again, first.
+    pub async fn set_paused(self: &Arc<Self>, paused: bool, reason: Option<String>) {
+        let (stdin, resume) = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.paused == paused {
+                inner.pause_reason = reason.clone().or(inner.pause_reason.take());
+                return;
+            }
+            inner.paused = paused;
+            inner.pause_reason = if paused { reason } else { None };
+            if paused {
+                let running = inner.jobs.iter_mut().find(|j| j.state == JobState::Running && j.kind == "render");
+                let mut run = None;
+                if let Some(j) = running {
+                    j.stop_requested = true;
+                    j.pausing = true;
+                    run = j.run_id.clone();
+                }
+                if let Some(r) = run {
+                    inner.to_resume.push(r);
+                    (inner.stdin.take(), Vec::new())
+                } else {
+                    (None, Vec::new())
+                }
+            } else {
+                (None, std::mem::take(&mut inner.to_resume))
+            }
+        };
+        if let Some(mut s) = stdin {
+            let _ = s.write_all(b"pause\n").await;
+            let _ = s.flush().await;
+            self.inner.lock().unwrap().stdin = Some(s);
+        }
+        for run in resume {
+            if let Some(meta) = crate::runs::read_meta(&self.data, &run) {
+                match crate::api::queue_render_with(self, &meta, true, self.previews, true) {
+                    Ok(j) => tracing::info!("resuming {run} after the pause (job {})", j.id),
+                    Err(e) => tracing::warn!("could not resume {run}: {e}"),
+                }
+            }
+        }
+        tracing::info!("{}", if paused { "paused" } else { "resumed" });
+        self.bump(true);
         self.wake.notify_one();
     }
 
@@ -180,6 +229,10 @@ impl App {
                 if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == job.id) {
                     j.finished_at = Some(now());
                     match &outcome {
+                        Ok(0) if j.pausing => {
+                            j.state = JobState::Stopped;
+                            j.push_log("paused: resumes when the pause ends".into());
+                        }
                         Ok(0) if j.stop_requested => j.state = JobState::Stopped,
                         Ok(0) => j.state = JobState::Done,
                         Ok(code) => {

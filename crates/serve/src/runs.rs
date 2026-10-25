@@ -51,6 +51,8 @@ pub struct Run {
     pub videos: Vec<Video>,
     pub snapshots: Vec<SnapshotView>,
     pub preview: Option<String>,
+    /// The newest values file (for recolouring in the browser), if one was made.
+    pub values: Option<String>,
     pub job_id: Option<u64>,
     pub settings: RenderBody,
 }
@@ -76,6 +78,16 @@ fn mtime(p: &Path) -> i64 {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// The most recently written file with this extension in `dir`.
+fn newest(dir: &Path, ext: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(ext))
+        .max_by_key(|p| mtime(p))
 }
 
 pub fn read_meta(data: &Path, id: &str) -> Option<RunMeta> {
@@ -148,7 +160,14 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
         fps: s.fps.unwrap_or(30),
         zoom_factor: manifest.as_ref().map(|m| m.zoom_factor).or(s.zoom_factor),
         palette,
-        preview: snapshots.last().map(|s| s.url.clone()),
+        // While it renders, the newest snapshot; afterwards the middle one (the
+        // deepest frames of a zoom are often past its detail).
+        preview: match job {
+            Some((_, true)) => snapshots.last(),
+            _ => snapshots.get(snapshots.len() / 2),
+        }
+        .map(|s| s.url.clone()),
+        values: newest(&out.join("values"), "rmw").and_then(|p| file_url(data, &p)),
         videos,
         snapshots,
         job_id: job.map(|(id, _)| id),

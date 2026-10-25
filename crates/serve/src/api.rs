@@ -58,6 +58,7 @@ pub fn router(app: Arc<App>, previews: u32) -> Router {
         .route("/api/jobs", post(new_job))
         .route("/api/jobs/{id}/stop", post(stop_job))
         .route("/api/estimate", get(estimate))
+        .route("/api/pause", post(pause))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/favourites", get(get_favourites).put(put_favourites))
         .nest_service("/files/runs", tower_http::services::ServeDir::new(runs::runs_dir(&data)))
@@ -77,6 +78,7 @@ fn state_json(app: &App) -> serde_json::Value {
         "version": app.version,
         "gpu": { "name": app.gpu_name.lock().unwrap().clone(), "busy": app.is_busy() },
         "paused": app.inner.lock().unwrap().paused,
+        "pause_reason": app.inner.lock().unwrap().pause_reason.clone(),
         "jobs": app.jobs(),
         "data_dir": app.data.display().to_string(),
     })
@@ -192,11 +194,16 @@ fn spans(preset: &str, zoom_end: Option<f64>) -> (Option<f64>, Option<f64>) {
 
 /// Queue a render for a run (new, or resuming it).
 pub fn queue_render(app: &Arc<App>, meta: &RunMeta, resume: bool, previews: u32) -> Result<jobs::Job, String> {
+    queue_render_with(app, meta, resume, previews, false)
+}
+
+/// [`queue_render`], ahead of the queue when `first`.
+pub fn queue_render_with(app: &Arc<App>, meta: &RunMeta, resume: bool, previews: u32, first: bool) -> Result<jobs::Job, String> {
     let dir = runs::run_dir(&app.data, &meta.id);
     let args = jobs::render_args(&meta.settings, &dir, resume, previews)?;
     let (start_span, end_span) = spans(&meta.preset, meta.settings.zoom_end);
     let progress = Progress { start_span, end_span, ..Default::default() };
-    Ok(app.enqueue("render", Some(meta.id.clone()), meta.label.clone(), args, false, progress))
+    Ok(app.enqueue("render", Some(meta.id.clone()), meta.label.clone(), args, first, progress))
 }
 
 async fn resume_run(State(c): State<Ctx>, UrlPath(id): UrlPath<String>) -> ApiResult<Json<jobs::Job>> {
@@ -214,7 +221,7 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             // Checked before the run folder exists.
             jobs::render_args(&b, std::path::Path::new("x"), false, 0).map_err(bad)?;
             let id = runs::new_run_id(&app.data, &b.preset, now() + local_offset_secs());
-            let label = format!("{} · {}×{}", b.preset, b.width, b.height);
+            let label = b.preset.clone();
             let meta = RunMeta { id, preset: b.preset.clone(), label, created: now(), settings: b };
             runs::write_meta(&app.data, &meta).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             queue_render(app, &meta, false, c.previews).map_err(bad)?
@@ -251,6 +258,16 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
 
 async fn stop_job(State(c): State<Ctx>, UrlPath(id): UrlPath<u64>) -> ApiResult<Json<jobs::Job>> {
     c.app.stop(id).await.map(Json).ok_or_else(|| not_found("such job"))
+}
+
+#[derive(Deserialize)]
+struct PauseBody {
+    paused: bool,
+}
+
+async fn pause(State(c): State<Ctx>, Json(b): Json<PauseBody>) -> Json<serde_json::Value> {
+    c.app.set_paused(b.paused, b.paused.then(|| crate::PAUSED_BY_HAND.to_string())).await;
+    Json(state_json(&c.app))
 }
 
 #[derive(Deserialize)]

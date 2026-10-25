@@ -60,7 +60,7 @@ fn local_table(data: &Path) -> (BTreeMap<i32, (f64, f64)>, f64, usize) {
 }
 
 fn default_us(dec: i32) -> f64 {
-    DEFAULT_US.iter().filter(|(d, _)| *d >= dec).last().map_or(DEFAULT_US[0].1, |(_, us)| *us)
+    DEFAULT_US.iter().rfind(|(d, _)| *d >= dec).map_or(DEFAULT_US[0].1, |(_, us)| *us)
 }
 
 /// Peak memory at a frame size, from two measured points (1080² 200 MB and

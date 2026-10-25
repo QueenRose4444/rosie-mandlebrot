@@ -3,19 +3,15 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Notify {
     /// A Discord webhook URL: a message when a run finishes.
     pub discord_webhook: String,
     /// A URL the finished video is POSTed to (multipart, field `file`).
     pub upload_url: String,
-}
-
-impl Default for Notify {
-    fn default() -> Self {
-        Notify { discord_webhook: String::new(), upload_url: String::new() }
-    }
+    /// Sent as `X-Api-Key` with the upload, when set.
+    pub upload_api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -41,7 +37,7 @@ impl Settings {
             }
         }
         for (name, url) in [("discord_webhook", &self.notify.discord_webhook), ("upload_url", &self.notify.upload_url)] {
-            if !url.is_empty() && !(url.starts_with("https://") || url.starts_with("http://")) {
+            if !(url.is_empty() || url.starts_with("https://") || url.starts_with("http://")) {
                 return Err(format!("{name} must start with https:// or http://"));
             }
         }

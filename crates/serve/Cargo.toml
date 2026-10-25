@@ -23,5 +23,17 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "io-util", "time", "fs", "net", "signal"] }
 tower-http = { version = "0.6", features = ["fs"] }
 
+[target.'cfg(windows)'.dependencies]
+# The tray icon, full-screen check and console detection in desktop.rs.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+ureq = "3"
+
 [dev-dependencies]
 tempfile = "3"

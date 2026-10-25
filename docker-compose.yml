@@ -1,19 +1,21 @@
-# A long-running render on an NVIDIA GPU. See DEPLOY.md.
+# Rosie_Mandlebrot's web UI on a server with an NVIDIA GPU, in one file.
 #
-#   docker compose up -d                      the render
-#   docker compose --profile gallery up -d    plus a frame gallery on http://localhost:8080
+#   Portainer: Stacks -> Add stack -> Web editor, paste this file, Deploy.
+#   Or:        docker compose up -d   (in the folder holding this file)
 #
-# The render restarts after a crash or reboot and resumes from the last saved
-# frame. A finished run idles; empty both folders to start a new one.
+# Then open http://<the server's address>:8460 in a browser. Renders, videos
+# and settings live in the rosie_mandlebrot_data volume; a render interrupted
+# by a restart carries on by itself. There is no password: keep port 8460 on
+# your own network (or behind your own proxy). See DEPLOY.md for the GPU setup.
 services:
-  mandelbrot:
+  rosie_mandlebrot:
     image: ghcr.io/queenrose4444/rosie-mandlebrot:latest
-    build: .
     container_name: rosie_mandlebrot
     restart: unless-stopped
-    # Type `stop` + Enter after `docker attach rosie_mandlebrot` to end a run cleanly.
-    stdin_open: true
-    tty: true
+    ports:
+      - "8460:8460"
+    # The GPU renders; the CPU makes the reference orbit and encodes the video.
+    # cpus is a hard cap ("4.0" = four cores); mem_limit a memory cap.
     cpus: "4.0"
     mem_limit: 2g
     environment:
@@ -21,13 +23,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
     volumes:
-      - ./mandelbrot_out:/out
-      - ./mandelbrot_state:/state
-    # The entrypoint adds --output /out --state /state/state.db --resume.
-    command: >
-      --preset seahorse_deep
-      --res 1080p
-      --max-storage 50GB
+      - rosie_mandlebrot_data:/data
     deploy:
       resources:
         reservations:
@@ -36,15 +32,5 @@ services:
               count: 1
               capabilities: [compute, utility, graphics]
 
-  gallery:
-    profiles: ["gallery"]
-    build: ./gallery
-    container_name: rosie_mandlebrot_gallery
-    restart: unless-stopped
-    mem_limit: 384m
-    ports:
-      - "8080:80"
-    volumes:
-      - ./mandelbrot_out:/usr/share/nginx/html/frames:ro
-      - ./gallery/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./gallery/index.html:/usr/share/nginx/html/site/index.html:ro
+volumes:
+  rosie_mandlebrot_data:

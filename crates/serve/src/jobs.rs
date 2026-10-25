@@ -70,6 +70,9 @@ pub struct Job {
     pub stop_requested: bool,
     #[serde(skip)]
     pub stage_started: Option<std::time::Instant>,
+    /// Stopped by a pause: no video, no notification, resumed later.
+    #[serde(skip)]
+    pub pausing: bool,
 }
 
 impl Job {
@@ -335,7 +338,7 @@ pub fn values_args(b: &ValuesBody, run_dir: &Path) -> Vec<String> {
         "--run-dir".into(),
         run_dir.display().to_string(),
         "--values".into(),
-        b.k.map_or("last".into(), |k| k.to_string()),
+        b.k.map_or("mid".into(), |k| k.to_string()),
         "--values-size".into(),
         long.to_string(),
     ]
