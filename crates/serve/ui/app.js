@@ -106,6 +106,7 @@ function renderChip(state) {
       : running?.kind === 'values' ? 'preparing colours'
       : running?.kind === 'heroes' ? 'making pictures'
       : running?.kind === 'find' ? 'finding'
+      : running?.kind === 'video_pictures' ? 'making pictures'
       : 'rendering';
   }
   text.textContent = `${gpu.name || 'GPU'} · ${doing}`;
@@ -133,6 +134,32 @@ function refreshHeader() {
   renderChip(s);
   renderNotices(s);
 }
+
+// The top bar is pinned: it slides away while the page scrolls down and comes
+// back as soon as it scrolls up, or when keyboard focus moves into it. Columns
+// that follow the page (class "follow") sit just under it via --follow-top.
+function tuckOnScroll() {
+  const bar = document.querySelector('header.top');
+  if (!bar) return;
+  let lastY = window.scrollY;
+  let tucked = false;
+  const setTucked = (t) => {
+    tucked = t;
+    bar.classList.toggle('tucked', t);
+    document.documentElement.style.setProperty('--follow-top', t ? '0px' : `${bar.offsetHeight}px`);
+  };
+  window.addEventListener('scroll', () => {
+    const y = window.scrollY;
+    if (y <= bar.offsetHeight) { if (tucked) setTucked(false); }
+    else if (y > lastY + 4 && !tucked && !bar.contains(document.activeElement)) setTucked(true);
+    else if (y < lastY - 4 && tucked) setTucked(false);
+    if (Math.abs(y - lastY) > 4) lastY = y;
+  }, { passive: true });
+  bar.addEventListener('focusin', () => setTucked(false));
+  window.addEventListener('resize', () => setTucked(tucked));
+  setTucked(false);
+}
+tuckOnScroll();
 
 on('state', refreshHeader);
 on('connection', refreshHeader);

@@ -288,10 +288,10 @@ pub struct Cli {
     #[arg(long, value_delimiter = ',', requires = "assemble")]
     pub frames: Vec<u64>,
 
-    /// With --assemble: also write the new video's middle frame, small, as
-    /// thumbnail.jpg (the app's run card follows a recolour with it).
-    #[arg(long, requires = "assemble", hide = true)]
-    pub thumbnail: bool,
+    /// Give every video in the runs under this folder that has no picture one:
+    /// its middle frame, taken out of the file with ffmpeg (for the app).
+    #[arg(long, hide = true)]
+    pub video_pictures: Option<PathBuf>,
 
     /// With --assemble: for these frames also save a direct render and a 5x5
     /// supersampled truth, coloured identically, for quality measurements.

@@ -85,7 +85,7 @@ export function mount(root, params, { go }) {
       h('span', { class: 'hint' }, 'No rendering, only assembling and encoding: much quicker than the render. The old video is kept.')),
     saveForm, actionNote);
   root.append(h('div', { class: 'split' },
-    h('section', { class: 'col-side', style: { flex: '1 1 420px', gap: '12px' } },
+    h('section', { class: 'col-side follow', style: { flex: '1 1 420px', gap: '12px' } },
       title,
       h('label', { class: 'field' }, 'Run', runSelect),
       empty, canvas, caption, framePicker,

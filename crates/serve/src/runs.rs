@@ -22,6 +22,8 @@ pub struct Video {
     pub url: String,
     pub bytes: u64,
     pub modified: i64,
+    /// Its middle frame (`zoom-2.jpg` beside `zoom-2.mp4`), when made.
+    pub picture: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +121,7 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
                         url: file_url(data, &p)?,
                         bytes: e.metadata().map(|m| m.len()).unwrap_or(0),
                         modified: mtime(&p),
+                        picture: dated_url(data, &rosie_mandlebrot_store::video::picture_path(&p)),
                     })
                 })
                 .collect()
@@ -161,11 +164,15 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
         zoom_factor: manifest.as_ref().map(|m| m.zoom_factor).or(s.zoom_factor),
         palette,
         // While it renders, the newest snapshot; afterwards the newest video's
-        // middle frame when a recolour made one, else the middle snapshot (the
-        // deepest frames of a zoom are often past its detail).
+        // picture (its middle frame), else 0.4.1's recolour picture, else the
+        // middle snapshot (the deepest frames of a zoom are often past its detail).
         preview: match job {
             Some((_, true)) => snapshots.last().map(|s| s.url.clone()),
-            _ => recoloured_thumbnail(data, &out).or_else(|| snapshots.get(snapshots.len() / 2).map(|s| s.url.clone())),
+            _ => videos
+                .last()
+                .and_then(|v| v.picture.clone())
+                .or_else(|| dated_url(data, &out.join(rosie_mandlebrot_run::assemble::THUMBNAIL)))
+                .or_else(|| snapshots.get(snapshots.len() / 2).map(|s| s.url.clone())),
         },
         values: newest(&out.join("values"), "rmw").and_then(|p| file_url(data, &p)),
         videos,
@@ -176,12 +183,11 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
     }
 }
 
-/// The thumbnail the newest recolour wrote, with its time in the URL so a
-/// browser fetches each new one.
-fn recoloured_thumbnail(data: &Path, out: &Path) -> Option<String> {
-    let p = out.join(rosie_mandlebrot_run::assemble::THUMBNAIL);
-    let t = mtime(&p);
-    (t > 0).then(|| file_url(data, &p)).flatten().map(|u| format!("{u}?v={t}"))
+/// A picture's URL with its time in it, so a browser fetches each new one;
+/// `None` when the file does not exist.
+fn dated_url(data: &Path, p: &Path) -> Option<String> {
+    let t = mtime(p);
+    (t > 0).then(|| file_url(data, p)).flatten().map(|u| format!("{u}?v={t}"))
 }
 
 /// Every run's `run.json`, newest first.

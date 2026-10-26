@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.2 — 2026-10-26
+
+- **An icon:** the Mandelbrot set, dark on the app's orange, in the browser tab, on the Windows
+  exe and as the tray icon by the clock.
+- **The top bar gets out of the way:** it slides off while you scroll down and comes back as soon
+  as you scroll up.
+- **The big viewer follows you:** on Runs the video (or the live render) stays in view while you
+  scroll the Finished list, and on Colours the preview stays beside the stop editor (wide
+  windows; on a phone the page scrolls as before).
+- **On a phone, Watch plays inside the run's card**, so the list keeps its place.
+- **Every video has a picture:** the middle of its zoom in its own colours, shown beside its Watch
+  button, so recolours compare at a glance; the run's card picture is its newest video's. Videos
+  made before this get theirs from **Make video pictures** on Runs (a few seconds, nothing is
+  rendered again).
+
 ## 0.4.1 — 2026-10-26
 
 - **Watch video plays in the big viewer** at the top of Runs (and each "Watch video N" of a run with

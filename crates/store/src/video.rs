@@ -82,3 +82,47 @@ pub fn codec_args(codec: &str) -> MbResult<Vec<String>> {
     };
     Ok(args)
 }
+
+/// Where a video's picture lives: beside it, same name, `.jpg` (`zoom-2.mp4` →
+/// `zoom-2.jpg`). The app shows it next to the video so recolours compare at
+/// a glance.
+pub fn picture_path(video: &Path) -> std::path::PathBuf {
+    video.with_extension("jpg")
+}
+
+/// At most 640 pixels on the long side, keeping the shape.
+pub fn picture_size(w: u32, h: u32) -> (u32, u32) {
+    let long = w.max(h).max(1);
+    if long <= 640 {
+        return (w, h);
+    }
+    ((u64::from(w) * 640 / u64::from(long)).max(1) as u32, (u64::from(h) * 640 / u64::from(long)).max(1) as u32)
+}
+
+/// The middle frame of an existing video, taken out of the file with ffmpeg,
+/// as its picture: for videos made before pictures were written alongside.
+pub fn picture_from_video(video: &Path) -> MbResult<std::path::PathBuf> {
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "format=duration:stream=width,height", "-of", "default=nw=1"])
+        .arg(video)
+        .output()
+        .map_err(|e| MbError::Ffmpeg(format!("running ffprobe: {e}")))?;
+    let text = String::from_utf8_lossy(&probe.stdout);
+    let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).and_then(|v| v.trim().parse::<f64>().ok());
+    let (Some(duration), Some(w), Some(h)) = (field("duration"), field("width"), field("height")) else {
+        return Err(MbError::Ffmpeg(format!("ffprobe could not read {}", video.display())));
+    };
+    let (pw, ph) = picture_size(w as u32, h as u32);
+    let out = picture_path(video);
+    let status = Command::new("ffmpeg")
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-ss", &format!("{:.3}", duration / 2.0), "-i"])
+        .arg(video)
+        .args(["-frames:v", "1", "-vf", &format!("scale={pw}:{ph}"), "-q:v", "3"])
+        .arg(&out)
+        .status()
+        .map_err(|e| MbError::Ffmpeg(format!("running ffmpeg: {e}")))?;
+    if !status.success() || !out.exists() {
+        return Err(MbError::Ffmpeg(format!("ffmpeg could not take a picture of {}", video.display())));
+    }
+    Ok(out)
+}

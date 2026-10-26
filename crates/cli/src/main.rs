@@ -315,6 +315,10 @@ fn run() -> anyhow::Result<()> {
     let events: Box<dyn Events> = if cli.events { Box::new(JsonLines::new(std::io::stdout())) } else { Box::new(NoEvents) };
     let events = events.as_ref();
 
+    if let Some(runs) = &cli.video_pictures {
+        crate::stages::video_pictures(runs, events)?;
+        return Ok(());
+    }
     if let Some(dir) = &cli.heroes {
         crate::stages::heroes(&cli, dir, shader_dir, events)?;
         std::io::stdout().flush().ok();

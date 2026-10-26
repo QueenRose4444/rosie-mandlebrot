@@ -55,7 +55,10 @@ p { margin: 0; }
 .top {
   display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px;
   padding: 10px var(--gutter); border-bottom: 1px solid var(--line); background: var(--header);
+  /* Pinned; slides away while scrolling down, back on scrolling up (app.js). */
+  position: sticky; top: 0; z-index: 20; transition: transform 0.2s ease;
 }
+.top.tucked { transform: translateY(-100%); }
 .brand { font-weight: 700; font-size: 18px; letter-spacing: 0.2px; }
 .menu { display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 auto; }
 .menu a {
@@ -322,6 +325,17 @@ table.stops td:last-child { text-align: right; }
 }
 @media (prefers-reduced-motion: reduce) {
   .bar > div { transition: none; }
+  .top, .follow { transition: none; }
+}
+
+/* A column that follows the page down on wide windows: the Runs viewer, the
+   Colours preview. --follow-top is the space the top bar takes (app.js). */
+@media (min-width: 900px) {
+  .follow {
+    position: sticky; top: calc(var(--follow-top, 0px) + 12px); align-self: flex-start;
+    max-height: calc(100vh - var(--follow-top, 0px) - 24px); overflow-y: auto;
+    transition: top 0.2s ease, max-height 0.2s ease;
+  }
 }
 
 /* App-wide notices under the menu: paused, ffmpeg missing. */
@@ -371,3 +385,8 @@ table.stops td:last-child { text-align: right; }
 .marks li { display: flex; flex-direction: column; gap: 4px; width: 104px; }
 .marks .mark-pic { width: 104px; height: 104px; object-fit: cover; border-radius: 6px; background: #000; display: block; }
 .start-chosen .btn { align-self: flex-start; }
+.placeholder.start-thumb, .placeholder.mark-pic { display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; color: var(--muted); }
+.vid-row { gap: 10px; align-items: center; flex-wrap: nowrap; }
+.vid-pic { width: 72px; height: 72px; flex: none; object-fit: cover; border-radius: 6px; background: #000; display: block; }
+.placeholder.vid-pic { display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); text-align: center; }
+.card-video { width: 100%; border-radius: 8px; background: #000; display: block; }

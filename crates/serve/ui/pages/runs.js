@@ -5,6 +5,9 @@ import { h, clear, picture } from '../dom.js';
 import { bytes, duration, clock, span as fmtSpan, when, size } from '../format.js';
 
 const PLAY_FPS = 8;
+// Phone-width screens play a video inside its card, so the list keeps its
+// place; wider ones use the big viewer, which follows the page down.
+const NARROW = window.matchMedia('(max-width: 899px)');
 const FINISHED = new Set(['done', 'stopped', 'failed', 'incomplete']);
 
 export function mount(root) {
@@ -21,10 +24,11 @@ export function mount(root) {
   let watching = null; // { runId, url }
   let watchView = null; // { url, hint, btn } while it is shown
 
-  const mainCol = h('section', { class: 'col-main', style: { flex: '999 1 600px', gap: '16px' } });
+  const mainCol = h('section', { class: 'col-main follow', style: { flex: '999 1 600px', gap: '16px' } });
   const waitingList = h('div', { class: 'stack' });
   const finishedList = h('div', { class: 'stack' });
   const finishedNote = h('p', { class: 'hint' });
+  const picsBar = h('div', { class: 'row' });
   const status = h('p', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
   root.append(
     h('div', { class: 'split' },
@@ -32,7 +36,7 @@ export function mount(root) {
       h('aside', { class: 'col-side', style: { flex: '1 1 320px', gap: '20px' } },
         h('div', { class: 'stack' }, h('h2', null, 'Waiting'), waitingList,
           h('p', { class: 'hint' }, 'One GPU job runs at a time; the rest wait here in order.')),
-        h('div', { class: 'stack' }, h('h2', null, 'Finished'), status, finishedList, finishedNote))));
+        h('div', { class: 'stack' }, h('h2', null, 'Finished'), status, picsBar, finishedList, finishedNote))));
 
   const runById = (id) => runs.find((r) => r.id === id) || null;
   const thumbFor = (run, job) => run?.preview || job?.preview || heroes.get(run?.preset) || null;
@@ -133,6 +137,7 @@ export function mount(root) {
     if (job.kind === 'assemble' || job.stage === 'assemble') return 'Making the video';
     if (job.kind === 'values') return 'Preparing colours';
     if (job.kind === 'heroes') return 'Making card pictures';
+    if (job.kind === 'video_pictures') return 'Making video pictures';
     if (job.kind === 'find') return 'Looking for places';
     return 'Rendering';
   }
@@ -176,6 +181,7 @@ export function mount(root) {
       v.caption.textContent = job.kind === 'assemble'
         ? `Making ${job.label || 'a new video'} from the finished render: nothing is rendered again. It appears under Finished when it is done, beside the earlier video.`
         : job.kind === 'values' ? 'Preparing the colour preview for the Colours page.'
+        : job.kind === 'video_pictures' ? 'Taking a frame from the middle of each older video, to show beside it.'
         : job.kind === 'find' ? `Looking for places to zoom into (${(job.places || []).length} found so far). The Finder page shows them.`
         : 'Drawing the Library\'s card pictures.';
     }
@@ -358,7 +364,7 @@ export function mount(root) {
     }
     for (const job of queued) {
       const run = runById(job.run_id);
-      const what = { render: 'render', assemble: 'new video', values: 'colour preview', heroes: 'card pictures', find: 'search for places' }[job.kind] || job.kind;
+      const what = { render: 'render', assemble: 'new video', values: 'colour preview', heroes: 'card pictures', find: 'search for places', video_pictures: 'video pictures' }[job.kind] || job.kind;
       const btn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove ${job.label || 'this job'} from the queue`, title: 'Remove from queue' }, '✕');
       btn.addEventListener('click', () => stopJob(job, btn, true));
       waitingList.append(h('div', { class: 'item', style: { flexDirection: 'row', alignItems: 'center' } },
@@ -378,9 +384,9 @@ export function mount(root) {
     for (const run of list) {
       seen.add(run.id);
       let item = finishedItems.get(run.id);
+      if (!item) { item = { inline: null, confirming: false }; finishedItems.set(run.id, item); }
       const sig = JSON.stringify([run.status, run.label, run.videos, run.preview, run.frames, run.job_id, run.end_span, run.stop_reason, heroes.get(run.preset),
-        watching?.runId === run.id ? watching.url : '']);
-      if (!item) { item = { open: false, confirming: false }; finishedItems.set(run.id, item); }
+        watching?.runId === run.id ? watching.url : '', item.inline]);
       if (item.sig !== sig) {
         item.sig = sig;
         const el = finishedCard(run, item);
@@ -397,6 +403,23 @@ export function mount(root) {
       if (!seen.has(id)) { item.el?.remove(); finishedItems.delete(id); }
     }
     finishedNote.textContent = list.length ? '' : 'Finished runs show up here, with their videos.';
+    renderPicsBar(list);
+  }
+
+  // Videos made before each one got its picture: offer to make theirs.
+  function renderPicsBar(list) {
+    clear(picsBar);
+    const missing = list.reduce((n, r) => n + (r.videos || []).filter((v) => !v.picture).length, 0);
+    if (!missing) return;
+    const busy = jobsOf(latestState()).some((j) => j.kind === 'video_pictures' && (j.state === 'queued' || j.state === 'running'));
+    if (busy) { picsBar.append(h('p', { class: 'hint' }, 'Making pictures of older videos…')); return; }
+    const btn = h('button', { type: 'button', class: 'btn', onclick: async () => {
+      btn.disabled = true;
+      try { await post('/api/jobs', { kind: 'video_pictures' }); }
+      catch (err) { btn.disabled = false; status.textContent = `Could not start: ${err.message}`; }
+    } }, 'Make video pictures');
+    picsBar.append(btn, h('span', { class: 'hint' },
+      `${missing} older ${missing === 1 ? 'video has' : 'videos have'} no picture yet: a frame from the middle of the zoom, to compare colours without watching.`));
   }
 
   function newestFinished() {
@@ -445,22 +468,38 @@ export function mount(root) {
         statusText ? h('span', { class: run.status === 'failed' ? 'pill bad' : 'pill grey' }, statusText) : null),
       player, actions, confirmBox);
 
-    // Watch plays the video in the big viewer at the top of the page.
-    const isWatched = (vd) => watching?.runId === run.id && watching.url === vd.url;
+    // Watch: in the big viewer on wide windows, inside this card on a phone.
+    const playingHere = (vd) => item.inline === vd.url;
+    const isWatched = (vd) => playingHere(vd) || (watching?.runId === run.id && watching.url === vd.url);
+    const watchLabel = (vd, n) => (playingHere(vd) ? `Hide video${n}` : isWatched(vd) ? `Playing video${n}` : `Watch video${n}`);
+    const play = (vd) => {
+      if (!NARROW.matches) { item.inline = null; watch(run, vd); return; }
+      item.inline = playingHere(vd) ? null : vd.url;
+      renderFinished();
+      if (item.inline) item.el.querySelector('video')?.play().catch(() => {});
+    };
     function renderPlayer() {
       clear(player);
+      const here = vids.find(playingHere);
+      if (here) {
+        player.append(h('video', { src: here.url, controls: true, preload: 'metadata', playsinline: true, class: 'card-video',
+          'aria-label': `Video ${videoNumber(here)} of ${run.label || run.preset}` }));
+      }
       if (vids.length > 1) {
-        // Every video of the run, newest first: one Watch and one Download each.
-        player.append(h('div', { class: 'stack small', style: { gap: '4px' } }, h('span', { class: 'muted' }, 'Videos (newest first):'),
-          vids.map((vd) => h('div', { class: 'row', style: { gap: '8px' } },
-            h('button', { type: 'button', class: 'btn quiet', 'aria-pressed': String(isWatched(vd)), onclick: () => watch(run, vd) },
-              isWatched(vd) ? `Playing video ${videoNumber(vd)}` : `Watch video ${videoNumber(vd)}`),
-            h('a', { href: vd.url, download: downloadName(run, vd) }, `Download (${bytes(vd.bytes)})`)))));
+        // Every video of the run, newest first: its picture (the middle of the
+        // zoom, so colours compare at a glance), one Watch and one Download.
+        player.append(h('div', { class: 'stack small', style: { gap: '6px' } }, h('span', { class: 'muted' }, 'Videos (newest first):'),
+          vids.map((vd) => h('div', { class: 'row vid-row' },
+            picture(vd.picture, `The middle of video ${videoNumber(vd)}`, 'vid-pic', 'No picture'),
+            h('div', { class: 'stack', style: { gap: '4px' } },
+              h('button', { type: 'button', class: 'btn quiet', 'aria-pressed': String(isWatched(vd)), onclick: () => play(vd) },
+                watchLabel(vd, ` ${videoNumber(vd)}`)),
+              h('a', { href: vd.url, download: downloadName(run, vd) }, `Download (${bytes(vd.bytes)})`))))));
       }
     }
     if (video && vids.length === 1) {
-      actions.append(h('button', { type: 'button', class: 'btn primary', 'aria-pressed': String(isWatched(video)), onclick: () => watch(run, video) },
-        isWatched(video) ? 'Playing' : 'Watch video'));
+      actions.append(h('button', { type: 'button', class: 'btn primary', 'aria-pressed': String(isWatched(video)), onclick: () => play(video) },
+        watchLabel(video, '')));
     }
     if ((run.frames || 0) > 0 && run.status !== 'failed') {
       actions.append(h('a', { class: 'btn quiet', href: `#/colours?run=${encodeURIComponent(run.id)}` }, 'Recolour'));

@@ -85,7 +85,7 @@ export function mount(root, params) {
       ? h('div', { class: 'start-grid', role: 'group', 'aria-label': 'Places to start from' },
         places.map((p) => h('button', { type: 'button', class: 'start-choice', 'aria-pressed': String(p.name === f.like), 'data-k': `start-${p.name}`,
           onclick: () => { f.like = p.name; picking = false; renderForm(); form.querySelector('[data-k="change-start"]')?.focus(); } },
-          picture(p.hero, '', 'start-thumb', ''),
+          picture(p.hero, '', 'start-thumb'),
           h('span', null, p.label || p.name),
           h('span', { class: 'muted small' }, fmtSpan(p.depth)))))
       : null;
@@ -127,7 +127,7 @@ export function mount(root, params) {
         h('div', { class: 'ticks', 'aria-hidden': 'true' }, ['1e-20', '1e-100', '1e-200', '1e-290'].map((t) => h('span', null, t)))),
       h('div', { class: 'field' }, h('span', null, 'At least this interesting ', intOut), interest,
         h('ul', { class: 'marks' }, MARKS.map(([n, pct]) => h('li', null,
-          picture(places.find((p) => p.name === n)?.hero, `${n}, ${pct}% interesting`, 'mark-pic', ''),
+          picture(places.find((p) => p.name === n)?.hero, `${n}, ${pct}% interesting`, 'mark-pic'),
           h('span', null, h('span', { class: 'num' }, `${pct}%`), ' ', n)))),
         h('p', { class: 'hint' }, 'The marks are built-in places, so you can see what a % looks like.')),
       startButton('Find places'),

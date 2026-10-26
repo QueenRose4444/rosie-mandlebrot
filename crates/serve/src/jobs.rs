@@ -253,6 +253,8 @@ pub enum JobBody {
     Values(ValuesBody),
     Heroes(HeroesBody),
     Find(FindBody),
+    /// Pictures for videos made before every video got one.
+    VideoPictures {},
 }
 
 /// A preset name as presets.toml allows them.
@@ -409,7 +411,7 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
 /// The child's arguments to make another video from a run's strip.
 pub fn assemble_args(b: &AssembleBody, run_dir: &Path, strip_size: (u32, u32)) -> Result<Vec<String>, String> {
     let format = format_of(&b.format)?;
-    let mut a: Vec<String> = vec!["--assemble".into(), "--thumbnail".into(), "--run-dir".into(), run_dir.display().to_string()];
+    let mut a: Vec<String> = vec!["--assemble".into(), "--run-dir".into(), run_dir.display().to_string()];
     a.extend(palette_args(&b.palette, &b.stops, &b.inside)?);
     if let Some(f) = b.fps {
         if !(1..=240).contains(&f) {

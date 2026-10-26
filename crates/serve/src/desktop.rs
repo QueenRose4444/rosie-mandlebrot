@@ -94,24 +94,56 @@ pub fn tip_utf16(name: &str, status: &str) -> Vec<u16> {
     out
 }
 
-/// The icon: an orange (#ff8a2a) disc with a dark centre, antialiased, as
+/// The icon, as on the exe and the web page: the Mandelbrot set, dark
+/// (#14171c), on an orange (#ff8a2a) rounded square; 4×4 samples a pixel.
 /// `size * size` pixels in 0xAARRGGBB with straight alpha, top row first.
 pub fn icon_pixels(size: usize) -> Vec<u32> {
     const ORANGE: [f32; 3] = [255.0, 138.0, 42.0];
-    const DARK: [f32; 3] = [30.0, 20.0, 16.0];
-    let c = size as f32 / 2.0;
-    let outer = c - 0.5;
-    let inner = size as f32 * 0.22;
+    const DARK: [f32; 3] = [20.0, 23.0, 28.0];
+    const SS: usize = 4;
+    let n = size as f64;
+    let radius = 0.22 * n;
+    // Inside the rounded square?
+    let in_square = |x: f64, y: f64| {
+        let cx = x.clamp(radius, n - radius);
+        let cy = y.clamp(radius, n - radius);
+        (x - cx).powi(2) + (y - cy).powi(2) <= radius * radius
+    };
+    // The whole set, centred on -0.75, 2.9 wide.
+    let in_set = |x: f64, y: f64| {
+        let (cr, ci) = (-0.75 + (x / n - 0.5) * 2.9, (y / n - 0.5) * 2.9);
+        let (mut zr, mut zi) = (0.0f64, 0.0f64);
+        for _ in 0..200 {
+            let t = zr * zr - zi * zi + cr;
+            zi = 2.0 * zr * zi + ci;
+            zr = t;
+            if zr * zr + zi * zi > 4.0 {
+                return false;
+            }
+        }
+        true
+    };
     let mut px = Vec::with_capacity(size * size);
     for y in 0..size {
         for x in 0..size {
-            let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
-            let d = (dx * dx + dy * dy).sqrt();
-            let alpha = (outer - d + 0.5).clamp(0.0, 1.0);
-            let t = (inner - d + 0.5).clamp(0.0, 1.0);
+            let (mut cover, mut set) = (0, 0);
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let (fx, fy) = (x as f64 + (sx as f64 + 0.5) / SS as f64, y as f64 + (sy as f64 + 0.5) / SS as f64);
+                    if in_square(fx, fy) {
+                        cover += 1;
+                        set += usize::from(in_set(fx, fy));
+                    }
+                }
+            }
+            if cover == 0 {
+                px.push(0);
+                continue;
+            }
+            let t = set as f32 / cover as f32;
             let ch = |i: usize| (ORANGE[i] + (DARK[i] - ORANGE[i]) * t).round() as u32;
-            let a = (alpha * 255.0).round() as u32;
-            px.push(if a == 0 { 0 } else { (a << 24) | (ch(0) << 16) | (ch(1) << 8) | ch(2) });
+            let a = (cover * 255 / (SS * SS)) as u32;
+            px.push((a << 24) | (ch(0) << 16) | (ch(1) << 8) | ch(2));
         }
     }
     px
@@ -628,17 +660,20 @@ mod tests {
     }
 
     #[test]
-    fn icon_is_an_orange_disc_with_a_dark_centre() {
+    fn icon_is_the_set_dark_on_an_orange_rounded_square() {
         let s = ICON_SIZE;
         let px = icon_pixels(s);
         assert_eq!(px.len(), s * s);
         let at = |x: usize, y: usize| px[y * s + x];
-        assert_eq!(at(0, 0), 0, "corners are transparent");
+        assert_eq!(at(0, 0), 0, "the rounded corners are transparent");
         assert_eq!(at(s - 1, s - 1), 0);
-        assert_eq!(at(s / 2, s / 2), 0xff1e_1410, "centre is dark and opaque");
-        assert_eq!(at(s / 2, 3), 0xffff_8a2a, "the ring is #ff8a2a");
-        let edge = at(s / 2, 0) >> 24;
-        assert!(edge > 0 && edge < 255, "the rim is antialiased, alpha {edge}");
+        // Pixel 22 across is -0.2 on the real axis: inside the main cardioid.
+        assert_eq!(at(22, s / 2), 0xff14_171c, "the set is dark and opaque");
+        assert_eq!(at(8, 3), 0xffff_8a2a, "outside the set is #ff8a2a");
+        assert_eq!(at(0, s / 2) >> 24, 255, "the square's edge is opaque away from the corners");
+        let curve = (0..8).flat_map(|y| (0..8).map(move |x| (x, y))).filter(|&(x, y)| (1..255).contains(&(at(x, y) >> 24))).count();
+        assert!(curve > 2, "the corners' curve is antialiased ({curve} partly clear pixels)");
+        assert!(px.iter().any(|&p| p >> 24 == 255 && p != 0xff14_171c && p != 0xffff_8a2a), "the set's edge is antialiased");
     }
 
     #[test]

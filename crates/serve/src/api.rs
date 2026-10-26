@@ -348,6 +348,10 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             };
             app.enqueue("heroes", None, label, args, true, Progress::default())
         }
+        JobBody::VideoPictures {} => {
+            let args = vec!["--video-pictures".to_string(), runs::runs_dir(&app.data).display().to_string()];
+            app.enqueue("video_pictures", None, "pictures of older videos".into(), args, true, Progress::default())
+        }
         JobBody::Find(b) => {
             let presets = preset_list()?;
             let (start, label, base, what) = match b.mode.as_str() {

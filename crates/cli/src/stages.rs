@@ -67,7 +67,6 @@ pub fn assemble_options(cli: &Cli, cfg: &RunConfig) -> anyhow::Result<Options> {
         tone_smoothing: cli.tone_smoothing,
         frames_png: cli.frames_png.clone(),
         only_frames: cli.frames.clone(),
-        thumbnail: cli.thumbnail,
         compare: cli.compare_frames.clone(),
         video: cli.frames.is_empty() && !(cfg.no_video || cfg.video_codec == "none"),
         keep_existing: cli.assemble,
@@ -179,6 +178,34 @@ fn lively_frame(gpu: &GpuCtx, m: &rosie_mandlebrot_store::keyframes::Manifest, d
         }
     }
     Ok(best.1)
+}
+
+/// `--video-pictures RUNS`: a picture for every video under `RUNS/*/out/` that
+/// has none (videos made before each video got one as it was assembled).
+pub fn video_pictures(runs: &Path, ev: &dyn Events) -> anyhow::Result<()> {
+    let mut made = 0;
+    for run in std::fs::read_dir(runs).map_err(|e| MbError::io(runs, e))?.filter_map(Result::ok) {
+        let out = run.path().join("out");
+        let Ok(files) = std::fs::read_dir(&out) else { continue };
+        for f in files.filter_map(Result::ok) {
+            let p = f.path();
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let video = name.starts_with("zoom") && [".mp4", ".mkv", ".webm", ".mov"].iter().any(|x| name.ends_with(x));
+            if !video || rosie_mandlebrot_store::video::picture_path(&p).exists() {
+                continue;
+            }
+            match rosie_mandlebrot_store::video::picture_from_video(&p) {
+                Ok(pic) => {
+                    made += 1;
+                    tracing::info!("{} -> {}", p.display(), pic.display());
+                    ev.emit(Event::Image { path: pic.display().to_string(), k: 0 });
+                }
+                Err(e) => tracing::warn!("{}: {e}", p.display()),
+            }
+        }
+    }
+    tracing::info!("{made} video pictures made");
+    Ok(())
 }
 
 /// How lively a picture looks: its mean brightness gradient (detail), with

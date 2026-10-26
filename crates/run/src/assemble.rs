@@ -48,8 +48,6 @@ pub struct Options {
     pub frames_png: Vec<u64>,
     /// Make only these frames, as PNGs (empty: every frame).
     pub only_frames: Vec<u64>,
-    /// Also write the video's middle frame, small, as `thumbnail.jpg`.
-    pub thumbnail: bool,
     /// For these frames also render the frame directly (1 sample per pixel)
     /// and a 5×5-supersampled truth, coloured exactly like the assembled frame.
     pub compare: Vec<u64>,
@@ -563,9 +561,10 @@ pub fn run(
             Some(b) => compose_bars(&rgba, w, h, vw, vh, b),
             None => rgba,
         };
-        if opt.thumbnail && k == frames / 2 {
-            let path = output.join(THUMBNAIL);
-            let (tw, th) = thumbnail_size(vw, vh);
+        // Every video's picture: its middle frame, small, beside it.
+        if opt.video && k == frames / 2 {
+            let path = rosie_mandlebrot_store::video::picture_path(&video_path);
+            let (tw, th) = rosie_mandlebrot_store::video::picture_size(vw, vh);
             let small = image::imageops::thumbnail(&image::RgbaImage::from_raw(vw, vh, rgba.clone()).expect("a whole frame"), tw, th);
             write_jpeg(small.as_raw(), tw, th, &path)?;
         }
@@ -799,17 +798,9 @@ pub fn recolour_weights(wts: &[u32], lut: &[[u8; 3]; 1024], inside: [u8; 3]) -> 
 }
 
 /// Save RGBA8 as a JPEG (previews).
-/// A recoloured video's picture for the app's run cards, in the output folder.
+/// 0.4.1 wrote a recolour's picture here, in the output folder; still read for
+/// runs recoloured then.
 pub const THUMBNAIL: &str = "thumbnail.jpg";
-
-/// At most 640 pixels on the long side, keeping the shape.
-fn thumbnail_size(w: u32, h: u32) -> (u32, u32) {
-    let long = w.max(h).max(1);
-    if long <= 640 {
-        return (w, h);
-    }
-    ((u64::from(w) * 640 / u64::from(long)).max(1) as u32, (u64::from(h) * 640 / u64::from(long)).max(1) as u32)
-}
 
 pub fn write_jpeg(rgba: &[u8], w: u32, h: u32, path: &Path) -> anyhow::Result<()> {
     let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
