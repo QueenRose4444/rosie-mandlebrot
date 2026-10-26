@@ -21,9 +21,12 @@ jobs:
       - name: GNU toolchain (rust-toolchain.toml selects it)
         run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
       # The bundled SQLite and zstd are C, compiled with MinGW's gcc.
+      # MINGW64 on purpose: UCRT64 would change the C runtime, and with it the
+      # maths library under the CPU parts, so it would need its own output check.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          suppress-deprecation-warnings: msystem-mingw64
           update: false
           install: >-
             mingw-w64-x86_64-gcc

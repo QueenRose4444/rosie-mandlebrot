@@ -73,7 +73,12 @@ wgpu = "30"
 wide = "0.7"
 
 [profile.release]
-lto = "fat"
-codegen-units = 1
+# Thin LTO over 16 codegen units: a clean build in 4.5 minutes instead of 7.8
+# here (the release's Windows job spent 21 of its 22 minutes compiling), with
+# byte-identical output and the same render times (measured, interleaved).
+# Stripping the symbol table keeps the exe at its old size (24 MB, not 30).
+lto = "thin"
+codegen-units = 16
 opt-level = 3
 panic = "abort"
+strip = "symbols"
