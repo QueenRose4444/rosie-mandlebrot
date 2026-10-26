@@ -220,18 +220,40 @@ pub fn encode_rgb_with_range(
         let src_y = (height as usize - 1) - img_y;
         for x in 0..width as usize {
             let src = src_y * width as usize + x;
-            let px = pixels[src];
-            let rgb = if crate::types::is_interior(px, max_iter) {
-                lut[1023]
-            } else if !has_range {
-                lut[0]
-            } else {
-                let t = ((px.smooth_val - smooth_min) / range).clamp(0.0, 1.0);
-                let idx = (t * 1023.0) as usize;
-                lut[idx.min(1023)]
-            };
+            let rgb = lut[lut_index(pixels[src], max_iter, has_range.then_some((smooth_min, range))).min(1023)];
             let off = (img_y * width as usize + x) * 3;
             out[off..off + 3].copy_from_slice(&rgb);
+        }
+    }
+    out
+}
+
+/// A pixel's place in a 1024-entry palette: 0..=1023 for escaped pixels across
+/// the frame's `(min, range)` of smooth values, `INSIDE` (1024) inside the set,
+/// which the colouring paints with the palette's last colour or a chosen one.
+#[inline]
+pub fn lut_index(px: PixelOut, max_iter: u32, range: Option<(f32, f32)>) -> usize {
+    if crate::types::is_interior(px, max_iter) {
+        return INSIDE;
+    }
+    match range {
+        None => 0,
+        Some((min, range)) => ((((px.smooth_val - min) / range).clamp(0.0, 1.0) * 1023.0) as usize).min(1023),
+    }
+}
+
+/// The palette slot for "inside the set" in [`lut_index`] and values files.
+pub const INSIDE: usize = 1024;
+
+/// Every pixel's [`lut_index`], top row first as [`encode_rgb`] writes it,
+/// measured across the frame's own range: a picture that can be recoloured.
+pub fn lut_indices(pixels: &[PixelOut], width: u32, height: u32, max_iter: u32) -> Vec<u16> {
+    let range = tone_range_of(pixels, max_iter).map(|r| (r.min, (r.max - r.min).max(1e-9)));
+    let mut out = Vec::with_capacity(pixels.len());
+    for img_y in 0..height as usize {
+        let src_y = (height as usize - 1) - img_y;
+        for x in 0..width as usize {
+            out.push(lut_index(pixels[src_y * width as usize + x], max_iter, range) as u16);
         }
     }
     out
@@ -244,6 +266,22 @@ pub fn frame_filename(frame_idx: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_positions_paint_exactly_what_encode_rgb_paints() {
+        // A spread of escaped values, some inside, a non-square frame (rows flip).
+        let (w, h, max_iter) = (7u32, 5u32, 1000u32);
+        let px: Vec<PixelOut> = (0..w * h)
+            .map(|i| if i % 6 == 0 { PixelOut { iter: max_iter, smooth_val: 0.0 } } else { PixelOut { iter: 10 + i, smooth_val: (i * i % 97) as f32 * 3.7 } })
+            .collect();
+        for scheme in [ColorScheme::Hot, ColorScheme::Electric] {
+            let rgb = encode_rgb(&px, w, h, max_iter, scheme);
+            let lut = scheme.lut_1024();
+            let painted: Vec<u8> = lut_indices(&px, w, h, max_iter).iter().flat_map(|&i| lut[(i as usize).min(1023)]).collect();
+            assert_eq!(painted, rgb);
+        }
+        assert!(lut_indices(&px, w, h, max_iter).contains(&(INSIDE as u16)), "inside pixels use the inside slot");
+    }
 
     #[test]
     fn inside_set_is_top_of_lut() {

@@ -253,15 +253,17 @@ pub fn heroes(cli: &Cli, dir: &Path, shader_dir: Option<&Path>, ev: &dyn Events)
         let mut best = (f64::MIN, (start * depth).sqrt().max(1e-30));
         for i in 0..7 {
             let span = 10f64.powf(a + (z - a) * (0.2 + 0.1 * f64::from(i)));
-            let (rgba, w, h) = hero_frame(&gpu, &cfg, span, HERO_TRIAL)?;
+            let (rgba, w, h, _) = hero_frame(&gpu, &cfg, span, HERO_TRIAL)?;
             let score = liveliness(&rgba, w, h);
             if score > best.0 {
                 best = (score, span);
             }
         }
         let span = best.1;
-        let (rgba, w, h) = hero_frame(&gpu, &cfg, span, cli.hero_size)?;
+        let (rgba, w, h, indices) = hero_frame(&gpu, &cfg, span, cli.hero_size)?;
         let frame = (w, h, cfg.sequence.max_iter_for_span(span));
+        let values = dir.join(format!("{name}{}", rosie_mandlebrot_core::presets::HERO_VALUES_SUFFIX));
+        rosie_mandlebrot_run::assemble::write_values_direct(w, h, span, &indices, &values)?;
         let path = dir.join(format!("{name}{}", rosie_mandlebrot_core::presets::HERO_SUFFIX));
         write_jpeg(&rgba, frame.0, frame.1, &path)?;
         tracing::info!("{name}: span {span:.2e}, {} iterations -> {}", frame.2, path.display());
@@ -273,8 +275,9 @@ pub fn heroes(cli: &Cli, dir: &Path, shader_dir: Option<&Path>, ev: &dyn Events)
 /// Side of the small trial pictures a card picture's depth is chosen from.
 const HERO_TRIAL: u32 = 96;
 
-/// A preset's picture at `span`, `side` pixels square, as RGBA8 in its palette.
-fn hero_frame(gpu: &GpuCtx, cfg: &RunConfig, span: f64, side: u32) -> anyhow::Result<(Vec<u8>, u32, u32)> {
+/// A preset's picture at `span`, `side` pixels square, as RGBA8 in its palette,
+/// and each pixel's palette position (for recolouring it later).
+fn hero_frame(gpu: &GpuCtx, cfg: &RunConfig, span: f64, side: u32) -> anyhow::Result<(Vec<u8>, u32, u32, Vec<u16>)> {
     let req = rosie_mandlebrot_render::FrameRequest {
         frame_idx: 0,
         width: side,
@@ -291,7 +294,8 @@ fn hero_frame(gpu: &GpuCtx, cfg: &RunConfig, span: f64, side: u32) -> anyhow::Re
     };
     let frame = rosie_mandlebrot_render::render_frame(gpu, &req)?;
     let rgb = rosie_mandlebrot_core::encode::encode_rgb(&frame.pixels, frame.width, frame.height, frame.max_iter, cfg.palette);
-    Ok((rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(), frame.width, frame.height))
+    let indices = rosie_mandlebrot_core::encode::lut_indices(&frame.pixels, frame.width, frame.height, frame.max_iter);
+    Ok((rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(), frame.width, frame.height, indices))
 }
 
 /// `WxH`.

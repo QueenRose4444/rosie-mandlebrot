@@ -126,6 +126,8 @@ async fn presets(State(c): State<Ctx>) -> ApiResult<Json<serde_json::Value>> {
         .map(|p| {
             let file = format!("{}{}", p.name, rosie_mandlebrot_core::presets::HERO_SUFFIX);
             let hero = heroes.join(&file).exists().then(|| format!("/heroes/{file}"));
+            let vfile = format!("{}{}", p.name, rosie_mandlebrot_core::presets::HERO_VALUES_SUFFIX);
+            let values = heroes.join(&vfile).exists().then(|| format!("/heroes/{vfile}"));
             serde_json::json!({
                 "name": p.name,
                 "kind": p.kind.map(|k| format!("{k:?}").to_lowercase()),
@@ -134,6 +136,7 @@ async fn presets(State(c): State<Ctx>) -> ApiResult<Json<serde_json::Value>> {
                 "palette": p.suggested_palette,
                 "center": format!("{}, {}", p.center_re, p.center_im),
                 "hero": hero,
+                "values": values,
             })
         })
         .collect();

@@ -774,6 +774,28 @@ pub fn write_values(shot: &Shot, path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A values file for a directly rendered picture: one palette position a
+/// pixel (`lut_index`, 1024 = inside), at full weight.
+pub fn write_values_direct(width: u32, height: u32, span: f64, indices: &[u16], path: &Path) -> anyhow::Result<()> {
+    let mut out = Vec::with_capacity(28 + indices.len() * 5);
+    out.extend_from_slice(b"RMW1");
+    for v in [width, height, 1] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(&span.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for &i in indices {
+        out.push(1);
+        out.extend_from_slice(&i.to_le_bytes());
+        out.extend_from_slice(&32768u16.to_le_bytes());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| MbError::io(parent, e))?;
+    }
+    std::fs::write(path, out).map_err(|e| MbError::io(path, e))?;
+    Ok(())
+}
+
 /// Colour a values file's weights with a palette, as the assembler would:
 /// RGBA8, top row first. Used to check the file against the assembled frame.
 pub fn recolour_weights(wts: &[u32], lut: &[[u8; 3]; 1024], inside: [u8; 3]) -> Vec<u8> {

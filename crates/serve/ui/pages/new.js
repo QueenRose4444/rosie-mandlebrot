@@ -1,7 +1,9 @@
 // New render: size, fit and bars, how deep, colours, speed, fps, the estimate, and Start.
-import { get, post, on, jobsOf, latestState, palettes as loadPalettes } from '../api.js';
+import { get, getBytes, post, on, jobsOf, latestState, palettes as loadPalettes } from '../api.js';
 import { h, clear, picture, debounce, keepFocus } from '../dom.js';
-import { bytes, duration, span as fmtSpan } from '../format.js';
+import { bytes, duration, span as fmtSpan, kindName } from '../format.js';
+import { lutFromStops, recolour, cssGradient } from '../palette.js';
+import { parseRmw } from '../rmw.js';
 
 const SIZES = [
   { w: 1080, h: 1080, label: '1080 × 1080 square' },
@@ -41,6 +43,10 @@ export function mount(root, params, { go }) {
   let estimate = null;
   let estimateError = '';
   let busySubmitting = false;
+  let picking = false; // the place picker is open
+  let colourChosen = false; // picked by hand: kept when the place changes
+  const valuesFor = new Map(); // values URL -> parsed values (or a promise)
+  let heroCanvas = null;
 
   const left = h('section', { class: 'col-side' });
   const right = h('section', { class: 'col-main' });
@@ -56,13 +62,80 @@ export function mount(root, params, { go }) {
       return;
     }
     const coords = preset.center || (preset.center_re && preset.center_im ? `${preset.center_re}, ${preset.center_im}` : null);
+    // With a values file the picture is drawn here in the chosen colours.
+    heroCanvas = preset.values
+      ? h('canvas', { class: 'hero-big', role: 'img', 'aria-label': `Where the ${preset.label || preset.name} zoom goes, in the chosen colours` })
+      : null;
     left.append(
-      picture(preset.hero, `Where the ${preset.name} zoom goes`, 'hero-big'),
+      heroCanvas || picture(preset.hero, `Where the ${preset.label || preset.name} zoom goes`, 'hero-big'),
       h('div', { class: 'stack', style: { gap: '4px' } },
         h('strong', { style: { fontSize: '18px' } }, preset.label || preset.name),
         h('span', { class: 'muted' }, preset.description || '', ' Detail runs out near ', h('span', { class: 'num' }, fmtSpan(preset.depth)), '.'),
         coords ? h('span', { class: 'coords' }, coords) : null,
-        h('a', { href: '#/library', style: { marginTop: '6px', minHeight: '44px', display: 'inline-flex', alignItems: 'center' } }, 'Choose another place')));
+        h('button', { type: 'button', class: 'btn quiet', style: { alignSelf: 'flex-start', marginTop: '6px' }, 'aria-expanded': String(picking),
+          onclick: () => { picking = !picking; renderPlace(); } }, picking ? 'Close the list' : 'Change place…')));
+    if (picking) left.append(placeGrid());
+    paintHero();
+  }
+
+  // Every place's picture to pick from, without leaving the page.
+  function placeGrid() {
+    return h('div', { class: 'start-grid', role: 'group', 'aria-label': 'Places' },
+      presets.map((p) => h('button', { type: 'button', class: 'start-choice', 'aria-pressed': String(p.name === preset?.name),
+        onclick: () => pickPlace(p) },
+        picture(p.hero, '', 'start-thumb'),
+        h('span', null, p.label || p.name),
+        h('span', { class: 'muted small' }, `${kindName(p.kind)} · ${fmtSpan(p.depth)}`))));
+  }
+
+  function pickPlace(p) {
+    preset = p;
+    picking = false;
+    history.replaceState(null, '', `#/new?preset=${encodeURIComponent(p.name)}`);
+    if (!colourChosen) f.colour = ownColour();
+    renderAll();
+    refreshEstimate();
+    left.scrollIntoView({ block: 'start' });
+  }
+
+  // The place's own palette, else the first built-in.
+  function ownColour() {
+    const own = preset && builtins.find((x) => x.name === preset.palette);
+    return own ? `b:${own.name}` : builtins[0] ? `b:${builtins[0].name}` : '';
+  }
+
+  // The chosen colours: {stops, inside}.
+  function chosenPalette() {
+    if (f.colour.startsWith('m:')) {
+      const m = mine[Number(f.colour.slice(2))];
+      if (m) return { stops: m.stops, inside: m.inside || null };
+    }
+    const b = builtins.find((x) => `b:${x.name}` === f.colour) || builtins[0];
+    return b ? { stops: b.stops, inside: b.inside || null } : null;
+  }
+
+  async function paintHero() {
+    const canvas = heroCanvas;
+    const pal = chosenPalette();
+    if (!canvas || !pal || !preset?.values) return;
+    const url = preset.values;
+    let v = valuesFor.get(url);
+    if (!v) { v = getBytes(url).then(parseRmw); valuesFor.set(url, v); }
+    try {
+      const values = await v;
+      if (canvas !== heroCanvas || !alive) return;
+      const lut = lutFromStops(pal.stops);
+      const inside = pal.inside || [lut[1023 * 3], lut[1023 * 3 + 1], lut[1023 * 3 + 2]];
+      canvas.width = values.width;
+      canvas.height = values.height;
+      const ctx = canvas.getContext('2d');
+      const img = ctx.createImageData(values.width, values.height);
+      recolour(values, lut, inside, img.data);
+      ctx.putImageData(img, 0, 0);
+    } catch {
+      // No values to draw from: show the plain picture instead.
+      if (canvas === heroCanvas) { valuesFor.delete(url); canvas.replaceWith(picture(preset.hero, '', 'hero-big')); heroCanvas = null; }
+    }
   }
 
   // ---- right column: the form --------------------------------------------
@@ -176,16 +249,14 @@ export function mount(root, params, { go }) {
         onchange: (e) => { f.seconds = Math.max(1, Math.round(Number(e.target.value) || 1)); e.target.value = String(f.seconds); } }));
     }
 
-    const colourSel = h('select', { class: 'input', 'data-k': 'colour', onchange: (e) => { f.colour = e.target.value; } });
-    for (const p of builtins) {
-      const own = preset && p.name === preset.palette ? ' (the place\'s own)' : '';
-      colourSel.append(h('option', { value: `b:${p.name}`, selected: f.colour === `b:${p.name}` }, p.name + own));
-    }
-    if (mine.length) {
-      const group = h('optgroup', { label: 'My palettes' });
-      mine.forEach((p, i) => group.append(h('option', { value: `m:${i}`, selected: f.colour === `m:${i}` }, p.name || `Palette ${i + 1}`)));
-      colourSel.append(group);
-    }
+    // Colours as strips: each palette shown, the picture on the left follows.
+    const choice = (key, name, stops, own) => h('button', { type: 'button', class: 'colour-choice', 'aria-pressed': String(f.colour === key), 'data-k': `colour-${key}`,
+      title: name, onclick: () => { f.colour = key; colourChosen = true; rerender(renderZoom); paintHero(); } },
+      h('span', { class: 'colour-strip', style: { background: cssGradient(stops) }, 'aria-hidden': 'true' }),
+      h('span', null, name, own ? h('span', { class: 'muted small' }, ' (its own)') : null));
+    const colourSel = h('div', { class: 'colour-choices', role: 'group', 'aria-label': 'Colours' },
+      builtins.map((p) => choice(`b:${p.name}`, p.name, p.stops, preset && p.name === preset.palette)),
+      mine.map((p, i) => choice(`m:${i}`, `${p.name || `Palette ${i + 1}`} (mine)`, p.stops, false)));
 
     const speedText = h('span', { class: 'value' });
     const fpsSel = h('select', { class: 'input', 'data-k': 'fps', onchange: (e) => { f.fps = Number(e.target.value); updateSpeed(); } },
@@ -200,7 +271,7 @@ export function mount(root, params, { go }) {
     updateSpeed();
 
     zoomBox.append(depthField,
-      h('label', { class: 'field' }, 'Colours', colourSel),
+      h('div', { class: 'field full' }, h('span', null, 'Colours'), colourSel),
       h('label', { class: 'field' }, h('span', null, 'Zoom speed · ', speedText), speed),
       h('label', { class: 'field' }, 'Frames per second', fpsSel),
       h('p', { class: 'hint full' }, 'Colours, speed, fps and size can all be changed after the render without rendering it again.'));
@@ -348,10 +419,7 @@ export function mount(root, params, { go }) {
       mine = Array.isArray(favs?.palettes) ? favs.palettes.filter((p) => Array.isArray(p?.stops) && p.stops.length) : [];
       const wanted = params.get('preset');
       preset = wanted ? presets.find((p) => p.name === wanted) || null : presets[0] || null;
-      if (preset) {
-        const own = builtins.find((p) => p.name === preset.palette);
-        f.colour = own ? `b:${own.name}` : builtins[0] ? `b:${builtins[0].name}` : '';
-      }
+      if (preset) f.colour = ownColour();
       renderAll();
       refreshEstimate();
     } catch (err) {

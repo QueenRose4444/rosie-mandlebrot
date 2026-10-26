@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3 — 2026-10-26
+
+- **New render shows the colours you pick.** The colours are strips to click instead of a list of
+  names, and the place's picture on the left is redrawn in them straight away (exactly, in the
+  browser, from what the picture is made of). The Library offers **Make pictures** once more to give the
+  built-in places what this needs (a few seconds); places found by the Finder keep their own picture.
+- **Change place… without leaving the page:** New render opens every place's picture to pick
+  from, and keeps the colours you chose.
+
 ## 0.4.2 — 2026-10-26
 
 - **An icon:** the Mandelbrot set, dark on the app's orange, in the browser tab, on the Windows
