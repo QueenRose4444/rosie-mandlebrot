@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 rosie_mandlebrot_core = { path = "../../crates/core" }
 rosie_mandlebrot_ref = { path = "../../crates/ref" }
+rosie_mandlebrot_store = { path = "../../crates/store" }
 num-complex = "0.4"
 tracing = "0.1"
 rug = { version = "=1.28.0", default-features = false, features = ["float", "integer", "rational"] }

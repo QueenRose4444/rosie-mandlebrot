@@ -228,6 +228,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Interior exit, as in the DS kernel: |d|^2 = d_m * 2^d_e.
     var d_m : f32 = 1.0;
     var d_e : i32 = 0;
+    // The last pass's |w|² as last_w2 * 2^(2 last_we): a skip's first factor.
+    var last_w2 : f32 = 1.0;
+    var last_we : i32 = 0;
 
     loop {
         if (iter >= U.max_iter) { break; }
@@ -372,26 +375,35 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         if (INTERIOR_EXIT) {
             // d_e only means |d| once d_m is back in [1, 2), so test it there.
-            var we = 0;
+            // In the absolute branch |w|² is an f32 that flushes to zero
+            // below 2^-126 (w passing close to 0, as beside a deep
+            // minibrot's nucleus), which would zero |d| and stop an
+            // escaping pixel as interior: square a rescaled w there.
+            var w2 = w_mag_m;
+            var we = w_e;
+            if (NEAR_ZERO && w_e == 0 && w2 < 1.1754944e-38) {
+                let kw = ilog2f(w_inf);
+                let sc = exp2i(clamp(-kw, -126, 127));
+                w2 = (w_re.x * sc) * (w_re.x * sc) + (w_im.x * sc) * (w_im.x * sc);
+                we = kw;
+            }
             if (skipped) {
-                d_m = d_m * skip_d2;
-                d_e = d_e + skip_de;
+                // A is the product of 2Z at the skipped steps' starting
+                // indices n .. n+len-1, but a step counts 2z at the index it
+                // lands on, so the last pass already counted 2z_n: trade that
+                // factor for 2z_{n+len}. Without the trade the error compounds
+                // over thousands of skips beside a deep minibrot and stops
+                // escaping pixels as interior.
+                let kl = ilog2f(max(last_w2, 1.1754944e-38));
+                let kc = ilog2f(max(w2, 1.1754944e-38));
+                d_m = d_m * skip_d2 * ((w2 * exp2i(-kc)) / (last_w2 * exp2i(-kl)));
+                d_e = d_e + skip_de + 2 * (we - last_we) + kc - kl;
             } else {
-                // In the absolute branch |w|² is an f32 that flushes to zero
-                // below 2^-126 (w passing close to 0, as beside a deep
-                // minibrot's nucleus), which would zero |d| and stop an
-                // escaping pixel as interior: square a rescaled w there.
-                var w2 = w_mag_m;
-                we = w_e;
-                if (NEAR_ZERO && w_e == 0 && w2 < 1.1754944e-38) {
-                    let kw = ilog2f(w_inf);
-                    let sc = exp2i(clamp(-kw, -126, 127));
-                    w2 = (w_re.x * sc) * (w_re.x * sc) + (w_im.x * sc) * (w_im.x * sc);
-                    we = kw;
-                }
                 d_m = d_m * (4.0 * w2);
                 d_e = d_e + 2 * we;
             }
+            last_w2 = w2;
+            last_we = we;
             if (skipped || we != 0 || d_m < 9.5367432e-7 || d_m > 1.0995116e12 || d_m == 0.0) {
                 let k = ilog2f(d_m);
                 d_e = d_e + k;

@@ -9,6 +9,8 @@
 //!   of precisions, the two arms interleaved.
 //! * `bare`          — one orbit step's arithmetic alone, and each operation
 //!   on its own, against MPFR.
+//! * `interior RE IM SPAN MAX_ITER SIDE`, `interior-bla …` — the interior
+//!   test's derivative along exact orbits, and along the BLA walk.
 //!
 //! Build with the GNU toolchain (see rust-toolchain.toml), e.g.
 //! `cargo run --release -- ops 200000`.
@@ -1053,6 +1055,202 @@ fn se3_check() {
     println!("span {span:e}: inside/outside wrong of 100 — replayed SE3 {}, f64 walk {}", wrong.0, wrong.1);
 }
 
+/// `interior RE IM SPAN MAX_ITER SIDE`: on a SIDE x SIDE grid over the frame,
+/// the exact orbit's escape count beside the running log2 |dz_n/dz_1|^2 (the
+/// GPU's interior test), and when each candidate interior rule would fire.
+fn interior(a: &[String]) {
+    let (re, im) = (&a[0], &a[1]);
+    let span: f64 = a[2].parse().unwrap();
+    let max_iter: u32 = a[3].parse().unwrap();
+    let side: u32 = a[4].parse().unwrap();
+    let prec = 64 + (-span.log2()).max(0.0) as u32 + 64;
+    let cre0 = Float::with_val(prec, Float::parse(re).unwrap());
+    let cim0 = Float::with_val(prec, Float::parse(im).unwrap());
+    let thresholds = [-20i64, -64, -200, -1000];
+    // Rule "dip": the running sum below T *and* below its value one dip ago,
+    // i.e. still falling at the next new minimum of |z| (a period later).
+    let mut false_in = vec![0u32; thresholds.len()];
+    let mut false_dip = 0u32;
+    let mut inside = 0u32;
+    let mut fire_inside = vec![Vec::new(); thresholds.len()];
+    let mut fire_dip = Vec::new();
+    let mut worst = vec![0f64; 0];
+    for j in 0..side {
+        for i in 0..side {
+            let dx = ((i as f64 + 0.5) / side as f64 - 0.5) * span;
+            let dy = (0.5 - (j as f64 + 0.5) / side as f64) * span;
+            let cre = Float::with_val(prec, &cre0 + dx);
+            let cim = Float::with_val(prec, &cim0 + dy);
+            let mut zr = Float::with_val(prec, 0);
+            let mut zi = Float::with_val(prec, 0);
+            let mut sum = 0f64; // log2 |d|^2
+            let mut first = vec![None; thresholds.len()];
+            let mut min_z = f64::INFINITY;
+            let mut sum_at_min: Option<f64> = None;
+            let mut dip = None;
+            let mut lowest = 0f64;
+            let mut esc = max_iter;
+            for n in 1..=max_iter {
+                // z <- z^2 + c
+                let r2 = Float::with_val(prec, zr.square_ref());
+                let i2 = Float::with_val(prec, zi.square_ref());
+                let ri = Float::with_val(prec, &zr * &zi);
+                zr = Float::with_val(prec, &r2 - &i2) + &cre;
+                zi = Float::with_val(prec, ri * 2u32) + &cim;
+                let (fr, er) = zr.to_f64_exp();
+                let (fi, ei) = zi.to_f64_exp();
+                let e = er.max(ei);
+                let (mr, mi) = (fr * 2f64.powi(er - e), fi * 2f64.powi(ei - e));
+                let mag = (mr * mr + mi * mi).log2() + 2.0 * e as f64; // log2 |z|^2
+                if mag > 2.0 { esc = n; break; }
+                // |d_{n+1}|^2 = |d_n|^2 * |2 z_n|^2
+                sum += 2.0 + mag;
+                lowest = lowest.min(sum);
+                for (k, t) in thresholds.iter().enumerate() {
+                    if first[k].is_none() && sum < *t as f64 { first[k] = Some(n); }
+                }
+                if mag < min_z {
+                    min_z = mag;
+                    if dip.is_none() {
+                        if let Some(prev) = sum_at_min {
+                            if sum < -20.0 && sum < prev - 1.0 { dip = Some(n); }
+                        }
+                    }
+                    sum_at_min = Some(sum);
+                }
+            }
+            if esc < max_iter {
+                for k in 0..thresholds.len() { if first[k].is_some_and(|f| f < esc) { false_in[k] += 1; } }
+                if dip.is_some_and(|f| f < esc) { false_dip += 1; }
+                worst.push(lowest);
+            } else {
+                inside += 1;
+                for k in 0..thresholds.len() { fire_inside[k].push(first[k].unwrap_or(max_iter)); }
+                fire_dip.push(dip.unwrap_or(max_iter));
+            }
+        }
+    }
+    let n = side * side;
+    println!("{n} pixels, {} escape, {inside} never escape (cap {max_iter}), {prec} bits", n - inside);
+    let mean = |v: &Vec<u32>| if v.is_empty() { 0.0 } else { v.iter().map(|&x| x as f64).sum::<f64>() / v.len() as f64 };
+    for (k, t) in thresholds.iter().enumerate() {
+        println!("  sum < {t:>5}: {:>4} escaping pixels stopped as interior; inside pixels stop at {:.0} iterations on average", false_in[k], mean(&fire_inside[k]));
+    }
+    println!("  dip rule  : {false_dip:>4} escaping pixels stopped as interior; inside pixels stop at {:.0} on average", mean(&fire_dip));
+    worst.sort_by(f64::total_cmp);
+    if !worst.is_empty() {
+        println!("  lowest log2|d|^2 reached by an escaping pixel: min {:.0}, median {:.0}", worst[0], worst[worst.len() / 2]);
+    }
+}
+
+/// `interior-bla RE IM SPAN MAX_ITER SIDE`: the CPU BLA walk with the GPU's
+/// interior bookkeeping (|A|^2 per skip, |2w|^2 per step), beside the same walk
+/// with each skip's derivative taken step by step along the linearised dz,
+/// beside the exact escape count. Where the first stops a pixel and the second
+/// does not, the skip's A is the culprit.
+fn interior_bla(a: &[String]) {
+    use num_complex::Complex64;
+    use rosie_mandlebrot_ref::{build_bla_table, BLA_EPSILON_DS};
+    let (re, im) = (&a[0], &a[1]);
+    let span: f64 = a[2].parse().unwrap();
+    let max_iter: u32 = a[3].parse().unwrap();
+    let side: u32 = a[4].parse().unwrap();
+    let orbit = compute_reference(&RefRequest { center_re: re.clone(), center_im: im.clone(), max_iter: max_iter + 2, want_sa: false, max_delta: span }).orbit_f64;
+    let zs: Vec<Complex64> = orbit.iter().map(|e| Complex64::new(e.z_re, e.z_im)).collect();
+    let table = build_bla_table(&orbit, 0.5 * span * std::f64::consts::SQRT_2, BLA_EPSILON_DS);
+    let small = zs.iter().skip(1).map(|z| z.norm()).fold(f64::INFINITY, f64::min);
+    println!("reference: {} entries, smallest |Z| after Z_0 {small:.3e}", zs.len());
+    let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span) + 256;
+    let (mut gpu_false, mut step_false, mut shown) = (0, 0, 0);
+    for j in 0..side {
+        for i in 0..side {
+            let dc = Complex64::new(((i as f64 + 0.5) / side as f64 - 0.5) * span, (0.5 - (j as f64 + 0.5) / side as f64) * span);
+            let exact = rosie_mandlebrot_ref::iterate_single_pixel_exact(re, im, dc.re, dc.im, max_iter, prec).iter;
+            let (mut dz, mut n, mut iter) = (Complex64::new(0.0, 0.0), 0usize, 0u32);
+            let (mut d_gpu, mut d_step) = (0f64, 0f64);
+            let (mut stop_gpu, mut stop_step) = (None, None);
+            let mut worst_skip = (0f64, 0u32, 0usize, 0u32); // (gpu - step) log2 gap, at iter, from n, len
+            while iter < max_iter {
+                let mut skipped = None;
+                if let Some(b) = table.lookup(n, dz.norm(), zs.len(), max_iter - iter).filter(|b| b.len >= 2) {
+                    // step-by-step derivative along the linearised dz
+                    let mut d = dz;
+                    let mut ds = 0f64;
+                    // plain steps count |2 z_{k+1}|^2 after each step k
+                    for k in n..n + b.len as usize {
+                        d = 2.0 * zs[k] * d + dc;
+                        ds += (2.0 * (zs[k + 1] + d)).norm_sqr().log2();
+                    }
+                    let ga = b.a.norm_sqr().log2();
+                    skipped = Some((ga, ds, b.len));
+                    if ga - ds < worst_skip.0 { worst_skip = (ga - ds, iter, n, b.len); }
+                    dz = b.a * dz + b.b * dc;
+                    n += b.len as usize;
+                    iter += b.len;
+                } else {
+                    dz = 2.0 * zs[n] * dz + dz * dz + dc;
+                    n += 1;
+                    iter += 1;
+                }
+                let w = zs[n] + dz;
+                if w.norm_sqr() > 4.0 { break; }
+                match skipped {
+                    Some((ga, ds, _)) => { d_gpu += ga; d_step += ds; }
+                    None => { let t = (2.0 * w).norm_sqr().log2(); d_gpu += t; d_step += t; }
+                }
+                if stop_gpu.is_none() && d_gpu < -20.0 { stop_gpu = Some(iter); }
+                if stop_step.is_none() && d_step < -20.0 { stop_step = Some(iter); }
+                if w.norm_sqr() < dz.norm_sqr() || n >= zs.len() - 1 { dz = w; n = 0; }
+            }
+            let esc = exact < max_iter;
+            if esc && stop_gpu.is_some() { gpu_false += 1; }
+            if esc && stop_step.is_some() { step_false += 1; }
+            if esc && stop_gpu.is_some() && shown < 4 {
+                shown += 1;
+                println!("  pixel ({i},{j}): exact {exact}, gpu-rule stops at {:?}, step-rule at {:?}; worst skip: A is 2^{:.1} of the stepped derivative, at iter {} from n={} len {} (|Z_n|={:.2e})",
+                    stop_gpu, stop_step, worst_skip.0 / 2.0, worst_skip.1, worst_skip.2, worst_skip.3, zs[worst_skip.2].norm());
+            }
+        }
+    }
+    println!("escaping pixels stopped as interior: GPU rule {gpu_false}, stepped derivative {step_false} (of {})", side * side);
+}
+
+/// `chunkdiff DIR_A DIR_B`: every strip sample that differs between two runs'
+/// keyframe chunks, sorted into inside → escaping, escaping → inside and
+/// escaping → escaping (with the largest change in iterations).
+fn chunkdiff(a: &[String]) {
+    use rosie_mandlebrot_store::keyframes::{decode_chunk, INTERIOR};
+    let (da, db) = (std::path::Path::new(&a[0]), std::path::Path::new(&a[1]));
+    let mut names: Vec<_> = std::fs::read_dir(da).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).filter(|n| n.to_string_lossy().ends_with(".rmk")).collect();
+    names.sort();
+    let (mut samples, mut in_out, mut out_in, mut moved, mut biggest, mut files) = (0u64, 0u64, 0u64, 0u64, 0f64, 0);
+    for n in names {
+        let ca = decode_chunk(&std::fs::read(da.join(&n)).unwrap()).unwrap();
+        let cb = decode_chunk(&std::fs::read(db.join(&n)).unwrap()).unwrap();
+        assert_eq!((ca.rows, ca.cols), (cb.rows, cb.cols), "{n:?}: different shapes");
+        samples += ca.data.len() as u64;
+        let before = in_out + out_in + moved;
+        for (&x, &y) in ca.data.iter().zip(&cb.data) {
+            match (x == INTERIOR, y == INTERIOR) {
+                _ if x == y => {}
+                (true, false) => in_out += 1,
+                (false, true) => out_in += 1,
+                _ => { moved += 1; biggest = biggest.max((f64::from(x) - f64::from(y)).abs() / 256.0); }
+            }
+        }
+        files += usize::from(in_out + out_in + moved > before);
+        if std::env::var("PER_CHUNK").is_ok() && in_out + out_in + moved > before {
+            let (mut io, mut mv, mut small) = (0, 0, 0);
+            for (&x, &y) in ca.data.iter().zip(&cb.data) {
+                if x == y { continue; }
+                if x == INTERIOR || y == INTERIOR { io += 1 } else { mv += 1; small += usize::from(x.abs_diff(y) <= 256); }
+            }
+            println!("  {n:?}: rows {}..{}, inside/escape flips {io}, escape changes {mv} ({small} by at most 1 iteration)", ca.row0, ca.row0 + u64::from(ca.rows));
+        }
+    }
+    println!("{samples} samples, {files} chunks differ: inside -> escaping {in_out}, escaping -> inside {out_in}, escaping -> escaping {moved} (largest {biggest:.2} iterations)");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -1066,6 +1264,9 @@ fn main() {
         Some("bla-place") => bla_place(),
         Some("rebase") => rebase_rule(),
         Some("se3") => se3_check(),
+        Some("interior") => interior(&args[2..]),
+        Some("interior-bla") => interior_bla(&args[2..]),
+        Some("chunkdiff") => chunkdiff(&args[2..]),
         _ => eprintln!("usage: mpfr-oracle ops [COUNT] | orbit | speed [REPS] | bare"),
     }
 }

@@ -84,3 +84,21 @@ fn frames_centred_on_deep_nuclei_match_the_exact_orbit() {
         assert_eq!(far, 0, "{name}: {far} of 16 escape counts off by more than a tenth of the cap");
     }
 }
+
+/// The seahorse_deep preset's centre, a few decades above the minibrot it
+/// ends on: every point escapes, after about 17,000 iterations.
+const SEAHORSE_DEEP: (&str, &str) = ("-0.743643887037158704752191506", "0.1318259042053119704931320563");
+
+/// BLA skips carry the orbit's derivative for the interior test. A skip's A
+/// counts 2Z from the step it starts at, while a plain step counts 2z where
+/// it lands; folding A in unadjusted counted one factor twice and dropped
+/// another, and over thousands of skips beside a deep minibrot that stopped
+/// nine in ten of this frame's escaping points as "inside".
+#[test]
+fn bla_skips_keep_the_interior_test_honest_beside_a_deep_minibrot() {
+    let Some(gpu) = gpu() else { return };
+    let (wrong, far, escaping) = disagreements(&gpu, SEAHORSE_DEEP, 1.46e-26, 200_000);
+    assert!(escaping >= 12, "only {escaping} of 16 points escape, the check would prove little");
+    assert_eq!(wrong, 0, "{wrong} of 16 points inside/outside wrong");
+    assert_eq!(far, 0, "{far} of 16 escape counts off by more than a tenth of the cap");
+}
