@@ -227,7 +227,7 @@ impl Place {
     }
 
     /// Predicted end of structure: the span at which the minibrot fills the
-    /// frame (D-25's depth floor), as log10.
+    /// frame (the ladder's depth floor), as log10.
     pub fn end_log10(&self) -> f64 {
         self.nucleus.size_log10
     }
