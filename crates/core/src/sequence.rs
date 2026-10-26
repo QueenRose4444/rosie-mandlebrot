@@ -48,6 +48,17 @@ impl Default for SequenceConfig {
     }
 }
 
+/// Ceiling on iterations for a found place's pictures and renders.
+pub const PLACE_MAX_ITER: u32 = 4_000_000;
+
+/// Iterations a render of a place whose minibrot has this period needs near
+/// its end: 20 periods, at least the usual 200,000. Beside a minibrot of
+/// period p, points near its edge take many periods to escape: at 4 periods
+/// a 1e-146 place (period 30,582) drew solid white.
+pub fn iter_cap_for(period: u32) -> u32 {
+    period.saturating_mul(20).clamp(200_000, PLACE_MAX_ITER)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct FrameParams {
     pub index: u64,
