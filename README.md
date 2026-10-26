@@ -95,7 +95,7 @@ stops; [DEPLOY.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/D
 and how to fix it. **Sharing the GPU with other containers:** while a file named `pause` exists in
 the data volume (`docker exec rosie_mandlebrot touch /data/pause`), the render steps off the GPU and
 waits; delete it (`docker exec rosie_mandlebrot rm /data/pause`) and it carries on. `:latest` is the
-newest release; each release is also tagged by version (`:v0.3.0`).
+newest release; each release is also tagged by its version, for example `:v1.2.3`, to stay on one release.
 
 A command-line render works too: give render options instead of nothing, for example
 `docker run --rm -it --gpus all --user "$(id -u):$(id -g)" -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics -v "$PWD/out:/out" -v "$PWD/state:/state" ghcr.io/queenrose4444/rosie-mandlebrot:latest --preset seahorse --res 1080p --max-frames 300`

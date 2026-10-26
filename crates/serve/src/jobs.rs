@@ -498,7 +498,7 @@ pub fn values_args(b: &ValuesBody, run_dir: &Path) -> Vec<String> {
         "--run-dir".into(),
         run_dir.display().to_string(),
         "--values".into(),
-        b.k.map_or("mid".into(), |k| k.to_string()),
+        b.k.map_or("auto".into(), |k| k.to_string()),
         "--values-size".into(),
         long.to_string(),
     ]

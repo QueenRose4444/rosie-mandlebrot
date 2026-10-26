@@ -325,7 +325,7 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
                 (None, Some(p)) => format!(" in {p}"),
                 (None, None) => String::new(),
             };
-            app.enqueue("assemble", Some(b.run_id.clone()), format!("new video of {}{colours}", meta.label), args, false, Progress::default())
+            app.enqueue("assemble", Some(b.run_id.clone()), format!("a new video of {}{colours}", meta.label), args, false, Progress::default())
         }
         JobBody::Values(b) => {
             let meta = meta_of(app, &b.run_id)?;

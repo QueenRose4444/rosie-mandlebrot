@@ -47,7 +47,7 @@ export function mount(root) {
         mainCol.append(
           h('video', { src: vid.url, controls: true, preload: 'metadata', playsinline: true, class: 'main-video',
             'aria-label': `Video of ${latest.label || latest.preset}` }),
-          h('p', { class: 'hint' }, `The newest video: ${latest.label || latest.preset}, ${vid.name}. Nothing is on the GPU right now.`),
+          h('p', { class: 'hint' }, `The newest video: ${latest.label || latest.preset}, video ${videoNumber(vid)}. Nothing is on the GPU right now.`),
           h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '#/library' }, 'Pick a place to render')));
       } else {
         mainCol.append(
@@ -150,6 +150,19 @@ export function mount(root) {
   function showLive() {
     const v = current;
     if (v.job.kind !== 'render') return;
+    if (v.job.stage === 'assemble') {
+      // The deepest frame is usually past the detail: show one from the
+      // middle of the zoom while the video is made.
+      const list = snapshots();
+      const mid = list[Math.floor(list.length / 2)];
+      const src = mid?.url || v.job.preview || null;
+      v.tag.textContent = 'Making the video';
+      if (src && v.img.getAttribute('src') !== src) v.img.src = src;
+      v.img.hidden = !src;
+      v.img.alt = 'A frame from the middle of the zoom';
+      v.caption.textContent = 'The render is done; the video is being made from it. This is a frame from the middle of the zoom.';
+      return;
+    }
     const src = v.job.preview || runDetail?.preview || null;
     v.tag.textContent = 'Latest';
     if (src && v.img.getAttribute('src') !== src) v.img.src = src;
@@ -343,6 +356,21 @@ export function mount(root) {
       .sort((a, b) => (b.created || 0) - (a.created || 0))[0] || null;
   }
 
+  // zoom.mp4 is a run's first video, zoom-2.mp4 its second, and so on.
+  function videoNumber(vd) {
+    const m = /^zoom-(\d+)\./.exec(vd.name || '');
+    return m ? Number(m[1]) : 1;
+  }
+
+  // "seahorse_deep 2026-10-26 video 2.mp4" rather than "zoom-2.mp4".
+  function downloadName(run, vd) {
+    const place = String(run.label || run.preset || 'zoom').replace(/[^A-Za-z0-9 _-]+/g, '').trim() || 'zoom';
+    const d = run.created ? new Date(run.created * 1000) : null;
+    const date = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : '';
+    const ext = /\.[a-z0-9]+$/i.exec(vd.name || '')?.[0] || '.mp4';
+    return `${[place, date, `video ${videoNumber(vd)}`].filter(Boolean).join(' ')}${ext}`;
+  }
+
   function newestVideo(run) {
     const vids = Array.isArray(run.videos) ? [...run.videos] : [];
     vids.sort((a, b) => (b.modified || 0) - (a.modified || 0));
@@ -376,16 +404,24 @@ export function mount(root) {
         player.append(h('video', { src: shown.url, controls: true, preload: 'metadata', playsinline: true, 'aria-label': `Video of ${run.label || run.preset}: ${shown.name}` }));
       }
       if (vids.length > 1) {
-        // Every video of the run, newest first: watch any of them, or download it.
+        // Every video of the run, newest first: one Watch and one Download each.
         player.append(h('div', { class: 'stack small', style: { gap: '4px' } }, h('span', { class: 'muted' }, 'Videos (newest first):'),
-          vids.map((vd) => h('div', { class: 'row', style: { gap: '8px' } },
-            h('button', { type: 'button', class: 'btn quiet', 'aria-pressed': String(item.open && shown === vd),
-              onclick: () => { item.open = true; item.which = vd.url; renderPlayer(); player.querySelector('video')?.play().catch(() => {}); } },
-            `Watch ${vd.name || 'video'}`),
-            h('a', { href: vd.url, download: vd.name || '' }, `download (${bytes(vd.bytes)})`)))));
+          vids.map((vd) => {
+            const playing = item.open && shown === vd;
+            return h('div', { class: 'row', style: { gap: '8px' } },
+              h('button', { type: 'button', class: 'btn quiet', 'aria-pressed': String(playing),
+                onclick: () => {
+                  item.open = !playing;
+                  item.which = vd.url;
+                  renderPlayer();
+                  if (item.open) player.querySelector('video')?.play().catch(() => {});
+                } },
+              `${playing ? 'Hide' : 'Watch'} video ${videoNumber(vd)}`),
+              h('a', { href: vd.url, download: downloadName(run, vd) }, `Download (${bytes(vd.bytes)})`));
+          })));
       }
     }
-    if (video) {
+    if (video && vids.length === 1) {
       const watch = h('button', { type: 'button', class: 'btn primary', 'aria-expanded': String(item.open) }, item.open ? 'Hide video' : 'Watch video');
       watch.addEventListener('click', () => {
         item.open = !item.open;
@@ -399,7 +435,7 @@ export function mount(root) {
     if ((run.frames || 0) > 0 && run.status !== 'failed') {
       actions.append(h('a', { class: 'btn quiet', href: `#/colours?run=${encodeURIComponent(run.id)}` }, 'Recolour'));
     }
-    if (video) actions.append(h('a', { class: 'btn quiet', href: video.url, download: video.name || '' }, 'Download'));
+    if (video && vids.length === 1) actions.append(h('a', { class: 'btn quiet', href: video.url, download: downloadName(run, video) }, 'Download'));
     if (run.status === 'incomplete' || run.status === 'stopped') {
       const resume = h('button', { type: 'button', class: 'btn quiet' }, 'Resume');
       resume.addEventListener('click', async () => {

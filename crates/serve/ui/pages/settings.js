@@ -69,12 +69,12 @@ export function mount(root) {
       return h('label', { class: 'field' }, label, sel, hint ? h('span', { class: 'hint' }, hint) : null);
     };
     const rendering = h('fieldset', { class: 'box' }, h('legend', null, 'Rendering'),
-      choice('Strip pieces', 'chunk_size', [
-        ['octave', 'Whole octaves (recommended: fastest)'],
-        ['half', 'Half octaves (exactly what earlier versions made)'],
-        ['quarter', 'Quarter octaves (a little less memory, slower)'],
-        ['eighth', 'Eighth octaves (least memory, slowest)'],
-      ], 'How much of the zoom is rendered at a time. Whole octaves measured 8–18% faster than half; the frames differ only invisibly. Applies to new renders.'),
+      choice('How much is rendered at a time', 'chunk_size', [
+        ['octave', 'Each time the view halves in width (recommended: fastest)'],
+        ['half', 'Half of that (exactly what earlier versions made)'],
+        ['quarter', 'A quarter (a little less memory, slower)'],
+        ['eighth', 'An eighth (least memory, slowest)'],
+      ], 'A render works its way down the zoom in pieces: by default one piece for each halving of the view\'s width. Bigger pieces are faster, smaller ones need less memory. The default measured 8–18% faster than half pieces, and the frames differ only invisibly. Applies to new renders.'),
       choice('Snapshots while rendering', 'previews', [
         ['', 'The app\'s default (640 pixels)'],
         ['320', 'Small (320 pixels)'],

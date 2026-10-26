@@ -157,13 +157,16 @@ export function mount(root, params, { go }) {
 
   function renderZoom() {
     clear(zoomBox);
-    const endText = preset ? `To the end of the detail (${fmtSpan(preset.depth)})` : 'To the end of the detail';
+    const endText = preset ? `To the end of the detail (about ${fmtSpan(preset.depth)})` : 'To the end of the detail';
     const depthSel = h('select', { class: 'input', 'data-k': 'depth', onchange: (e) => { f.depthMode = e.target.value; rerender(renderZoom); refreshEstimate(); } },
       h('option', { value: 'end', selected: f.depthMode === 'end' }, endText),
       h('option', { value: 'depth', selected: f.depthMode === 'depth' }, 'Stop at a depth…'),
       h('option', { value: 'seconds', selected: f.depthMode === 'seconds' }, 'A video this many seconds long…'));
     const depthField = h('label', { class: 'field' }, 'How deep', depthSel);
-    if (f.depthMode === 'depth') {
+    if (f.depthMode === 'end') {
+      depthField.append(h('span', { class: 'hint' },
+        'The render carries on until the frames run out of new detail, which is near this depth; the finished run says exactly where its video ends.'));
+    } else if (f.depthMode === 'depth') {
       depthField.append(h('input', { class: 'input mono', type: 'text', inputmode: 'decimal', placeholder: 'for example 1e-10',
         value: f.depthValue, 'aria-label': 'Stop at this view width', 'data-k': 'depth-value',
         onchange: (e) => { f.depthValue = e.target.value.trim(); refreshEstimate(); } }));

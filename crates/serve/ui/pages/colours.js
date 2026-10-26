@@ -8,7 +8,7 @@ import { span as fmtSpan, when, size } from '../format.js';
 
 const LONG_SIDE = 640;
 const USABLE = new Set(['done', 'stopped', 'incomplete']);
-const valuesCache = new Map(); // run id -> parsed values, kept while the page is open in this tab
+const valuesCache = new Map(); // "run id|frame" -> parsed values, kept while the page is open in this tab
 
 let nextStopId = 1;
 const mkStop = (p, c) => ({ id: nextStopId++, p: Math.max(0, Math.min(1, Number(p))), c: normHex(c) });
@@ -45,6 +45,14 @@ export function mount(root, params, { go }) {
   const canvas = h('canvas', { class: 'preview-canvas', role: 'img', 'aria-label': 'Preview of one frame in the colours being edited', hidden: true });
   const empty = h('div', { class: 'preview-empty' }, 'Loading…');
   const caption = h('p', { class: 'hint', role: 'status', 'aria-live': 'polite' });
+  // Which frame the preview shows: a lively one to start with, or any the
+  // slider picks (each new frame is a short GPU job).
+  let frameK = null;
+  const frameOut = h('output', { class: 'num', 'aria-hidden': 'true' });
+  const frameSlider = h('input', { type: 'range', min: '0', max: '0', step: '1', value: '0', 'aria-label': 'Preview frame', disabled: true,
+    oninput: (e) => { frameOut.textContent = `frame ${Number(e.target.value) + 1}`; },
+    onchange: (e) => { if (run) { frameK = Number(e.target.value); loadValues(run); } } });
+  const framePicker = h('label', { class: 'field' }, h('span', null, 'Preview frame · ', frameOut), frameSlider);
   const swatches = h('div', { class: 'swatches', role: 'group', 'aria-label': 'Start from a palette' });
   const rampCanvas = h('canvas', { width: '1024', height: '1', 'aria-hidden': 'true' });
   const handles = h('div');
@@ -77,7 +85,7 @@ export function mount(root, params, { go }) {
     h('section', { class: 'col-side', style: { flex: '1 1 420px', gap: '12px' } },
       title,
       h('label', { class: 'field' }, 'Run', runSelect),
-      empty, canvas, caption,
+      empty, canvas, caption, framePicker,
       h('p', { class: 'hint' }, 'The preview changes as you edit: it is coloured in the browser from the finished render, so nothing is rendered again.')),
     editor));
 
@@ -368,6 +376,9 @@ export function mount(root, params, { go }) {
       inside = normHex(b?.inside || '#000000');
     }
     insideInput.value = inside;
+    frameK = null;
+    frameSlider.max = String(Math.max(0, (r.frames || 1) - 1));
+    frameSlider.disabled = !(r.frames > 1);
     loadValues(r);
   }
 
@@ -375,16 +386,17 @@ export function mount(root, params, { go }) {
     const seq = ++loadSeq;
     values = null;
     imageData = null;
-    const cached = valuesCache.get(r.id);
+    const key = `${r.id}|${frameK ?? 'start'}`;
+    const cached = valuesCache.get(key);
     if (cached) { showValues(cached); return; }
     showEmpty('Preparing the preview…');
     caption.textContent = '';
     // A values file made when the render finished: no GPU job needed.
-    if (r.values) {
+    if (r.values && frameK === null) {
       try {
         const parsed = parseRmw(await getBytes(r.values));
         if (!alive || seq !== loadSeq) return;
-        valuesCache.set(r.id, parsed);
+        valuesCache.set(key, parsed);
         showValues(parsed);
         return;
       } catch {
@@ -394,7 +406,7 @@ export function mount(root, params, { go }) {
     const dims = valuesSize(r.width, r.height);
     let job;
     try {
-      job = await post('/api/jobs', { kind: 'values', run_id: r.id, k: null, width: dims.width, height: dims.height });
+      job = await post('/api/jobs', { kind: 'values', run_id: r.id, k: frameK, width: dims.width, height: dims.height });
     } catch (err) {
       if (seq === loadSeq) showEmpty(`Could not prepare the preview: ${err.message}`, true);
       return;
@@ -408,7 +420,7 @@ export function mount(root, params, { go }) {
         try {
           const parsed = parseRmw(await getBytes(url));
           if (!alive || seq !== loadSeq) return;
-          valuesCache.set(r.id, parsed);
+          valuesCache.set(key, parsed);
           showValues(parsed);
         } catch (err) {
           if (seq === loadSeq) showEmpty(`Could not read the preview: ${err.message}`, true);
@@ -443,6 +455,8 @@ export function mount(root, params, { go }) {
     canvas.hidden = false;
     canvas.style.aspectRatio = `${v.width} / ${v.height}`;
     caption.textContent = `Frame ${v.k + 1} of the video${Number.isFinite(v.span) ? `, view width ${fmtSpan(v.span)}` : ''}, at ${v.width} × ${v.height}.`;
+    frameSlider.value = String(v.k);
+    frameOut.textContent = `frame ${v.k + 1}`;
     schedule();
   }
 

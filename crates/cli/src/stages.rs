@@ -139,14 +139,15 @@ pub fn keyframes(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: Ar
 pub fn values(cli: &Cli, cfg: &RunConfig, which: &str, shader_dir: Option<&Path>, ev: &dyn Events) -> anyhow::Result<()> {
     let dir = strip_dir(&cfg.output);
     let m = read_manifest(&dir)?.ok_or_else(|| MbError::InvalidArg { flag: "--values", reason: format!("no strip in {}", dir.display()) })?;
+    let gpu = GpuCtx::new_with_engine(shader_dir, cfg.deep_engine, cli.allow_software_gpu)?;
+    let opt = assemble_options(cli, cfg)?;
     let k = match which {
         "last" => None,
         "mid" => Some(frame_count(&m) / 2),
-        n => Some(n.parse::<u64>().map_err(|_| MbError::InvalidArg { flag: "--values", reason: format!("{n:?}: expected a frame number, mid or last") })?),
+        "auto" => Some(lively_frame(&gpu, &m, &dir, &opt)?),
+        n => Some(n.parse::<u64>().map_err(|_| MbError::InvalidArg { flag: "--values", reason: format!("{n:?}: expected a frame number, mid, auto or last") })?),
     };
-    let gpu = GpuCtx::new_with_engine(shader_dir, cfg.deep_engine, cli.allow_software_gpu)?;
     let (w, h) = preview_size(&m.geometry, cli.values_size);
-    let opt = assemble_options(cli, cfg)?;
     let shot = frame_at(&gpu, &m, &dir, k, w, h, &opt.palette, opt.inside, true, true)?;
     let path = cfg.output.join("values").join(format!("v_{}_{w}x{h}.rmw", shot.k));
     write_values(&shot, &path)?;
@@ -160,6 +161,42 @@ pub fn values(cli: &Cli, cfg: &RunConfig, which: &str, shader_dir: Option<&Path>
     tracing::info!("recolour check: {off} of {} pixels differ from the GPU frame, largest difference {worst}", w * h);
     ev.emit(Event::Image { path: path.display().to_string(), k: shot.k });
     Ok(())
+}
+
+/// The frame a colour preview starts on: of nine from 15% to 85% of the way
+/// down, the one with the most detail, brighter ones preferred. The middle
+/// frame was often dim, or past the detail, in some palettes.
+fn lively_frame(gpu: &GpuCtx, m: &rosie_mandlebrot_store::keyframes::Manifest, dir: &Path, opt: &Options) -> anyhow::Result<u64> {
+    const SIDE: u32 = 128;
+    let n = frame_count(m);
+    let mut best = (f64::MIN, n / 2);
+    for i in 0..9u64 {
+        let k = n * (15 + i * 70 / 8) / 100;
+        let shot = frame_at(gpu, m, dir, Some(k), SIDE, SIDE, &opt.palette, opt.inside, true, false)?;
+        let rgba = shot.rgba.unwrap_or_default();
+        let luma = |x: u32, y: u32| {
+            let p = &rgba[((y * SIDE + x) * 4) as usize..][..3];
+            0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2])
+        };
+        let (mut grad, mut bright) = (0.0, 0.0);
+        for y in 0..SIDE {
+            for x in 0..SIDE {
+                bright += luma(x, y);
+                if x + 1 < SIDE {
+                    grad += (luma(x + 1, y) - luma(x, y)).abs();
+                }
+                if y + 1 < SIDE {
+                    grad += (luma(x, y + 1) - luma(x, y)).abs();
+                }
+            }
+        }
+        let px = f64::from(SIDE * SIDE);
+        let score = grad / px * (0.5 + bright / px / 255.0);
+        if score > best.0 {
+            best = (score, shot.k);
+        }
+    }
+    Ok(best.1)
 }
 
 /// `--heroes DIR`: one small picture per preset, from halfway down its depth

@@ -345,7 +345,7 @@ pub struct Cli {
     pub previews: u32,
 
     /// Write a values file for frame N of the strip in --run-dir/--output
-    /// ("mid" for the middle one, "last" for the deepest) and exit: what each pixel's colour is made of,
+    /// ("mid" for the middle one, "auto" for a lively one, "last" for the deepest) and exit: what each pixel's colour is made of,
     /// so any palette can be applied without the GPU.
     #[arg(long, hide = true)]
     pub values: Option<String>,
