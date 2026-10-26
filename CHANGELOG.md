@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.4 — 2026-10-26
+
+- **Times for every run:** a run's card says how long its render took, and **Times** shows where
+  the time went — the GPU drawing the zoom, the high-precision maths on the processor, points per
+  second — and how long each video took to make (videos made from now on).
+- **Zoom speed you can see:** on New render the place's picture zooms in at the chosen speed,
+  over and over, so a speed can be felt before rendering.
+- **Change a finished run's speed:** the Colours page has the zoom speed and frames per second
+  for the new video, with the same moving preview; a new speed only re-makes the video.
+- **Uploads can carry more fields** (Settings, one `name=value` a line, `{run}` for the run's
+  name), for example `drive_path={run}` to give each run its own folder on an uploader that
+  understands it.
+
 ## 0.4.3 — 2026-10-26
 
 - **New render shows the colours you pick.** The colours are strips to click instead of a list of

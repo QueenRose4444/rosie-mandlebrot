@@ -4,6 +4,7 @@ import { h, clear, picture, debounce, keepFocus } from '../dom.js';
 import { bytes, duration, span as fmtSpan, kindName } from '../format.js';
 import { lutFromStops, recolour, cssGradient } from '../palette.js';
 import { parseRmw } from '../rmw.js';
+import { ZOOM_FACTORS, speedLabel, zoomPreview } from '../speed.js';
 
 const SIZES = [
   { w: 1080, h: 1080, label: '1080 × 1080 square' },
@@ -11,13 +12,7 @@ const SIZES = [
   { w: 1080, h: 1920, label: '1080 × 1920 phone' },
   { w: 3840, h: 2160, label: '3840 × 2160 4K' },
 ];
-// Slider positions 1..10 -> zoom factor per frame (smaller = faster).
-export const ZOOM_FACTORS = [0.995, 0.99, 0.985, 0.98, 0.975, 0.97, 0.965, 0.96, 0.95, 0.94];
 const MEMORY_STEPS = [256, 512, 1024, 2048, null];
-
-export function closerPerSecond(zoomFactor, fps) {
-  return Math.pow(1 / zoomFactor, fps);
-}
 
 function evenClamp(v, lo, hi) {
   let n = Math.round(Number(v));
@@ -47,6 +42,7 @@ export function mount(root, params, { go }) {
   let colourChosen = false; // picked by hand: kept when the place changes
   const valuesFor = new Map(); // values URL -> parsed values (or a promise)
   let heroCanvas = null;
+  let heroEl = null; // the picture on the left (canvas or img), for the speed preview
 
   const left = h('section', { class: 'col-side' });
   const right = h('section', { class: 'col-main' });
@@ -66,8 +62,9 @@ export function mount(root, params, { go }) {
     heroCanvas = preset.values
       ? h('canvas', { class: 'hero-big', role: 'img', 'aria-label': `Where the ${preset.label || preset.name} zoom goes, in the chosen colours` })
       : null;
+    heroEl = heroCanvas || picture(preset.hero, `Where the ${preset.label || preset.name} zoom goes`, 'hero-big');
     left.append(
-      heroCanvas || picture(preset.hero, `Where the ${preset.label || preset.name} zoom goes`, 'hero-big'),
+      heroEl,
       h('div', { class: 'stack', style: { gap: '4px' } },
         h('strong', { style: { fontSize: '18px' } }, preset.label || preset.name),
         h('span', { class: 'muted' }, preset.description || '', ' Detail runs out near ', h('span', { class: 'num' }, fmtSpan(preset.depth)), '.'),
@@ -134,7 +131,7 @@ export function mount(root, params, { go }) {
       ctx.putImageData(img, 0, 0);
     } catch {
       // No values to draw from: show the plain picture instead.
-      if (canvas === heroCanvas) { valuesFor.delete(url); canvas.replaceWith(picture(preset.hero, '', 'hero-big')); heroCanvas = null; }
+      if (canvas === heroCanvas) { valuesFor.delete(url); heroEl = picture(preset.hero, '', 'hero-big'); canvas.replaceWith(heroEl); heroCanvas = null; }
     }
   }
 
@@ -264,16 +261,20 @@ export function mount(root, params, { go }) {
     const speed = h('input', { type: 'range', min: '1', max: String(ZOOM_FACTORS.length), step: '1', value: String(f.speed),
       'aria-label': 'Zoom speed', oninput: (e) => { f.speed = Number(e.target.value); updateSpeed(); } });
     function updateSpeed() {
-      const x = closerPerSecond(ZOOM_FACTORS[f.speed - 1], f.fps);
-      speedText.textContent = `${x < 10 ? x.toFixed(1) : Math.round(x)}× closer each second`;
+      speedText.textContent = speedLabel(ZOOM_FACTORS[f.speed - 1], f.fps);
       speed.setAttribute('aria-valuetext', speedText.textContent);
     }
     updateSpeed();
+    // The place's picture zooming at the chosen speed (follows the slider live).
+    const preview = zoomPreview(() => heroEl, () => Math.pow(1 / ZOOM_FACTORS[f.speed - 1], f.fps),
+      'The place zooming in at the chosen speed');
 
     zoomBox.append(depthField,
       h('div', { class: 'field full' }, h('span', null, 'Colours'), colourSel),
       h('label', { class: 'field' }, h('span', null, 'Zoom speed · ', speedText), speed),
       h('label', { class: 'field' }, 'Frames per second', fpsSel),
+      h('div', { class: 'field full speed-row' }, preview.el,
+        h('p', { class: 'hint' }, 'The picture zooms in at this speed, over and over: about how the video will move. Faster renders no slower; it only makes a shorter video.')),
       h('p', { class: 'hint full' }, 'Colours, speed, fps and size can all be changed after the render without rendering it again.'));
   }
 

@@ -52,7 +52,8 @@ pub fn send(n: &Notify, job: &Job, video: Option<&Path>) -> Vec<String> {
         });
     }
     if let (false, Some(v)) = (n.upload_url.is_empty(), video) {
-        report.push(match upload(&n.upload_url, &n.upload_api_key, v) {
+        let run = job.run_id.clone().unwrap_or_else(|| job.label.clone());
+        report.push(match upload(&n.upload_url, &n.upload_api_key, &n.fields(&run), v) {
             Ok(code) => format!("upload: {} answered {code}", n.upload_url),
             Err(e) => format!("upload: failed: {e:#}"),
         });
@@ -127,9 +128,11 @@ fn discord(url: &str, text: &str, video: Option<&Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn upload(url: &str, api_key: &str, video: &Path) -> anyhow::Result<u16> {
+fn upload(url: &str, api_key: &str, extra: &[(String, String)], video: &Path) -> anyhow::Result<u16> {
     let name = video.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
-    let mp = Multipart::new(&[("filename", &name), ("caller", "rosie_mandlebrot")], Some(("file", video)))?;
+    let mut fields: Vec<(&str, &str)> = vec![("filename", &name), ("caller", "rosie_mandlebrot")];
+    fields.extend(extra.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    let mp = Multipart::new(&fields, Some(("file", video)))?;
     let (ct, len) = (mp.content_type(), mp.len());
     let mut req = agent().post(url).header("Content-Type", &ct).header("Content-Length", len.to_string());
     if !api_key.is_empty() {
@@ -192,10 +195,12 @@ mod tests {
         let f = dir.path().join("zoom.mp4");
         std::fs::write(&f, b"VIDEO-BYTES").unwrap();
         let (url, h) = one_request_server();
-        assert_eq!(upload(&url, "k123", &f).unwrap(), 202);
+        let extra = vec![("drive_path".to_string(), "20261026-seahorse".to_string())];
+        assert_eq!(upload(&url, "k123", &extra, &f).unwrap(), 202);
         let got = h.join().unwrap();
         assert!(got.to_ascii_lowercase().contains("x-api-key: k123"), "{got}");
         assert!(got.contains("VIDEO-BYTES"));
         assert!(got.contains("name=\"caller\"\r\n\r\nrosie_mandlebrot"));
+        assert!(got.contains("name=\"drive_path\"\r\n\r\n20261026-seahorse"), "the extra fields go with it");
     }
 }

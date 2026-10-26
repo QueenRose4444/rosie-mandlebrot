@@ -14,6 +14,7 @@ pub fn file(path: &str) -> Option<(&'static str, &'static str)> {
         "format.js" => (JS, include_str!("../ui/format.js")),
         "palette.js" => (JS, include_str!("../ui/palette.js")),
         "rmw.js" => (JS, include_str!("../ui/rmw.js")),
+        "speed.js" => (JS, include_str!("../ui/speed.js")),
         "pages/library.js" => (JS, include_str!("../ui/pages/library.js")),
         "pages/finder.js" => (JS, include_str!("../ui/pages/finder.js")),
         "pages/new.js" => (JS, include_str!("../ui/pages/new.js")),

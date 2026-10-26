@@ -595,6 +595,23 @@ pub fn run(
             return Err(MbError::Ffmpeg(format!("ffmpeg exited with {status}")).into());
         }
         tracing::info!("video: {}", video_path.display());
+        // How long this video took to make, beside it, for the app's run card.
+        let colours = match &opt.palette {
+            Palette::Builtin(s) => s.name().to_string(),
+            Palette::Stops(_) => "your own colours".to_string(),
+        };
+        let timing = serde_json::json!({
+            "secs": started.elapsed().as_secs_f64(),
+            "gpu_ms": asm.shader_ms(),
+            "frames": done,
+            "fps": opt.fps,
+            "width": vw,
+            "height": vh,
+            "colours": colours,
+        });
+        if let Err(e) = std::fs::write(rosie_mandlebrot_store::video::timing_path(&video_path), timing.to_string()) {
+            tracing::warn!("could not save the video's timings: {e}");
+        }
         ev.emit(Event::Video { path: video_path.display().to_string(), frames: done });
     }
     tracing::info!("assembly GPU time {:.1} ms over {done} frames", asm.shader_ms());

@@ -90,6 +90,11 @@ pub fn picture_path(video: &Path) -> std::path::PathBuf {
     video.with_extension("jpg")
 }
 
+/// Where a video's timings live: beside it, same name, `.json`.
+pub fn timing_path(video: &Path) -> std::path::PathBuf {
+    video.with_extension("json")
+}
+
 /// At most 640 pixels on the long side, keeping the shape.
 pub fn picture_size(w: u32, h: u32) -> (u32, u32) {
     let long = w.max(h).max(1);

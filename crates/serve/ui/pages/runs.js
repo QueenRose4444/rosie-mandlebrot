@@ -442,6 +442,33 @@ export function mount(root) {
     return `${[place, date, `video ${videoNumber(vd)}`].filter(Boolean).join(' ')}${ext}`;
   }
 
+  // Where the time went: the render (GPU, and the CPU's share) and each video.
+  function timesPanel(run, vids) {
+    const r = run.render;
+    if (!r && !vids.some((v) => v.timing)) return null;
+    const pct = (a, b) => (b > 0 ? ` (${Math.round((a / b) * 100)}%)` : '');
+    const dur = (secs) => (secs < 1 ? `${Math.round(secs * 1000)} ms` : duration(secs));
+    const rows = [];
+    if (r) {
+      rows.push(h('li', null, h('strong', null, `The render: ${dur(r.secs)}`)));
+      rows.push(h('li', null, `The GPU drawing the zoom: ${dur(r.gpu_secs)}${pct(r.gpu_secs, r.secs)}`));
+      rows.push(h('li', null, `High-precision maths and saving, on the CPU: ${dur(r.cpu_secs)}${pct(r.cpu_secs, r.secs)}`));
+      rows.push(h('li', { class: 'muted' }, `${r.pieces} ${r.pieces === 1 ? 'piece' : 'pieces'}, ${Number(r.samples).toLocaleString()} points`
+        + (r.secs > 0 ? ` (${Math.round(r.samples / r.secs).toLocaleString()} a second)` : '') + `, up to ${Number(r.max_iter).toLocaleString()} iterations a point`));
+    }
+    for (const vd of vids) {
+      const t = vd.timing;
+      if (!t) { rows.push(h('li', { class: 'muted' }, `Video ${videoNumber(vd)}: made before times were recorded`)); continue; }
+      const gpu = (t.gpu_ms || 0) / 1000;
+      rows.push(h('li', null, h('strong', null, `Video ${videoNumber(vd)}: ${dur(t.secs)}`),
+        ` · ${Number(t.frames).toLocaleString()} frames at ${t.width} × ${t.height}, ${t.fps} fps, ${t.colours}`));
+      rows.push(h('li', { class: 'muted' }, `Drawing frames on the GPU ${dur(gpu)}${pct(gpu, t.secs)}; the rest is encoding the video (ffmpeg) and the disk`));
+    }
+    return h('details', { class: 'times' }, h('summary', null, 'Times'),
+      h('ul', { class: 'times-list' }, rows),
+      h('p', { class: 'hint' }, 'Why it is quick: the zoom is drawn once as a strip that holds every depth, and each frame is cut from it on the GPU; colours, speed and size are applied when a video is made, so they never need the zoom drawn again.'));
+  }
+
   function newestVideo(run) {
     const vids = Array.isArray(run.videos) ? [...run.videos] : [];
     vids.sort((a, b) => (b.modified || 0) - (a.modified || 0));
@@ -453,6 +480,7 @@ export function mount(root) {
     const video = vids[0] || null;
     const statusText = { stopped: 'Stopped', failed: 'Failed', incomplete: 'Not finished' }[run.status];
     const meta = [size(run.width, run.height), run.end_span !== undefined && run.end_span !== null ? `to ${fmtSpan(run.end_span)}` : null,
+      run.render ? `rendered in ${duration(run.render.secs)}` : null,
       vids.length > 1 ? `${vids.length} videos` : null, when(run.created)].filter(Boolean).join(' · ');
     const el = h('div', { class: 'item', dataset: { run: run.id } });
     const player = h('div', { class: 'stack' });
@@ -466,7 +494,7 @@ export function mount(root) {
           h('div', { class: 'muted small' }, meta),
           run.stop_reason && run.status !== 'done' ? h('div', { class: 'muted tiny' }, run.stop_reason) : null),
         statusText ? h('span', { class: run.status === 'failed' ? 'pill bad' : 'pill grey' }, statusText) : null),
-      player, actions, confirmBox);
+      player, timesPanel(run, vids), actions, confirmBox);
 
     // Watch: in the big viewer on wide windows, inside this card on a phone.
     const playingHere = (vd) => item.inline === vd.url;

@@ -12,6 +12,21 @@ pub struct Notify {
     pub upload_url: String,
     /// Sent as `X-Api-Key` with the upload, when set.
     pub upload_api_key: String,
+    /// More form fields sent with the upload, one `name=value` a line; `{run}`
+    /// becomes the run's name (e.g. `drive_path={run}` for a folder per run).
+    pub upload_fields: String,
+}
+
+impl Notify {
+    /// The extra upload fields as (name, value) pairs, `{run}` filled in.
+    pub fn fields(&self, run: &str) -> Vec<(String, String)> {
+        self.upload_fields
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().replace("{run}", run)))
+            .filter(|(k, _)| !k.is_empty())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -80,6 +95,19 @@ impl Settings {
         for (name, url) in [("discord_webhook", &self.notify.discord_webhook), ("upload_url", &self.notify.upload_url)] {
             if !(url.is_empty() || url.starts_with("https://") || url.starts_with("http://")) {
                 return Err(format!("{name} must start with https:// or http://"));
+            }
+        }
+        let lines: Vec<&str> = self.notify.upload_fields.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        if lines.len() > 20 {
+            return Err("upload fields: at most 20".into());
+        }
+        for l in lines {
+            let ok = l.split_once('=').is_some_and(|(k, _)| {
+                let k = k.trim();
+                !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            });
+            if !ok {
+                return Err(format!("upload field {l:?}: write name=value, the name in letters, digits, _ or -"));
             }
         }
         if !self.notify.discord_webhook.is_empty() && !self.notify.discord_webhook.starts_with("https://") {
@@ -181,5 +209,10 @@ mod tests {
         assert!(Settings { cpu_percent: Some(0), ..Default::default() }.check().is_err());
         let bad = Settings { notify: Notify { discord_webhook: "http://x".into(), ..Default::default() }, ..Default::default() };
         assert!(bad.check().is_err());
+        let n = Notify { upload_fields: "root_folder_id = abc\n\ndrive_path={run}\n".into(), ..Default::default() };
+        assert_eq!(n.fields("20261026-seahorse"), vec![("root_folder_id".into(), "abc".into()), ("drive_path".into(), "20261026-seahorse".into())]);
+        assert!(Settings { notify: n, ..Default::default() }.check().is_ok());
+        assert!(Settings { notify: Notify { upload_fields: "no equals sign".into(), ..Default::default() }, ..Default::default() }.check().is_err());
+        assert!(Settings { notify: Notify { upload_fields: "bad name=x".into(), ..Default::default() }, ..Default::default() }.check().is_err());
     }
 }

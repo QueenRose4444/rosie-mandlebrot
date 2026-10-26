@@ -24,6 +24,24 @@ pub struct Video {
     pub modified: i64,
     /// Its middle frame (`zoom-2.jpg` beside `zoom-2.mp4`), when made.
     pub picture: Option<String>,
+    /// How long it took to make (`zoom-2.json`; videos from before 0.4.4 have none).
+    pub timing: Option<serde_json::Value>,
+}
+
+/// Where a run's render time went, from its strip's own records.
+#[derive(Debug, Clone, Serialize)]
+pub struct RenderTimes {
+    /// The whole render, start to finish (across resumes).
+    pub secs: f64,
+    /// Of which the GPU drawing the strip.
+    pub gpu_secs: f64,
+    /// The pieces' other work: high-precision reference orbits, BLA tables, writing to disk.
+    pub cpu_secs: f64,
+    pub pieces: usize,
+    /// Points computed (strip rows × columns).
+    pub samples: u64,
+    /// Most iterations a point was allowed.
+    pub max_iter: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -53,6 +71,7 @@ pub struct Run {
     pub videos: Vec<Video>,
     pub snapshots: Vec<SnapshotView>,
     pub preview: Option<String>,
+    pub render: Option<RenderTimes>,
     /// The newest values file (for recolouring in the browser), if one was made.
     pub values: Option<String>,
     pub job_id: Option<u64>,
@@ -122,6 +141,7 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
                         bytes: e.metadata().map(|m| m.len()).unwrap_or(0),
                         modified: mtime(&p),
                         picture: dated_url(data, &rosie_mandlebrot_store::video::picture_path(&p)),
+                        timing: std::fs::read(rosie_mandlebrot_store::video::timing_path(&p)).ok().and_then(|b| serde_json::from_slice(&b).ok()),
                     })
                 })
                 .collect()
@@ -175,6 +195,18 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
                 .or_else(|| snapshots.get(snapshots.len() / 2).map(|s| s.url.clone())),
         },
         values: newest(&out.join("values"), "rmw").and_then(|p| file_url(data, &p)),
+        render: manifest.as_ref().filter(|m| !m.chunks.is_empty()).map(|m| {
+            let gpu: f64 = m.chunks.iter().map(|c| c.shader_ms).sum::<f64>() / 1000.0;
+            let wall: f64 = m.chunks.iter().map(|c| c.render_ms).sum::<f64>() / 1000.0;
+            RenderTimes {
+                secs: m.elapsed_secs,
+                gpu_secs: gpu,
+                cpu_secs: (wall - gpu).max(0.0),
+                pieces: m.chunks.len(),
+                samples: m.chunks.iter().map(|c| u64::from(c.rows)).sum::<u64>() * u64::from(m.geometry.cols),
+                max_iter: m.chunks.iter().map(|c| c.max_iter).max().unwrap_or(0),
+            }
+        }),
         videos,
         snapshots,
         job_id: job.map(|(id, _)| id),
