@@ -66,8 +66,10 @@ pub fn assemble_options(cli: &Cli, cfg: &RunConfig) -> anyhow::Result<Options> {
         tone,
         tone_smoothing: cli.tone_smoothing,
         frames_png: cli.frames_png.clone(),
+        only_frames: cli.frames.clone(),
+        thumbnail: cli.thumbnail,
         compare: cli.compare_frames.clone(),
-        video: !(cfg.no_video || cfg.video_codec == "none"),
+        video: cli.frames.is_empty() && !(cfg.no_video || cfg.video_codec == "none"),
         keep_existing: cli.assemble,
     })
 }

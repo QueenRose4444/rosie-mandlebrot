@@ -86,6 +86,7 @@ export function mount(root) {
     if (job.kind === 'assemble' || job.stage === 'assemble') return 'Making the video';
     if (job.kind === 'values') return 'Preparing colours';
     if (job.kind === 'heroes') return 'Making card pictures';
+    if (job.kind === 'find') return 'Looking for places';
     return 'Rendering';
   }
 
@@ -127,7 +128,9 @@ export function mount(root) {
     if (other) {
       v.caption.textContent = job.kind === 'assemble'
         ? `Making ${job.label || 'a new video'} from the finished render: nothing is rendered again. It appears under Finished when it is done, beside the earlier video.`
-        : job.kind === 'values' ? 'Preparing the colour preview for the Colours page.' : 'Drawing the Library\'s card pictures.';
+        : job.kind === 'values' ? 'Preparing the colour preview for the Colours page.'
+        : job.kind === 'find' ? `Looking for places to zoom into (${(job.places || []).length} found so far). The Finder page shows them.`
+        : 'Drawing the Library\'s card pictures.';
     }
     clear(v.stats).append(...[
       stat('Time left', pr.eta_secs === null || pr.eta_secs === undefined ? 'measuring…' : duration(pr.eta_secs)),
@@ -174,7 +177,8 @@ export function mount(root) {
     v.tag.textContent = `Snapshot ${v.index + 1} of ${list.length}`;
     v.caption.textContent = `Saved snapshot ${v.index + 1} of ${list.length}` +
       (s.span !== undefined && s.span !== null ? `, view width ${fmtSpan(s.span)}` : '') +
-      (s.k !== undefined && s.k !== null ? `, frame ${s.k}` : '') + '.';
+      (s.k !== undefined && s.k !== null ? `, frame ${s.k}` : '') + '.' +
+      ((runDetail?.videos?.length || 0) > 1 ? ' Snapshots keep the colours the run was rendered in.' : '');
     if (v.slider) { v.slider.value = String(v.index); v.slider.setAttribute('aria-valuetext', v.tag.textContent); }
     if (v.film) {
       for (const [n, b] of [...v.film.children].entries()) b.setAttribute('aria-current', String(n === v.index));
@@ -294,7 +298,7 @@ export function mount(root) {
     }
     for (const job of queued) {
       const run = runById(job.run_id);
-      const what = { render: 'render', assemble: 'new video', values: 'colour preview', heroes: 'card pictures' }[job.kind] || job.kind;
+      const what = { render: 'render', assemble: 'new video', values: 'colour preview', heroes: 'card pictures', find: 'search for places' }[job.kind] || job.kind;
       const btn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove ${job.label || 'this job'} from the queue`, title: 'Remove from queue' }, '✕');
       btn.addEventListener('click', () => stopJob(job, btn, true));
       waitingList.append(h('div', { class: 'item', style: { flexDirection: 'row', alignItems: 'center' } },

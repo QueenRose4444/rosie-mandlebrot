@@ -46,6 +46,10 @@ pub struct Options {
     pub tone_smoothing: f32,
     /// Also write these frames (0-based) as PNGs next to the video.
     pub frames_png: Vec<u64>,
+    /// Make only these frames, as PNGs (empty: every frame).
+    pub only_frames: Vec<u64>,
+    /// Also write the video's middle frame, small, as `thumbnail.jpg`.
+    pub thumbnail: bool,
     /// For these frames also render the frame directly (1 sample per pixel)
     /// and a 5×5-supersampled truth, coloured exactly like the assembled frame.
     pub compare: Vec<u64>,
@@ -486,10 +490,23 @@ pub fn run(
     let mut smoother = ToneSmoother::new(opt.tone_smoothing);
     let mut sys = crate::sysstats::SysStats::new(num_cpus::get());
     let mut done = 0u64;
+    let last_wanted = opt.only_frames.iter().copied().max();
+    if let Some(&k) = opt.only_frames.iter().find(|&&k| k >= frames) {
+        tracing::warn!("frame {k} is past the end of the zoom (it has {frames} frames, 0 to {})", frames.saturating_sub(1));
+    }
     for k in 0..frames {
         if stop.load(Ordering::SeqCst) {
             tracing::warn!("stopped after {done} frames");
             break;
+        }
+        let wanted = last_wanted.is_none() || opt.only_frames.contains(&k);
+        if last_wanted.is_some_and(|l| k > l) {
+            break;
+        }
+        // Per-frame colouring smooths each frame's range with the frames
+        // before it, so those are still measured; by location they are free.
+        if !wanted && opt.tone != Tone::PerFrame {
+            continue;
         }
         let span = m.initial_span * z.powf(k as f64);
         let ln_p = (span / f64::from(h)).ln();
@@ -507,6 +524,9 @@ pub fn run(
             let r = measure_tone_range(&px, u32::MAX).map(|m| smoother.update(m)).or(smoother.current());
             let ToneRange { min, max } = r.unwrap_or(ToneRange { min: 0.0, max: 1.0 });
             f.tone_global = Some((min, max));
+        }
+        if !wanted {
+            continue;
         }
         let rgba = asm.frame(gpu, &f)?;
         let luma: f64 = rgba
@@ -543,7 +563,13 @@ pub fn run(
             Some(b) => compose_bars(&rgba, w, h, vw, vh, b),
             None => rgba,
         };
-        if opt.frames_png.contains(&k) {
+        if opt.thumbnail && k == frames / 2 {
+            let path = output.join(THUMBNAIL);
+            let (tw, th) = thumbnail_size(vw, vh);
+            let small = image::imageops::thumbnail(&image::RgbaImage::from_raw(vw, vh, rgba.clone()).expect("a whole frame"), tw, th);
+            write_jpeg(small.as_raw(), tw, th, &path)?;
+        }
+        if opt.frames_png.contains(&k) || last_wanted.is_some() {
             let path = output.join(format!("assembled_{k:06}.png"));
             image::save_buffer(&path, &rgba, vw, vh, image::ExtendedColorType::Rgba8)
                 .map_err(|e| MbError::io(&path, std::io::Error::other(e)))?;
@@ -576,7 +602,7 @@ pub fn run(
     if let Some((_, peak)) = sys.memory() {
         tracing::info!("assembly peak RAM {:.0} MB", peak as f64 / 1048576.0);
     }
-    let stopped = done < frames;
+    let stopped = stop.load(Ordering::SeqCst);
     ev.emit(Event::Finished {
         stage: "assemble",
         status: "stopped",
@@ -773,6 +799,18 @@ pub fn recolour_weights(wts: &[u32], lut: &[[u8; 3]; 1024], inside: [u8; 3]) -> 
 }
 
 /// Save RGBA8 as a JPEG (previews).
+/// A recoloured video's picture for the app's run cards, in the output folder.
+pub const THUMBNAIL: &str = "thumbnail.jpg";
+
+/// At most 640 pixels on the long side, keeping the shape.
+fn thumbnail_size(w: u32, h: u32) -> (u32, u32) {
+    let long = w.max(h).max(1);
+    if long <= 640 {
+        return (w, h);
+    }
+    ((u64::from(w) * 640 / u64::from(long)).max(1) as u32, (u64::from(h) * 640 / u64::from(long)).max(1) as u32)
+}
+
 pub fn write_jpeg(rgba: &[u8], w: u32, h: u32, path: &Path) -> anyhow::Result<()> {
     let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
     if let Some(parent) = path.parent() {

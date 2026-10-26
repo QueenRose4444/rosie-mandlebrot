@@ -59,7 +59,7 @@ export function mount(root, params, { go }) {
     left.append(
       picture(preset.hero, `Where the ${preset.name} zoom goes`, 'hero-big'),
       h('div', { class: 'stack', style: { gap: '4px' } },
-        h('strong', { style: { fontSize: '18px' } }, preset.name),
+        h('strong', { style: { fontSize: '18px' } }, preset.label || preset.name),
         h('span', { class: 'muted' }, preset.description || '', ' Detail runs out near ', h('span', { class: 'num' }, fmtSpan(preset.depth)), '.'),
         coords ? h('span', { class: 'coords' }, coords) : null,
         h('a', { href: '#/library', style: { marginTop: '6px', minHeight: '44px', display: 'inline-flex', alignItems: 'center' } }, 'Choose another place')));

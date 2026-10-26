@@ -91,7 +91,12 @@ export function mount(root) {
         ['mkv', 'MKV'],
         ['webm', 'WebM VP9 (keeps transparent bars)'],
         ['mov', 'MOV ProRes 4444 (keeps transparent bars, large files)'],
-      ], 'For new videos unless a render asks for something else (transparent bars pick WebM).'));
+      ], 'For new videos unless a render asks for something else (transparent bars pick WebM).'),
+      choice('Finder pictures', 'finder_picture_size', [
+        ['192', 'Small (192 pixels)'],
+        ['384', 'Large (384 pixels, recommended)'],
+        ['768', 'Very large (768 pixels)'],
+      ], 'The pictures down each place the Finder finds. 384 pixels measured about 15% slower to make than 160, so big enough to judge a place by costs little.', Number));
 
     body.append(
       rendering,

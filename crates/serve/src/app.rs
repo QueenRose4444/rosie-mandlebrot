@@ -1,6 +1,6 @@
 //! Shared state and the job runner: one child process at a time, the rest wait.
 
-use crate::jobs::{Job, JobResult, JobState, Progress};
+use crate::jobs::{Job, JobResult, JobState, PlaceOut, Progress};
 use crate::runs::file_url;
 use rosie_mandlebrot_run::Event;
 use std::path::PathBuf;
@@ -88,6 +88,8 @@ impl App {
                 stop_requested: false,
                 stage_started: None,
                 pausing: false,
+                find: None,
+                places: Vec::new(),
             };
             inner.jobs.push(job.clone());
             job
@@ -159,7 +161,7 @@ impl App {
         Some(j.clone())
     }
 
-    fn update(&self, id: u64, runs: bool, f: impl FnOnce(&mut Job)) {
+    pub(crate) fn update(&self, id: u64, runs: bool, f: impl FnOnce(&mut Job)) {
         {
             let mut inner = self.inner.lock().unwrap();
             if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == id) {
@@ -372,6 +374,30 @@ impl App {
                 let u = url(&path);
                 self.update(id, true, |j| j.result.video = u)
             }
+            EventIn::Place(p) => {
+                let pictures = p.pictures.iter().filter_map(|f| url(f)).collect();
+                let files = p.pictures.iter().map(|f| {
+                    let path = PathBuf::from(f);
+                    if path.is_absolute() { path } else { data.join(path) }
+                }).collect();
+                self.update(id, false, |j| {
+                    if j.places.len() < MAX_PLACES {
+                        j.places.push(PlaceOut {
+                            n: p.n,
+                            re: p.re,
+                            im: p.im,
+                            period: p.period,
+                            end: p.end,
+                            interest: p.interest,
+                            level: p.level,
+                            pictures,
+                            saved: None,
+                            saved_label: None,
+                            files,
+                        });
+                    }
+                })
+            }
             EventIn::Finished => self.update(id, true, |_| {}),
         }
     }
@@ -401,8 +427,25 @@ enum EventIn {
     Video {
         path: String,
     },
+    Place(PlaceIn),
     Finished,
 }
+
+/// A found place as a search prints it.
+#[derive(serde::Deserialize)]
+struct PlaceIn {
+    n: u32,
+    re: String,
+    im: String,
+    period: u32,
+    end: f64,
+    interest: f64,
+    level: u32,
+    pictures: Vec<String>,
+}
+
+/// Places one search keeps in the state (each carries six picture URLs).
+const MAX_PLACES: usize = 200;
 
 // Kept in step with the program's own event type: a renamed or removed event
 // must fail to compile here rather than be silently ignored.

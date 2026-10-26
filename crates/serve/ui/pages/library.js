@@ -1,5 +1,5 @@
 // Library: the preset cards, search, filters, favourites and lists.
-import { get, put, post, on, jobsOf, latestState } from '../api.js';
+import { get, put, post, del, on, jobsOf, latestState } from '../api.js';
 import { h, clear, picture } from '../dom.js';
 import { kindName, KIND_CHIPS, span as fmtSpan } from '../format.js';
 
@@ -48,7 +48,7 @@ export function mount(root) {
     }
     if (kind) list = list.filter((p) => p.kind === kind);
     if (search) {
-      list = list.filter((p) => `${p.name} ${p.description || ''}`.toLowerCase().includes(search));
+      list = list.filter((p) => `${p.name} ${p.label || ''} ${p.description || ''}`.toLowerCase().includes(search));
     }
     return list;
   }
@@ -159,13 +159,29 @@ export function mount(root) {
     return details;
   }
 
+  async function removeFound(p, btn) {
+    if (!confirm(`Remove ${p.label || p.name} from the Library? Its pictures go too; renders made from it stay.`)) return;
+    btn.disabled = true;
+    try {
+      await del(`/api/found/${encodeURIComponent(p.name)}`);
+      status.textContent = `${p.label || p.name} removed.`;
+      loadPresets();
+    } catch (err) {
+      btn.disabled = false;
+      status.textContent = `Could not remove: ${err.message}`;
+    }
+  }
+
   function card(p) {
     const fav = isFav(p.name);
+    const remove = p.kind === 'found'
+      ? h('button', { type: 'button', class: 'btn quiet', 'aria-label': `Remove ${p.label || p.name}`, onclick: (e) => removeFound(p, e.currentTarget) }, 'Remove')
+      : null;
     return h('article', { class: 'card' },
       picture(p.hero, p.description || p.name, 'pic'),
       h('div', { class: 'card-body' },
         h('div', { class: 'card-title' },
-          h('strong', null, p.name),
+          h('strong', null, p.label || p.name),
           h('button', {
             type: 'button', class: 'star', 'aria-pressed': String(fav),
             'aria-label': `Favourite ${p.name}`, title: fav ? 'In favourites' : 'Add to favourites',
@@ -175,7 +191,8 @@ export function mount(root) {
         p.description ? h('div', { class: 'card-desc' }, p.description) : null,
         h('div', { class: 'card-actions' },
           h('a', { class: 'btn quiet', href: `#/new?preset=${encodeURIComponent(p.name)}` }, 'Render…'),
-          listsControl(p))));
+          listsControl(p),
+          remove)));
   }
 
   function renderCards(keepFocus) {

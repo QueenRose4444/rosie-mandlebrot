@@ -143,6 +143,14 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        // The search finds places faster than they are pictured: the time
+        // limit is the whole job's, so what is left over is only counted.
+        if Instant::now() >= deadline {
+            stop.store(true, Ordering::Relaxed);
+            let left = 1 + rx.try_iter().count();
+            tracing::info!("time is up: {left} more places were found but not pictured");
+            break;
+        }
         n += 1;
         let end = 10f64.powf(p.end_log10());
         let place = match picture_place(&gpu, &cli, palette, n, &p.nucleus.re, &p.nucleus.im, p.nucleus.period, end, p.interest, p.level) {
@@ -170,7 +178,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             stop.store(true, Ordering::Relaxed);
         }
     }
-    let _ = searcher.join();
+    // A stopped search may be part way through a deep Newton solve (tens of
+    // seconds near 1e-200); nothing it finds now is used, so do not wait.
+    if !stop.load(Ordering::Relaxed) {
+        let _ = searcher.join();
+    }
     let reason = if signals.stop.load(Ordering::Relaxed) { "stopped" } else { "time limit" };
     tracing::info!("finder: {} places in {:.0} s ({reason})", places.len(), started.elapsed().as_secs_f64());
     ev.emit(Event::Finished { stage: "find", status: "stopped", reason: reason.into(), elapsed_secs: started.elapsed().as_secs_f64() });

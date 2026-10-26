@@ -1,7 +1,8 @@
 //! The HTTP API the browser UI uses.
 
 use crate::app::{now, App};
-use crate::jobs::{self, JobBody, Progress};
+use crate::found;
+use crate::jobs::{self, FindInfo, FindStart, JobBody, Progress};
 use crate::runs::{self, RunMeta};
 use crate::store::{self, Favourites, Settings};
 use axum::extract::{Path as UrlPath, Query, State};
@@ -61,7 +62,11 @@ pub fn router(app: Arc<App>, previews: u32) -> Router {
         .route("/api/pause", post(pause))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/favourites", get(get_favourites).put(put_favourites))
+        .route("/api/found", get(list_found).post(save_found))
+        .route("/api/found/{name}", axum::routing::delete(delete_found))
         .nest_service("/files/runs", tower_http::services::ServeDir::new(runs::runs_dir(&data)))
+        .nest_service("/files/finds", tower_http::services::ServeDir::new(data.join("finds")))
+        .nest_service("/files/found", tower_http::services::ServeDir::new(found::dir(&data)))
         .nest_service("/heroes", tower_http::services::ServeDir::new(data.join("heroes")))
         .with_state(ctx)
 }
@@ -131,7 +136,81 @@ async fn presets(State(c): State<Ctx>) -> ApiResult<Json<serde_json::Value>> {
             })
         })
         .collect();
+    let mut list = list;
+    list.extend(found::load(&c.app.data).places.iter().map(found_json));
     Ok(Json(serde_json::Value::Array(list)))
+}
+
+/// A kept place as a Library card: like a preset, with kind "found".
+fn found_json(f: &found::FoundPlace) -> serde_json::Value {
+    serde_json::json!({
+        "name": f.name,
+        "label": f.label,
+        "kind": "found",
+        "description": format!("Found by the finder: interest {:.0}%, a minibrot of period {} at the end.", f.interest, f.period),
+        "depth": format!("{:.1e}", f.end),
+        "palette": null,
+        "center": format!("{}, {}", f.re, f.im),
+        "hero": f.pictures.last().map(|p| found::picture_url(f, p)),
+        "pictures": f.pictures.iter().map(|p| found::picture_url(f, p)).collect::<Vec<_>>(),
+        "interest": f.interest,
+        "period": f.period,
+        "base": f.base,
+    })
+}
+
+async fn list_found(State(c): State<Ctx>) -> Json<serde_json::Value> {
+    Json(serde_json::Value::Array(found::load(&c.app.data).places.iter().map(found_json).collect()))
+}
+
+#[derive(Deserialize)]
+struct SaveFound {
+    job: u64,
+    n: u32,
+}
+
+/// Keep a place a search found: it joins the Library.
+async fn save_found(State(c): State<Ctx>, Json(b): Json<SaveFound>) -> ApiResult<Json<serde_json::Value>> {
+    let job = c.app.jobs().into_iter().find(|j| j.id == b.job).ok_or_else(|| not_found("such search"))?;
+    let presets = preset_list()?;
+    let kept = found::save(&c.app.data, &presets, &job, b.n, now()).map_err(bad)?;
+    let (name, label) = (kept.name.clone(), kept.label.clone());
+    c.app.update(b.job, false, |j| {
+        if let Some(p) = j.places.iter_mut().find(|p| p.n == b.n) {
+            p.saved = Some(name);
+            p.saved_label = Some(label);
+        }
+    });
+    Ok(Json(found_json(&kept)))
+}
+
+async fn delete_found(State(c): State<Ctx>, UrlPath(name): UrlPath<String>) -> ApiResult<StatusCode> {
+    if !jobs::valid_name(&name) {
+        return Err(bad("not a place name"));
+    }
+    match found::remove(&c.app.data, &name) {
+        Ok(true) => {
+            c.app.bump(false);
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Ok(false) => Err(not_found("such place")),
+        Err(e) => Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, e)),
+    }
+}
+
+/// A Library name that is not a preset but a kept place: render it as its
+/// base preset at its centre, down to its end, with the iterations its
+/// minibrot needs.
+fn found_place_body(data: &std::path::Path, presets: &[Preset], b: &mut jobs::RenderBody) -> Option<String> {
+    if presets.iter().any(|p| p.name == b.preset) {
+        return None;
+    }
+    let f = found::find(data, &b.preset)?;
+    b.center = b.center.take().or_else(|| Some(format!("{},{}", f.re, f.im)));
+    b.zoom_end = b.zoom_end.or(Some(f.end));
+    b.iter_cap = b.iter_cap.or(Some(rosie_mandlebrot_core::sequence::iter_cap_for(f.period)));
+    b.preset = f.base.clone();
+    Some(f.label)
 }
 
 async fn palettes() -> Json<serde_json::Value> {
@@ -221,13 +300,15 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
     let job = match body {
         JobBody::Render(mut b) => {
             let settings: Settings = store::load(&app.data.join("settings.json"));
+            let found_label = found_place_body(&app.data, &preset_list()?, &mut b);
             b.chunk_size = b.chunk_size.or(Some(settings.chunk_size.clone()));
             b.tone = b.tone.or(Some(settings.tone.clone()));
             b.format = b.format.or(Some(settings.video_format.clone()));
             // Checked before the run folder exists.
             jobs::render_args(&b, std::path::Path::new("x"), false, 0).map_err(bad)?;
-            let id = runs::new_run_id(&app.data, &b.preset, now() + local_offset_secs());
-            let label = b.preset.clone();
+            let label = found_label.unwrap_or_else(|| b.preset.clone());
+            let id_name: String = label.chars().take(48).map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' }).collect();
+            let id = runs::new_run_id(&app.data, &id_name, now() + local_offset_secs());
             let meta = RunMeta { id, preset: b.preset.clone(), label, created: now(), settings: b };
             runs::write_meta(&app.data, &meta).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             queue_render(app, &meta, false, c.previews).map_err(bad)?
@@ -266,8 +347,58 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             };
             app.enqueue("heroes", None, label, args, true, Progress::default())
         }
+        JobBody::Find(b) => {
+            let presets = preset_list()?;
+            let (start, label, base, what) = match b.mode.as_str() {
+                "deeper" => {
+                    let like = b.like.clone().ok_or_else(|| bad("a deeper search needs a place to start from"))?;
+                    if !jobs::valid_name(&like) {
+                        return Err(bad("not a place name"));
+                    }
+                    if presets.iter().any(|p| p.name == like) {
+                        (FindStart::Preset(like.clone()), format!("{like} deeper"), like.clone(), format!("search below {like}"))
+                    } else {
+                        let f = found::find(&app.data, &like).ok_or_else(|| not_found("such place"))?;
+                        let what = format!("search below {}", f.label);
+                        (FindStart::Center(f.re, f.im), format!("{} deeper", f.label), f.base, what)
+                    }
+                }
+                "new" => {
+                    let name = b.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or("found place");
+                    if name.chars().count() > 40 {
+                        return Err(bad("names are up to 40 characters"));
+                    }
+                    (FindStart::New, name.to_string(), "seahorse".to_string(), format!("search for new places ({name})"))
+                }
+                other => return Err(bad(format!("mode {other:?}: expected deeper or new"))),
+            };
+            let settings: Settings = store::load(&app.data.join("settings.json"));
+            let finds = app.data.join("finds");
+            prune_finds(app, &finds);
+            let out = finds.join(format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())));
+            let args = jobs::find_args(&b, &start, &out, settings.finder_picture_size).map_err(bad)?;
+            let job = app.enqueue("find", None, what, args, false, Progress::default());
+            let info = FindInfo { mode: b.mode.clone(), seconds: b.seconds, label, base, out };
+            app.update(job.id, false, |j| j.find = Some(info.clone()));
+            let mut job = job;
+            job.find = Some(info);
+            job
+        }
     };
     Ok(Json(job))
+}
+
+/// Searches' folders that no job in the list points at any more (kept places
+/// have their own copies of their pictures).
+fn prune_finds(app: &App, finds: &std::path::Path) {
+    let keep: Vec<std::path::PathBuf> = app.jobs().iter().filter_map(|j| j.find.as_ref().map(|f| f.out.clone())).collect();
+    let Ok(dir) = std::fs::read_dir(finds) else { return };
+    for e in dir.filter_map(Result::ok) {
+        let p = e.path();
+        if p.is_dir() && !keep.contains(&p) {
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
 }
 
 async fn stop_job(State(c): State<Ctx>, UrlPath(id): UrlPath<u64>) -> ApiResult<Json<jobs::Job>> {
@@ -298,9 +429,12 @@ async fn estimate(State(c): State<Ctx>, Query(q): Query<EstimateQuery>) -> ApiRe
     if !jobs::valid_name(&q.preset) || !(16..=16384).contains(&q.width) || !(16..=16384).contains(&q.height) {
         return Err(bad("preset, width and height are needed"));
     }
-    let p = preset_list()?.into_iter().find(|p| p.name == q.preset).ok_or_else(|| not_found("such preset"))?;
+    let presets = preset_list()?;
+    let kept = if presets.iter().any(|p| p.name == q.preset) { None } else { found::find(&c.app.data, &q.preset) };
+    let base = kept.as_ref().map_or(q.preset.as_str(), |f| f.base.as_str());
+    let p = presets.into_iter().find(|p| p.name == base).ok_or_else(|| not_found("such preset"))?;
     let start = p.initial_span.to_f64().unwrap_or(3.0);
-    let end = q.zoom_end.or_else(|| p.suggested_zoom_end.to_f64()).unwrap_or(1e-300).max(1e-300);
+    let end = q.zoom_end.or_else(|| kept.as_ref().map(|f| f.end)).or_else(|| p.suggested_zoom_end.to_f64()).unwrap_or(1e-300).max(1e-300);
     let zoom = q.zoom_factor.or(p.zoom_factor).unwrap_or(0.98).clamp(0.5, 0.9999);
     let data = c.app.data.clone();
     let settings: Settings = store::load(&data.join("settings.json"));

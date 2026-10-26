@@ -160,13 +160,13 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
         fps: s.fps.unwrap_or(30),
         zoom_factor: manifest.as_ref().map(|m| m.zoom_factor).or(s.zoom_factor),
         palette,
-        // While it renders, the newest snapshot; afterwards the middle one (the
+        // While it renders, the newest snapshot; afterwards the newest video's
+        // middle frame when a recolour made one, else the middle snapshot (the
         // deepest frames of a zoom are often past its detail).
         preview: match job {
-            Some((_, true)) => snapshots.last(),
-            _ => snapshots.get(snapshots.len() / 2),
-        }
-        .map(|s| s.url.clone()),
+            Some((_, true)) => snapshots.last().map(|s| s.url.clone()),
+            _ => recoloured_thumbnail(data, &out).or_else(|| snapshots.get(snapshots.len() / 2).map(|s| s.url.clone())),
+        },
         values: newest(&out.join("values"), "rmw").and_then(|p| file_url(data, &p)),
         videos,
         snapshots,
@@ -174,6 +174,14 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
         settings: meta.settings.clone(),
         id: meta.id,
     }
+}
+
+/// The thumbnail the newest recolour wrote, with its time in the URL so a
+/// browser fetches each new one.
+fn recoloured_thumbnail(data: &Path, out: &Path) -> Option<String> {
+    let p = out.join(rosie_mandlebrot_run::assemble::THUMBNAIL);
+    let t = mtime(&p);
+    (t > 0).then(|| file_url(data, &p)).flatten().map(|u| format!("{u}?v={t}"))
 }
 
 /// Every run's `run.json`, newest first.

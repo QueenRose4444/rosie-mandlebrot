@@ -66,6 +66,7 @@ export const KIND_NAMES = {
   nucleus: 'Minibrot',
   misiurewicz: 'Endless spiral',
   landmark: 'Landmark',
+  found: 'Found place',
 };
 
 export const KIND_CHIPS = [
@@ -73,6 +74,7 @@ export const KIND_CHIPS = [
   ['nucleus', 'Minibrots'],
   ['misiurewicz', 'Endless spirals'],
   ['landmark', 'Landmarks'],
+  ['found', 'Found'],
 ];
 
 export function kindName(kind) {

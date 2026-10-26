@@ -9,6 +9,7 @@ mod api;
 mod app;
 pub mod desktop;
 mod estimate;
+mod found;
 mod jobs;
 mod notify;
 mod runs;

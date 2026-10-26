@@ -2,6 +2,7 @@
 import { startEvents, on, latestState, isConnected, jobsOf, request } from './api.js';
 import { clear, h } from './dom.js';
 import * as library from './pages/library.js';
+import * as finder from './pages/finder.js';
 import * as newRender from './pages/new.js';
 import * as runs from './pages/runs.js';
 import * as colours from './pages/colours.js';
@@ -9,6 +10,7 @@ import * as settings from './pages/settings.js';
 
 const ROUTES = {
   library: { page: library, title: 'Library' },
+  finder: { page: finder, title: 'Finder' },
   new: { page: newRender, title: 'New render' },
   runs: { page: runs, title: 'Runs' },
   colours: { page: colours, title: 'Colours' },
@@ -103,6 +105,7 @@ function renderChip(state) {
     doing = running?.kind === 'assemble' || running?.stage === 'assemble' ? 'making a video'
       : running?.kind === 'values' ? 'preparing colours'
       : running?.kind === 'heroes' ? 'making pictures'
+      : running?.kind === 'find' ? 'finding'
       : 'rendering';
   }
   text.textContent = `${gpu.name || 'GPU'} · ${doing}`;

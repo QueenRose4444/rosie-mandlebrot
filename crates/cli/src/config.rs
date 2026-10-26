@@ -282,6 +282,17 @@ pub struct Cli {
     #[arg(long, value_delimiter = ',', hide = true)]
     pub frames_png: Vec<u64>,
 
+    /// With --assemble: make only these frames (0-based, e.g. 200,900), as PNGs
+    /// in the output folder, and no video. For trying colours on a few frames
+    /// without making the whole video.
+    #[arg(long, value_delimiter = ',', requires = "assemble")]
+    pub frames: Vec<u64>,
+
+    /// With --assemble: also write the new video's middle frame, small, as
+    /// thumbnail.jpg (the app's run card follows a recolour with it).
+    #[arg(long, requires = "assemble", hide = true)]
+    pub thumbnail: bool,
+
     /// With --assemble: for these frames also save a direct render and a 5x5
     /// supersampled truth, coloured identically, for quality measurements.
     #[arg(long, value_delimiter = ',', hide = true)]

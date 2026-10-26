@@ -2,9 +2,10 @@
 //! a child copy of the program.
 
 use rosie_mandlebrot_core::palette::{parse_hex, ColorScheme};
+use rosie_mandlebrot_core::sequence::PLACE_MAX_ITER;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Lines of a child's output kept with its job.
 pub const LOG_LINES: usize = 50;
@@ -73,6 +74,12 @@ pub struct Job {
     /// Stopped by a pause: no video, no notification, resumed later.
     #[serde(skip)]
     pub pausing: bool,
+    /// For a search: what it looks for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub find: Option<FindInfo>,
+    /// For a search: the places found so far.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<PlaceOut>,
 }
 
 impl Job {
@@ -127,6 +134,10 @@ pub struct RenderBody {
     pub chunk_size: Option<String>,
     #[serde(default)]
     pub tone: Option<String>,
+    /// Most iterations a pixel may take (a found place's minibrot needs more
+    /// than the usual cap).
+    #[serde(default)]
+    pub iter_cap: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -171,6 +182,69 @@ pub struct HeroesBody {
     pub presets: Option<Vec<String>>,
 }
 
+/// A search for places to zoom into (the Finder page).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FindBody {
+    /// "deeper" (below `like`) or "new".
+    pub mode: String,
+    /// For deeper: the preset or kept place to look below.
+    #[serde(default)]
+    pub like: Option<String>,
+    /// For new: what kept places are called, numbered.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// For new: the shallowest end of zoom to keep, as a span.
+    #[serde(default)]
+    pub min_depth: Option<f64>,
+    /// Keep only places at least this interesting (0–100).
+    #[serde(default)]
+    pub interest: Option<f64>,
+    pub seconds: u64,
+    /// How far below the start a deeper place may stray (1 = close).
+    #[serde(default)]
+    pub reach: Option<f64>,
+}
+
+/// Where a search starts.
+pub enum FindStart {
+    Preset(String),
+    Center(String, String),
+    New,
+}
+
+/// A search job's own details, shown to the UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct FindInfo {
+    pub mode: String,
+    pub seconds: u64,
+    /// Kept places are labelled this, numbered.
+    pub label: String,
+    /// The preset a render of a found place starts from.
+    pub base: String,
+    /// The search's folder (pictures and places.json).
+    #[serde(skip)]
+    pub out: PathBuf,
+}
+
+/// One place a search found.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaceOut {
+    pub n: u32,
+    pub re: String,
+    pub im: String,
+    pub period: u32,
+    pub end: f64,
+    pub interest: f64,
+    pub level: u32,
+    /// Picture URLs, top of the zoom first.
+    pub pictures: Vec<String>,
+    /// Kept in the Library under this name.
+    pub saved: Option<String>,
+    pub saved_label: Option<String>,
+    #[serde(skip)]
+    pub files: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobBody {
@@ -178,6 +252,7 @@ pub enum JobBody {
     Assemble(AssembleBody),
     Values(ValuesBody),
     Heroes(HeroesBody),
+    Find(FindBody),
 }
 
 /// A preset name as presets.toml allows them.
@@ -281,7 +356,8 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
         if !ok {
             return Err(format!("centre {c:?}: expected \"re,im\" as decimals"));
         }
-        a.extend(["--center".into(), c.replace(' ', "")]);
+        // One argument: a centre starting with "-" would read as a flag.
+        a.push(format!("--center={}", c.replace(' ', "")));
     }
     a.extend(["--width".into(), b.width.to_string(), "--height".into(), b.height.to_string()]);
     if let Some(z) = b.zoom_end {
@@ -318,6 +394,12 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
         a.extend(["--chunk-size".into(), c.clone()]);
     }
     a.extend(tone_args(&b.tone)?);
+    if let Some(cap) = b.iter_cap {
+        if !(1_000..=PLACE_MAX_ITER).contains(&cap) {
+            return Err(format!("iter_cap {cap}: must be 1,000 to {PLACE_MAX_ITER}"));
+        }
+        a.extend(["--iter-cap".into(), cap.to_string()]);
+    }
     if previews > 0 {
         a.extend(["--previews".into(), previews.to_string()]);
     }
@@ -327,7 +409,7 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
 /// The child's arguments to make another video from a run's strip.
 pub fn assemble_args(b: &AssembleBody, run_dir: &Path, strip_size: (u32, u32)) -> Result<Vec<String>, String> {
     let format = format_of(&b.format)?;
-    let mut a: Vec<String> = vec!["--assemble".into(), "--run-dir".into(), run_dir.display().to_string()];
+    let mut a: Vec<String> = vec!["--assemble".into(), "--thumbnail".into(), "--run-dir".into(), run_dir.display().to_string()];
     a.extend(palette_args(&b.palette, &b.stops, &b.inside)?);
     if let Some(f) = b.fps {
         if !(1..=240).contains(&f) {
@@ -352,6 +434,60 @@ pub fn assemble_args(b: &AssembleBody, run_dir: &Path, strip_size: (u32, u32)) -
     a.extend(["--video-container".into(), format.into()]);
     a.extend(bars_args(&b.bars, w, h, format)?);
     a.extend(tone_args(&b.tone)?);
+    Ok(a)
+}
+
+/// Pictures down each found place's zoom.
+pub const FIND_PICTURES: u32 = 6;
+
+/// The child's arguments for a search.
+pub fn find_args(b: &FindBody, start: &FindStart, out: &Path, picture_size: u32) -> Result<Vec<String>, String> {
+    if !(10..=3600).contains(&b.seconds) {
+        return Err(format!("seconds {}: search for 10 to 3600", b.seconds));
+    }
+    let mut a: Vec<String> = vec!["find".into()];
+    match start {
+        FindStart::Preset(name) => a.extend(["--like".into(), name.clone()]),
+        FindStart::Center(re, im) => {
+            if !(decimal(re) && decimal(im)) {
+                return Err("that place's centre is not two decimals".into());
+            }
+            a.push(format!("--center={re},{im}"));
+        }
+        FindStart::New => {
+            a.push("--new".into());
+            let d = b.min_depth.unwrap_or(1e-30);
+            if !(1e-300..=1e-10).contains(&d) {
+                return Err(format!("min_depth {d:e}: must be 1e-300 to 1e-10"));
+            }
+            a.extend(["--min-depth".into(), format!("{d:e}")]);
+        }
+    }
+    if let Some(r) = b.reach {
+        if !(0.5..=1.0).contains(&r) {
+            return Err(format!("reach {r}: must be 0.5 to 1"));
+        }
+        a.extend(["--reach".into(), r.to_string()]);
+    }
+    if let Some(i) = b.interest {
+        if !(0.0..=100.0).contains(&i) {
+            return Err(format!("interest {i}: must be 0 to 100"));
+        }
+        a.extend(["--interest".into(), i.to_string()]);
+    }
+    if !(64..=1024).contains(&picture_size) {
+        return Err(format!("picture size {picture_size}: must be 64 to 1024"));
+    }
+    a.extend([
+        "--seconds".into(),
+        b.seconds.to_string(),
+        "--out".into(),
+        out.display().to_string(),
+        "--pictures".into(),
+        FIND_PICTURES.to_string(),
+        "--picture-size".into(),
+        picture_size.to_string(),
+    ]);
     Ok(a)
 }
 
@@ -390,6 +526,7 @@ mod tests {
             bars: None,
             chunk_size: None,
             tone: None,
+            iter_cap: None,
         }
     }
 
@@ -422,6 +559,31 @@ mod tests {
         let mut b = body();
         b.stops = Some(vec![(0.0, "#000000".into()), (2.0, "#ffffff".into())]);
         assert!(render_args(&b, Path::new("r"), false, 0).is_err());
+    }
+
+    #[test]
+    fn a_search_becomes_separate_arguments_and_bad_ones_are_refused() {
+        let b = FindBody { mode: "new".into(), like: None, name: None, min_depth: Some(1e-50), interest: Some(60.0), seconds: 120, reach: None };
+        let a = find_args(&b, &FindStart::New, Path::new("finds/1"), 256).unwrap();
+        assert_eq!(a[0], "find");
+        assert!(a.windows(2).any(|w| w == ["--min-depth", "1e-50"]));
+        assert!(a.windows(2).any(|w| w == ["--out", "finds/1"]));
+        let deeper = FindBody { mode: "deeper".into(), reach: Some(0.75), ..b.clone() };
+        let a = find_args(&deeper, &FindStart::Preset("seahorse_ultra".into()), Path::new("f"), 256).unwrap();
+        assert!(a.windows(2).any(|w| w == ["--like", "seahorse_ultra"]));
+        assert!(find_args(&FindBody { seconds: 5, ..b.clone() }, &FindStart::New, Path::new("f"), 256).is_err());
+        assert!(find_args(&FindBody { reach: Some(2.0), ..b.clone() }, &FindStart::New, Path::new("f"), 256).is_err());
+        assert!(find_args(&b, &FindStart::Center("1;rm".into(), "2".into()), Path::new("f"), 256).is_err());
+        let a = find_args(&deeper, &FindStart::Center("-0.74".into(), "0.11".into()), Path::new("f"), 256).unwrap();
+        assert!(a.contains(&"--center=-0.74,0.11".to_string()));
+        let mut r = body();
+        r.center = Some("-0.743, 0.131".into());
+        assert!(render_args(&r, Path::new("r"), false, 0).unwrap().contains(&"--center=-0.743,0.131".to_string()));
+        let mut r = body();
+        r.iter_cap = Some(640_560);
+        assert!(render_args(&r, Path::new("r"), false, 0).unwrap().windows(2).any(|w| w == ["--iter-cap", "640560"]));
+        r.iter_cap = Some(10);
+        assert!(render_args(&r, Path::new("r"), false, 0).is_err());
     }
 
     #[test]
