@@ -1,8 +1,8 @@
 // Finder: look for places to zoom into — deeper ones below a place you know,
 // or new ones — and keep the good ones in the Library.
 import { get, post, on, jobsOf, latestState } from '../api.js';
-import { h, clear, keepFocus } from '../dom.js';
-import { span as fmtSpan, duration } from '../format.js';
+import { h, clear, keepFocus, picture } from '../dom.js';
+import { span as fmtSpan, duration, kindName } from '../format.js';
 
 const REACH = [
   { value: 1, label: 'Stay close' },
@@ -31,6 +31,7 @@ export function mount(root, params) {
   };
   let alive = true;
   let busy = false;
+  let picking = false; // the Start from grid is open
   let lastKey = '';
   const estimates = new Map(); // `${base}|${end}` -> text
   const status = h('p', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
@@ -68,18 +69,39 @@ export function mount(root, params) {
       MINUTES.map((m) => h('option', { value: String(m), selected: m === value }, m === 1 ? '1 minute' : `${m} minutes`)));
   }
 
+  // "Start from": the chosen place's picture, and every place's picture to
+  // pick from, so the choice is made by eye, not only by name.
+  function startPicker(start) {
+    const missing = places.some((p) => !p.hero);
+    const chosen = h('div', { class: 'start-chosen' },
+      picture(start?.hero, start ? `Where the ${start.label || start.name} zoom goes` : '', 'start-pic', 'No picture yet'),
+      h('div', { class: 'stack', style: { gap: '4px' } },
+        h('strong', null, start ? start.label || start.name : 'Pick a place'),
+        start ? h('span', { class: 'muted small' }, `${kindName(start.kind)} · goes to `, h('span', { class: 'num' }, fmtSpan(start.depth))) : null,
+        start?.description ? h('span', { class: 'muted small' }, start.description) : null,
+        h('button', { type: 'button', class: 'btn quiet', 'data-k': 'change-start', 'aria-expanded': String(picking),
+          onclick: () => { picking = !picking; renderForm(); } }, picking ? 'Close the list' : 'Change…')));
+    const grid = picking
+      ? h('div', { class: 'start-grid', role: 'group', 'aria-label': 'Places to start from' },
+        places.map((p) => h('button', { type: 'button', class: 'start-choice', 'aria-pressed': String(p.name === f.like), 'data-k': `start-${p.name}`,
+          onclick: () => { f.like = p.name; picking = false; renderForm(); form.querySelector('[data-k="change-start"]')?.focus(); } },
+          picture(p.hero, '', 'start-thumb', ''),
+          h('span', null, p.label || p.name),
+          h('span', { class: 'muted small' }, fmtSpan(p.depth)))))
+      : null;
+    return h('div', { class: 'field' }, h('span', null, 'Start from'), chosen, grid,
+      missing && picking ? h('p', { class: 'hint' }, 'Places without a picture get one from Library → Make pictures.') : null);
+  }
+
   function renderDeeper() {
-    const sel = h('select', { class: 'input', 'data-k': 'like', onchange: (e) => { f.like = e.target.value; renderForm(); } },
-      places.map((p) => h('option', { value: p.name, selected: p.name === f.like },
-        `${p.label || p.name} · goes to ${fmtSpan(p.depth)}`)));
     const reach = h('fieldset', { class: 'box' }, h('legend', null, 'How far it may wander'),
       ...REACH.map((r) => h('label', { class: 'check' },
         h('input', { type: 'radio', name: 'reach', value: String(r.value), checked: f.reach === r.value, 'data-k': `reach-${r.value}`,
           onchange: () => { f.reach = r.value; } }), r.label)));
     const start = places.find((p) => p.name === f.like);
     form.append(
+      startPicker(start),
       h('div', { class: 'grid-2' },
-        h('label', { class: 'field' }, 'Start from', sel),
         h('label', { class: 'field' }, 'Search for', minutesSelect(f.minutes, (m) => { f.minutes = m; }, 'minutes'))),
       reach,
       h('p', { class: 'hint' }, `Stay close: the zoom matches ${start ? start.label || start.name : 'the place'} all the way to its end, then carries on — slower to find, much longer renders. Roam: it matches most of the way, then turns into a nearby spiral and goes deeper faster.`),
@@ -104,7 +126,9 @@ export function mount(root, params) {
       h('div', { class: 'field' }, h('span', null, 'At least as deep as ', depthOut), depth,
         h('div', { class: 'ticks', 'aria-hidden': 'true' }, ['1e-20', '1e-100', '1e-200', '1e-290'].map((t) => h('span', null, t)))),
       h('div', { class: 'field' }, h('span', null, 'At least this interesting ', intOut), interest,
-        h('ul', { class: 'marks' }, MARKS.map(([n, pct]) => h('li', null, h('span', { class: 'num' }, `${pct}%`), ' ', n))),
+        h('ul', { class: 'marks' }, MARKS.map(([n, pct]) => h('li', null,
+          picture(places.find((p) => p.name === n)?.hero, `${n}, ${pct}% interesting`, 'mark-pic', ''),
+          h('span', null, h('span', { class: 'num' }, `${pct}%`), ' ', n)))),
         h('p', { class: 'hint' }, 'The marks are built-in places, so you can see what a % looks like.')),
       startButton('Find places'),
       h('p', { class: 'hint' }, 'Places appear below as they are found, best first. Each is saved under its name with a number (my deep spiral 1, 2, …) when you press Save.'));

@@ -17,6 +17,9 @@ export function mount(root) {
   let current = null; // the running job's view, rebuilt when the job changes
   let emptyShown = false;
   let shownIdle = '';
+  // A video picked with Watch: it plays in the big viewer until closed.
+  let watching = null; // { runId, url }
+  let watchView = null; // { url, hint, btn } while it is shown
 
   const mainCol = h('section', { class: 'col-main', style: { flex: '999 1 600px', gap: '16px' } });
   const waitingList = h('div', { class: 'stack' });
@@ -33,6 +36,50 @@ export function mount(root) {
 
   const runById = (id) => runs.find((r) => r.id === id) || null;
   const thumbFor = (run, job) => run?.preview || job?.preview || heroes.get(run?.preset) || null;
+
+  // ---- a video picked with Watch -------------------------------------------
+  function watch(run, vd) {
+    watching = { runId: run.id, url: vd.url };
+    watchView = null;
+    showWatching();
+    renderFinished();
+    mainCol.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    mainCol.querySelector('video')?.play().catch(() => {});
+  }
+
+  function stopWatching() {
+    watching = null;
+    watchView = null;
+    current = null;
+    emptyShown = false;
+    renderFinished();
+    onState(latestState());
+  }
+
+  // Shows the picked video in the big viewer (built once, so playback is not
+  // interrupted by state updates); false when its run or video is gone.
+  function showWatching() {
+    const run = runById(watching.runId);
+    const vd = run ? newestVideo(run).find((x) => x.url === watching.url) : null;
+    if (!vd) { watching = null; watchView = null; return false; }
+    const running = jobsOf(latestState()).find((j) => j.state === 'running') || null;
+    if (!watchView || watchView.url !== vd.url) {
+      stopPlay();
+      current = null;
+      clear(mainCol);
+      const hint = h('p', { class: 'hint' });
+      const btn = h('button', { type: 'button', class: 'btn', onclick: stopWatching });
+      mainCol.append(h('h1', null, 'Runs'),
+        h('video', { src: vd.url, controls: true, preload: 'metadata', playsinline: true, class: 'main-video',
+          'aria-label': `Video ${videoNumber(vd)} of ${run.label || run.preset}` }),
+        hint, h('div', { class: 'row' }, btn));
+      watchView = { url: vd.url, hint, btn };
+    }
+    watchView.hint.textContent = `Watching ${run.label || run.preset}, video ${videoNumber(vd)}.` +
+      (running ? ` ${running.label || 'A job'} is on the GPU meanwhile.` : '');
+    watchView.btn.textContent = running ? 'Back to the live render' : 'Close';
+    return true;
+  }
 
   // ---- the job on the GPU -------------------------------------------------
   function buildCurrent(job) {
@@ -331,7 +378,8 @@ export function mount(root) {
     for (const run of list) {
       seen.add(run.id);
       let item = finishedItems.get(run.id);
-      const sig = JSON.stringify([run.status, run.label, run.videos, run.preview, run.frames, run.job_id, run.end_span, run.stop_reason, heroes.get(run.preset)]);
+      const sig = JSON.stringify([run.status, run.label, run.videos, run.preview, run.frames, run.job_id, run.end_span, run.stop_reason, heroes.get(run.preset),
+        watching?.runId === run.id ? watching.url : '']);
       if (!item) { item = { open: false, confirming: false }; finishedItems.set(run.id, item); }
       if (item.sig !== sig) {
         item.sig = sig;
@@ -397,40 +445,22 @@ export function mount(root) {
         statusText ? h('span', { class: run.status === 'failed' ? 'pill bad' : 'pill grey' }, statusText) : null),
       player, actions, confirmBox);
 
+    // Watch plays the video in the big viewer at the top of the page.
+    const isWatched = (vd) => watching?.runId === run.id && watching.url === vd.url;
     function renderPlayer() {
       clear(player);
-      const shown = (item.which && vids.find((vd) => vd.url === item.which)) || video;
-      if (item.open && shown) {
-        player.append(h('video', { src: shown.url, controls: true, preload: 'metadata', playsinline: true, 'aria-label': `Video of ${run.label || run.preset}: ${shown.name}` }));
-      }
       if (vids.length > 1) {
         // Every video of the run, newest first: one Watch and one Download each.
         player.append(h('div', { class: 'stack small', style: { gap: '4px' } }, h('span', { class: 'muted' }, 'Videos (newest first):'),
-          vids.map((vd) => {
-            const playing = item.open && shown === vd;
-            return h('div', { class: 'row', style: { gap: '8px' } },
-              h('button', { type: 'button', class: 'btn quiet', 'aria-pressed': String(playing),
-                onclick: () => {
-                  item.open = !playing;
-                  item.which = vd.url;
-                  renderPlayer();
-                  if (item.open) player.querySelector('video')?.play().catch(() => {});
-                } },
-              `${playing ? 'Hide' : 'Watch'} video ${videoNumber(vd)}`),
-              h('a', { href: vd.url, download: downloadName(run, vd) }, `Download (${bytes(vd.bytes)})`));
-          })));
+          vids.map((vd) => h('div', { class: 'row', style: { gap: '8px' } },
+            h('button', { type: 'button', class: 'btn quiet', 'aria-pressed': String(isWatched(vd)), onclick: () => watch(run, vd) },
+              isWatched(vd) ? `Playing video ${videoNumber(vd)}` : `Watch video ${videoNumber(vd)}`),
+            h('a', { href: vd.url, download: downloadName(run, vd) }, `Download (${bytes(vd.bytes)})`)))));
       }
     }
     if (video && vids.length === 1) {
-      const watch = h('button', { type: 'button', class: 'btn primary', 'aria-expanded': String(item.open) }, item.open ? 'Hide video' : 'Watch video');
-      watch.addEventListener('click', () => {
-        item.open = !item.open;
-        watch.textContent = item.open ? 'Hide video' : 'Watch video';
-        watch.setAttribute('aria-expanded', String(item.open));
-        renderPlayer();
-        if (item.open) player.querySelector('video')?.play().catch(() => {});
-      });
-      actions.append(watch);
+      actions.append(h('button', { type: 'button', class: 'btn primary', 'aria-pressed': String(isWatched(video)), onclick: () => watch(run, video) },
+        isWatched(video) ? 'Playing' : 'Watch video'));
     }
     if ((run.frames || 0) > 0 && run.status !== 'failed') {
       actions.append(h('a', { class: 'btn quiet', href: `#/colours?run=${encodeURIComponent(run.id)}` }, 'Recolour'));
@@ -489,6 +519,10 @@ export function mount(root) {
     }
     const jobs = jobsOf(s);
     const running = jobs.find((j) => j.state === 'running') || null;
+    if (watching && showWatching()) {
+      renderWaiting(jobs);
+      return;
+    }
     if (!running) {
       const latest = newestFinished();
       const idleKey = latest ? `${latest.id}|${newestVideo(latest)[0]?.url || ''}` : '';

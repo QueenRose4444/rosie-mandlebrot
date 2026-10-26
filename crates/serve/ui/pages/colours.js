@@ -68,6 +68,8 @@ export function mount(root, params, { go }) {
     h('button', { type: 'submit', class: 'btn primary' }, 'Save'),
     h('button', { type: 'button', class: 'btn', onclick: () => openSave(false) }, 'Cancel'));
   const actionNote = h('p', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
+  const undoBtn = h('button', { type: 'button', class: 'btn quiet', disabled: true, title: 'Undo (Ctrl+Z)', onclick: () => undo() }, 'Undo');
+  const redoBtn = h('button', { type: 'button', class: 'btn quiet', disabled: true, title: 'Redo (Ctrl+Y)', onclick: () => redo() }, 'Redo');
   const editor = h('section', { class: 'col-main' },
     h('fieldset', { class: 'box' }, h('legend', null, 'Start from'), swatches),
     h('fieldset', { class: 'box' }, h('legend', null, 'Colour stops'),
@@ -77,7 +79,8 @@ export function mount(root, params, { go }) {
         tbody),
       h('div', { class: 'row small muted', style: { gap: '14px' } },
         h('span', null, 'Click the bar to add a stop; drag a stop, or focus it and use the arrow keys, to move it. Delete removes the focused stop.'),
-        h('label', { class: 'check' }, 'Inside the set', insideInput))),
+        h('label', { class: 'check' }, 'Inside the set', insideInput),
+        h('span', { class: 'row', style: { gap: '8px' } }, undoBtn, redoBtn))),
     h('div', { class: 'row', style: { gap: '12px' } }, makeBtn, saveBtn,
       h('span', { class: 'hint' }, 'No rendering, only assembling and encoding: much quicker than the render. The old video is kept.')),
     saveForm, actionNote);
@@ -123,7 +126,86 @@ export function mount(root, params, { go }) {
   function edited() {
     markSwatches();
     schedule();
+    if (!restoring) commitSoon();
   }
+
+  // ---- undo / redo ---------------------------------------------------------
+  // One step per settled change: a drag or a run of arrow keys or colour-picker
+  // moves counts once, after half a second of stillness (a drag also at release).
+  let undoStack = []; // states, oldest first; the last is the current one
+  let redoStack = [];
+  let commitTimer = 0;
+  let restoring = false;
+  const snapshot = () => JSON.stringify({ stops: stopList(), inside });
+
+  function commit() {
+    clearTimeout(commitTimer);
+    commitTimer = 0;
+    const now = snapshot();
+    if (undoStack[undoStack.length - 1] === now) return;
+    undoStack.push(now);
+    if (undoStack.length > 200) undoStack.shift();
+    redoStack = [];
+    renderUndo();
+  }
+
+  function commitSoon() {
+    clearTimeout(commitTimer);
+    commitTimer = setTimeout(commit, 500);
+    renderUndo();
+  }
+
+  function resetHistory() {
+    clearTimeout(commitTimer);
+    commitTimer = 0;
+    undoStack = [snapshot()];
+    redoStack = [];
+    renderUndo();
+  }
+
+  function restore(state) {
+    const o = JSON.parse(state);
+    restoring = true;
+    setStops(o.stops);
+    inside = o.inside;
+    insideInput.value = inside;
+    edited();
+    restoring = false;
+    renderUndo();
+  }
+
+  function undo() {
+    if (commitTimer) commit();
+    if (undoStack.length < 2) return;
+    redoStack.push(undoStack.pop());
+    restore(undoStack[undoStack.length - 1]);
+    actionNote.textContent = 'Undone.';
+  }
+
+  function redo() {
+    if (!redoStack.length) return;
+    const state = redoStack.pop();
+    undoStack.push(state);
+    restore(state);
+    actionNote.textContent = 'Redone.';
+  }
+
+  function renderUndo() {
+    undoBtn.disabled = undoStack.length < 2 && !commitTimer;
+    redoBtn.disabled = redoStack.length === 0;
+  }
+
+  // Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z) anywhere on the page, except while
+  // typing a palette name, where the browser's own text undo applies.
+  function onKey(e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type === 'text'))) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+  }
+  document.addEventListener('keydown', onKey);
 
   // ---- start-from swatches ------------------------------------------------
   function swatchCanvas(stopsIn) {
@@ -309,6 +391,7 @@ export function mount(root, params, { go }) {
       target.removeEventListener('pointerup', up);
       target.removeEventListener('pointercancel', up);
       renderStops();
+      commit();
     };
     target.addEventListener('pointermove', move);
     target.addEventListener('pointerup', up);
@@ -376,6 +459,7 @@ export function mount(root, params, { go }) {
       inside = normHex(b?.inside || '#000000');
     }
     insideInput.value = inside;
+    resetHistory();
     frameK = null;
     frameSlider.max = String(Math.max(0, (r.frames || 1) - 1));
     frameSlider.disabled = !(r.frames > 1);
@@ -536,5 +620,7 @@ export function mount(root, params, { go }) {
     alive = false;
     if (raf) cancelAnimationFrame(raf);
     if (waitOff) waitOff();
+    clearTimeout(commitTimer);
+    document.removeEventListener('keydown', onKey);
   };
 }

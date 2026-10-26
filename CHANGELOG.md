@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1 — 2026-10-26
+
+- **Watch video plays in the big viewer** at the top of Runs (and each "Watch video N" of a run with
+  several videos), instead of a small player inside the run's card. While a render is on the GPU,
+  **Back to the live render** returns to it.
+- **Undo and redo in the colour editor:** Ctrl+Z and Ctrl+Y (or Ctrl+Shift+Z), and Undo/Redo
+  buttons. A drag, or a run of arrow keys or colour-picker moves, is one step.
+- **Finder: pick the starting place by its picture.** "Start from" shows the chosen place's
+  picture, and **Change…** opens every place's picture to choose from. The interest marks on the
+  New place tab show their places' pictures too.
+- **Livelier card pictures.** Each place's picture is now the most detailed of seven depths
+  instead of always halfway down; the landmarks (bulb roots) used to be two white discs meeting at
+  a hairline, now they show the bulbs. The Library offers **Make pictures** once to redraw them.
+
 ## 0.4.0 — 2026-10-26
 
 **The finder.** The app can now find places to zoom into for you.

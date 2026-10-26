@@ -148,6 +148,12 @@ pub struct PresetsFile {
 
 const BUILTIN_TOML: &str = include_str!("../presets.toml");
 
+/// A preset's card picture is `<name><HERO_SUFFIX>` in the app's `heroes`
+/// folder. The suffix changes with the way the picture is chosen (now the
+/// liveliest of several depths), so pictures made the old way count as
+/// missing and the Library offers to make them again.
+pub const HERO_SUFFIX: &str = "-2.jpg";
+
 pub fn load_presets(custom_path: Option<&Path>) -> MbResult<Vec<Preset>> {
     let env_path = std::env::var_os("MANDELBROT_PRESETS").map(std::path::PathBuf::from);
     let path = custom_path.map(Path::to_path_buf).or(env_path);

@@ -173,30 +173,35 @@ fn lively_frame(gpu: &GpuCtx, m: &rosie_mandlebrot_store::keyframes::Manifest, d
     for i in 0..9u64 {
         let k = n * (15 + i * 70 / 8) / 100;
         let shot = frame_at(gpu, m, dir, Some(k), SIDE, SIDE, &opt.palette, opt.inside, true, false)?;
-        let rgba = shot.rgba.unwrap_or_default();
-        let luma = |x: u32, y: u32| {
-            let p = &rgba[((y * SIDE + x) * 4) as usize..][..3];
-            0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2])
-        };
-        let (mut grad, mut bright) = (0.0, 0.0);
-        for y in 0..SIDE {
-            for x in 0..SIDE {
-                bright += luma(x, y);
-                if x + 1 < SIDE {
-                    grad += (luma(x + 1, y) - luma(x, y)).abs();
-                }
-                if y + 1 < SIDE {
-                    grad += (luma(x, y + 1) - luma(x, y)).abs();
-                }
-            }
-        }
-        let px = f64::from(SIDE * SIDE);
-        let score = grad / px * (0.5 + bright / px / 255.0);
+        let score = liveliness(&shot.rgba.unwrap_or_default(), SIDE, SIDE);
         if score > best.0 {
             best = (score, shot.k);
         }
     }
     Ok(best.1)
+}
+
+/// How lively a picture looks: its mean brightness gradient (detail), with
+/// brighter pictures preferred, from RGBA8. Picks preview frames and card pictures.
+fn liveliness(rgba: &[u8], w: u32, h: u32) -> f64 {
+    let luma = |x: u32, y: u32| {
+        let p = &rgba[((y * w + x) * 4) as usize..][..3];
+        0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2])
+    };
+    let (mut grad, mut bright) = (0.0, 0.0);
+    for y in 0..h {
+        for x in 0..w {
+            bright += luma(x, y);
+            if x + 1 < w {
+                grad += (luma(x + 1, y) - luma(x, y)).abs();
+            }
+            if y + 1 < h {
+                grad += (luma(x, y + 1) - luma(x, y)).abs();
+            }
+        }
+    }
+    let px = f64::from(w * h);
+    grad / px * (0.5 + bright / px / 255.0)
 }
 
 /// `--heroes DIR`: one small picture per preset, from halfway down its depth
@@ -214,30 +219,52 @@ pub fn heroes(cli: &Cli, dir: &Path, shader_dir: Option<&Path>, ev: &dyn Events)
         let cfg = crate::config::run_config_from_cli(&c)?;
         let start = cfg.sequence.initial_span;
         let depth = cfg.blank_stop_after.unwrap_or(start * 1e-6);
-        let span = (start * depth).sqrt().max(1e-30);
-        let req = rosie_mandlebrot_render::FrameRequest {
-            frame_idx: 0,
-            width: cli.hero_size,
-            height: cli.hero_size,
-            center_re: cfg.center_re.clone(),
-            center_im: cfg.center_im.clone(),
-            span,
-            max_iter: cfg.sequence.max_iter_for_span(span),
-            max_retries: cfg.max_retries,
-            stop_flag: None,
-            progress: None,
-            deep_engine: cfg.deep_engine,
-            interior_exit: true,
-        };
-        let frame = rosie_mandlebrot_render::render_frame(&gpu, &req)?;
-        let rgb = rosie_mandlebrot_core::encode::encode_rgb(&frame.pixels, frame.width, frame.height, frame.max_iter, cfg.palette);
-        let rgba: Vec<u8> = rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect();
-        let path = dir.join(format!("{name}.jpg"));
-        write_jpeg(&rgba, frame.width, frame.height, &path)?;
-        tracing::info!("{name}: span {span:.2e}, {} iterations -> {}", req.max_iter, path.display());
+        // The liveliest of seven depths from 20% to 80% of the way down (in
+        // log terms), tried small: halfway down a bulb-root landmark is two
+        // white discs meeting at a hairline.
+        let (a, z) = (start.log10(), depth.max(1e-30).log10());
+        let mut best = (f64::MIN, (start * depth).sqrt().max(1e-30));
+        for i in 0..7 {
+            let span = 10f64.powf(a + (z - a) * (0.2 + 0.1 * f64::from(i)));
+            let (rgba, w, h) = hero_frame(&gpu, &cfg, span, HERO_TRIAL)?;
+            let score = liveliness(&rgba, w, h);
+            if score > best.0 {
+                best = (score, span);
+            }
+        }
+        let span = best.1;
+        let (rgba, w, h) = hero_frame(&gpu, &cfg, span, cli.hero_size)?;
+        let frame = (w, h, cfg.sequence.max_iter_for_span(span));
+        let path = dir.join(format!("{name}{}", rosie_mandlebrot_core::presets::HERO_SUFFIX));
+        write_jpeg(&rgba, frame.0, frame.1, &path)?;
+        tracing::info!("{name}: span {span:.2e}, {} iterations -> {}", frame.2, path.display());
         ev.emit(Event::Image { path: path.display().to_string(), k: 0 });
     }
     Ok(())
+}
+
+/// Side of the small trial pictures a card picture's depth is chosen from.
+const HERO_TRIAL: u32 = 96;
+
+/// A preset's picture at `span`, `side` pixels square, as RGBA8 in its palette.
+fn hero_frame(gpu: &GpuCtx, cfg: &RunConfig, span: f64, side: u32) -> anyhow::Result<(Vec<u8>, u32, u32)> {
+    let req = rosie_mandlebrot_render::FrameRequest {
+        frame_idx: 0,
+        width: side,
+        height: side,
+        center_re: cfg.center_re.clone(),
+        center_im: cfg.center_im.clone(),
+        span,
+        max_iter: cfg.sequence.max_iter_for_span(span),
+        max_retries: cfg.max_retries,
+        stop_flag: None,
+        progress: None,
+        deep_engine: cfg.deep_engine,
+        interior_exit: true,
+    };
+    let frame = rosie_mandlebrot_render::render_frame(gpu, &req)?;
+    let rgb = rosie_mandlebrot_core::encode::encode_rgb(&frame.pixels, frame.width, frame.height, frame.max_iter, cfg.palette);
+    Ok((rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(), frame.width, frame.height))
 }
 
 /// `WxH`.
