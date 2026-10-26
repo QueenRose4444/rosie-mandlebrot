@@ -144,6 +144,7 @@ Otherwise two featureless checks in a row end it.
 | `--bar-colour #rrggbb` | `#000000` | colour of `solid` bars |
 | `--no-video` | | render only (the strip, or the frames with `--per-frame`) |
 | `--assemble` | | make the video again from the strip in `--run-dir` / `--output`, as `zoom-2.mkv`, `zoom-3.mkv` … (an existing video is never replaced); `--palette`, `--video-fps`, `--zoom-factor`, `--width`/`--height`, `--tone` and the codec options all apply, and nothing is re-rendered |
+| `--frames 200,900` | | with `--assemble`: make only those frames (0-based), as `assembled_NNNNNN.png` in the output folder, and no video — for trying colours on a few frames |
 | `--tone` | `location` | `location`: every point keeps its colour from frame to frame; `per-frame`: each frame stretches its own range across the palette, as 0.1 did (it pumps brighter and darker during a zoom; `--tone-smoothing` eases it) |
 | `--per-frame` | | render and save every frame as a PNG, then stitch them |
 | `--encode-only --run ID` | | `--per-frame`: make the video for an existing run |
@@ -207,6 +208,34 @@ carries on when the file is gone. **Settings** can also pause while a full-scree
 
 Options the app uses that also work on their own: `--events` prints one JSON object per line for
 each step (`{"ev":"chunk",…}`); `--previews N` saves those snapshots in `out/previews/`.
+
+## The finder: `find`
+
+`rosie_mandlebrot find` looks for places to zoom into, the same search as the app's **Finder**. It
+scatters points around the minibrot a zoom ends on, solves for the deeper minibrots there and keeps
+the ones whose zoom checks out, going deeper level by level; or, with `--new`, starts anywhere. Each
+place is pictured down its zoom on the GPU, scored, and written as it is found.
+
+| option | default | |
+|---|---|---|
+| `--like PRESET` | | look below the end of this preset's zoom |
+| `--center="RE,IM"` | | look below the end of the zoom into this centre |
+| `--new` | | look for new places instead |
+| `--min-depth SPAN` | 1e-30 | with `--new`: the shallowest end of zoom to keep |
+| `--interest N` | 0 | keep only places at least this interesting (0–100) |
+| `--seconds N` | 60 | search for this long (the whole job, pictures included) |
+| `--reach R` | 0.75 | how far below the start a deeper place may be, as a power of that minibrot's size: 1 stays close (the zoom matches the original all the way down), lower roams into its embedded Julia sets and goes deeper faster |
+| `--max N` | | stop after this many places |
+| `--out DIR` | `found` | pictures (`place-NNN-K.jpg`) and `places.json` |
+| `--pictures N`, `--picture-size PX` | 5, 192 | pictures down each place's zoom, and their size |
+| `--palette NAME` | hot | the pictures' colours |
+| `--seed N` | 1 | the same seed and time give the same places |
+| `--describe SPAN` | | with `--center`: picture and score that one place (its end of zoom given), no search |
+| `--cpu-percent N` | | use at most this share of the processor for the search |
+
+Interest % comes from how often the zoom passes new structure (minibrots and embedded Julia sets)
+per decade of depth, and how much detail its pictures have. A place's `end` is where its minibrot
+fills the frame: renders go blank about twice as deep and are half inside the set at about 1.7× it.
 
 ## Exit codes
 

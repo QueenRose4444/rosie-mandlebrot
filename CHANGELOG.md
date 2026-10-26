@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0 — 2026-10-26
+
+**The finder.** The app can now find places to zoom into for you.
+
+- **Finder page** (between Library and New render), two tabs:
+  - **Deeper like this**: pick any place and how long to search; it looks below the end of that
+    zoom for deeper minibrots. *How far it may wander*: stay close (the zoom matches the original
+    all the way down, slower to find), roam a little (recommended) or roam far.
+  - **New place**: a name, at least how deep (1e-20 to 1e-290) and at least how interesting; the
+    interest slider marks where some built-in places score, so you can see what a % means.
+  - Places stream in as they are found, each with six pictures down its zoom (click one for a
+    bigger look), how deep it goes, how interesting it is, its minibrot's period and how long a
+    1080p render would take on your PC. **Save to Library** keeps it: it appears under Library →
+    Found and renders like any built-in place. `rosie_mandlebrot find` does the same from the
+    command line.
+- **Interest %** comes from how often a zoom passes new structure (minibrots and embedded Julia
+  sets) per decade of depth, plus how much detail its pictures have; it was fitted to one person's
+  ratings of sixteen places and puts 75 of their 77 rated pairs in the same order.
+- **Our own high-precision maths.** The reference orbit no longer uses the GMP/MPFR libraries: a
+  correctly rounded floating-point type in Rust gives bit-identical orbits (checked on 19 million
+  single operations and 3,777 orbits) and is 4.6× faster at 1e-15 and 1.1× at 1e-300. Renders are
+  byte-identical to 0.3.2 where 0.3.2 was right. GMP/MPFR's licence notices are gone with them.
+
+**Fixes to deep renders** (each checked pixel by pixel against the exact maths):
+
+- Beside a deep minibrot, the BLA speed-up could draw escaping points as "inside the set" (white
+  sheets, or a hollow centre at the end of seahorse_deep). Two causes, both fixed: its tolerance,
+  and the derivative the interior test carries across a skip. Frames that were up to 90% wrong
+  now match the exact maths; renders elsewhere are unchanged.
+- Zooms that end on a very deep minibrot (below about 1e-60) rendered wrong or refused to render;
+  they now render correctly down to 1e-290.
+- Whether BLA is used no longer depends on how busy the computer is (a busy PC could change a
+  render); seahorse_deep's GPU time went from 8.9 s to 8.1 s.
+
+**App polish** (from an outside test of 0.3.1):
+
+- Colours: a slider picks which frame the recolour preview shows, and it starts on a lively one.
+- A run's card picture follows its newest colours; snapshots say they keep the render's colours.
+- Runs: one Watch and one Download per video, downloads named after the place and date; during
+  the video step the picture is a frame from the middle of the zoom.
+- Plainer words in Settings and on New render ("about 1e-15" and where the video really ends).
+- `--assemble --frames 200,900`: just those frames as PNGs, no video — try colours in seconds.
+- Release builds are about three times faster (the Windows build went from 22 to 7 minutes).
+
 ## 0.3.2 — 2026-10-26
 
 **New colours.**

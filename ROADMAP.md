@@ -17,18 +17,19 @@ someone who has nothing but this repository's URL. The order of 0.4 to 0.6 can s
   to look back over, recolour it with a palette editor that previews instantly, make the video.
   Letterbox bars (blurred, solid or transparent), pausing while a game is full screen, a tray icon,
   Discord and upload notifications.
+- **0.4 — the finder.** A Finder page finds places for you: "one like this but deeper" within a
+  time limit, or a new place with a name, a minimum depth and how interesting it should be; keep
+  the good ones in the Library. The reference calculation moved to our own code, replacing the
+  GMP/MPFR libraries, and deep renders beside minibrots were fixed against the exact maths.
 
 ## Next
-
-- **0.4 — the finder.** Ask it to find places for you: "one like this but deeper" within a time
-  limit, or a new place with a name, a minimum depth and how busy it should be. The reference
-  calculation moves to our own code, replacing the GMP/MPFR libraries.
-
-## Later
 
 - **0.5 — Julia sets and sharing.** A second family of fractals; share places and colour schemes as
   copy-paste codes, then through a community list with search, stars and download counts, all
   hosted on GitHub.
+
+## Later
+
 - **0.6 — the Burning Ship family.** Burning Ship and about nine relatives, added together through
   one shared building block.
 - **1.0 — installer, updates and a guide.** An installer and a portable version from one program

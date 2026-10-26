@@ -56,6 +56,12 @@ and [CHANGELOG.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/C
    again, most of the time going into encoding it (measured on an RTX 3060 Ti: 14 s for 625 frames at
    1080×1080 whose render took 35 s; about a minute for 1,900 frames). The earlier video is kept;
    **Runs** lists every video of a run.
+6. **Finder** looks for places for you. **Deeper like this**: pick a place and a search time, and it
+   finds minibrots below the end of that zoom (*how far it may wander* decides how closely they
+   follow the original). **New place**: give a name, a minimum depth and how interesting it should
+   be. Places appear as they are found, each with six pictures down its zoom, how deep it goes, an
+   interest % and the render time on your PC; **Save to Library** keeps one under Library →
+   **Found**, where **Render…** works as for any other place.
 
 Only one job uses the GPU at a time; others wait in **Runs**. With **Pause rendering while a game is
 full screen** on (Settings), a render steps off the GPU completely while a game is in front and
@@ -182,6 +188,19 @@ rosie_mandlebrot --center="-0.743643887037151,0.131825904205330" --ladder
 It lists the minibrots near the centre (period, size, how far the centre is from each) and says
 where new structure stops. A Misiurewicz point has no such limit: it repeats itself at every scale,
 and `--ladder` says so.
+
+Or let it find one (the app's **Finder** does the same):
+
+```
+rosie_mandlebrot find --like seahorse_ultra --seconds 60
+rosie_mandlebrot find --new --min-depth 1e-50 --interest 60 --seconds 300
+```
+
+The first looks below the end of a preset's zoom for deeper minibrots, the second for new places at
+least 1e-50 deep. Each place found is pictured down its zoom into `found/` and listed in
+`found/places.json` with its centre, period, end of detail and an interest %; render one with
+`--center="<re>,<im>" --zoom-end <end>`, adding `--iter-cap` of 20 × its period when that is
+above 200,000 (points beside a minibrot take many of its periods to escape).
 
 ## Common options
 
