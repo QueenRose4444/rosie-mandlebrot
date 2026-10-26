@@ -20,4 +20,4 @@ pub mod signals;
 pub mod strip;
 pub mod sysstats;
 
-pub use events::{Event, Events, JsonLines, NoEvents};
+pub use events::{Event, Events, JsonLines, NoEvents, PlaceEvent};

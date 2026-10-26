@@ -1582,6 +1582,7 @@ dependencies = [
  "rosie_mandlebrot_run",
  "rosie_mandlebrot_serve",
  "rosie_mandlebrot_store",
+ "serde_json",
  "tempfile",
  "time",
  "tracing",
@@ -1609,7 +1610,9 @@ name = "rosie_mandlebrot_ref"
 version = "0.3.2"
 dependencies = [
  "num-complex",
+ "rayon",
  "rosie_mandlebrot_core",
+ "serde",
  "tracing",
 ]
 

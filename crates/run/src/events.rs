@@ -34,8 +34,38 @@ pub enum Event {
     Image { path: String, k: u64 },
     /// The video file is complete.
     Video { path: String, frames: u64 },
+    /// The finder confirmed a place: a minibrot nucleus to zoom into.
+    Place(Box<PlaceEvent>),
     /// A stage ended. `status` is "stopped" or "failed", as in progress.json.
     Finished { stage: &'static str, status: &'static str, reason: String, elapsed_secs: f64 },
+}
+
+/// One place from the finder (boxed in [`Event::Place`]: it is much larger
+/// than the other events).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PlaceEvent {
+    /// 1-based, in the order found.
+    pub n: u32,
+    pub re: String,
+    pub im: String,
+    pub period: u32,
+    /// Predicted end of structure: the span at which the minibrot fills the
+    /// frame.
+    pub end: f64,
+    /// How interesting, 0–100.
+    pub interest: f64,
+    /// The numbers the interest comes from.
+    pub events: u32,
+    pub events_per_decade: f64,
+    pub close_share: f64,
+    pub longest_gap: f64,
+    /// Mean and least detail of the pictures down the zoom (0 = flat).
+    pub detail: f64,
+    pub detail_min: f64,
+    /// Search level (0 = directly below the starting place).
+    pub level: u32,
+    /// Pictures down the zoom, shallowest first; the last is near the end.
+    pub pictures: Vec<String>,
 }
 
 /// Where a stage's events go. Must not block for long: stages call it inline.

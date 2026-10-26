@@ -25,6 +25,7 @@ humantime.workspace = true
 image.workspace = true
 num_cpus.workspace = true
 rayon.workspace = true
+serde_json.workspace = true
 time.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true

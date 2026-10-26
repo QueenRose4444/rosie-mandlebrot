@@ -409,7 +409,7 @@ enum EventIn {
 #[allow(dead_code)]
 fn _events_in_step(e: Event) {
     match e {
-        Event::Started { .. } | Event::Chunk { .. } | Event::Frame { .. } | Event::Image { .. } | Event::Video { .. } | Event::Finished { .. } => {}
+        Event::Started { .. } | Event::Chunk { .. } | Event::Frame { .. } | Event::Image { .. } | Event::Video { .. } | Event::Place(_) | Event::Finished { .. } => {}
     }
 }
 

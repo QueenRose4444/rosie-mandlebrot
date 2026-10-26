@@ -17,6 +17,7 @@ use std::sync::Arc;
 // renderers), `rosie_mandlebrot_store` (SQLite, PNG, ffmpeg) and
 // `rosie_mandlebrot_run` (the stages of a run, which this calls).
 mod config;
+mod find;
 mod stages;
 
 use crate::config::Cli;
@@ -236,9 +237,16 @@ fn run() -> anyhow::Result<()> {
         return rosie_mandlebrot_serve::main(vec!["--tray".into(), "--open".into()], env!("CARGO_PKG_VERSION"));
     }
     let mut args = std::env::args();
-    if args.nth(1).as_deref() == Some("serve") {
-        init_serve_logging();
-        return rosie_mandlebrot_serve::main(args.collect(), env!("CARGO_PKG_VERSION"));
+    match args.nth(1).as_deref() {
+        Some("serve") => {
+            init_serve_logging();
+            return rosie_mandlebrot_serve::main(args.collect(), env!("CARGO_PKG_VERSION"));
+        }
+        Some("find") => {
+            init_serve_logging();
+            return crate::find::run(args.collect());
+        }
+        _ => {}
     }
     let cli = Cli::parse();
     let argv: Vec<String> = std::env::args().collect();
@@ -619,6 +627,9 @@ fn oracle_check(cfg: &RunConfig, pixels: &[rosie_mandlebrot_core::types::PixelOu
         100.0 * exact as f64 / total as f64,
         started.elapsed().as_secs_f64()
     );
+    for (g, t) in results.iter().filter(|(g, t)| (*g >= max_iter) != (*t >= max_iter)).take(4) {
+        println!("  inside/outside: GPU {g}, exact {t} (cap {max_iter})");
+    }
     // A kernel fault shows at low dwell; boundary ill-conditioning only at high dwell.
     let mut lo = 0;
     for hi in [100, 1_000, 10_000, u32::MAX] {

@@ -11,3 +11,5 @@ repository.workspace = true
 rosie_mandlebrot_core.workspace = true
 num-complex.workspace = true
 tracing.workspace = true
+rayon.workspace = true
+serde.workspace = true

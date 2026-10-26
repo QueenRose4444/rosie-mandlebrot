@@ -145,7 +145,11 @@ fn ladder_at_prec(center_re: &str, center_im: &str, max_iter: u32, prec: u32) ->
 }
 
 fn ladder_at<const N: usize>(center_re: &str, center_im: &str, max_iter: u32, prec: u32) -> Vec<Rung> {
-    let (cre, cim) = (parse::<N>(center_re, prec), parse::<N>(center_im, prec));
+    ladder_mp(&parse::<N>(center_re, prec), &parse::<N>(center_im, prec), max_iter, prec)
+}
+
+/// The ladder of `c` at one fixed precision.
+pub(crate) fn ladder_mp<const N: usize>(cre: &Mp<N>, cim: &Mp<N>, max_iter: u32, prec: u32) -> Vec<Rung> {
     let (mut zr, mut zi) = (Mp::<N>::ZERO, Mp::<N>::ZERO);
 
     let one = Xc::from_f64(1.0, 0.0);
@@ -159,7 +163,7 @@ fn ladder_at<const N: usize>(center_re: &str, center_im: &str, max_iter: u32, pr
         let z_prev = Xc::from_mp(&zr, &zi);
         dc = z_prev.mul(dc).scale2(1).add(one);
 
-        (zr, zi) = step(&zr, &zi, &cre, &cim, prec);
+        (zr, zi) = step(&zr, &zi, cre, cim, prec);
 
         let z = Xc::from_mp(&zr, &zi);
         let abs_log10 = z.abs_log10();
