@@ -7,8 +7,16 @@
 use clap::Parser;
 use rosie_mandlebrot_core::config::{
     load_profile, parse_byte_size, parse_center, parse_humantime, parse_resolution, DeepEngine,
-    Profile, RunConfig,
+    Julia, Profile, RunConfig,
 };
+
+/// `--julia`: "preset", or a point as `--center` takes it.
+fn parse_julia(s: &str) -> Result<String, String> {
+    if s.trim() != "preset" {
+        parse_center(s)?;
+    }
+    Ok(s.trim().to_string())
+}
 
 use rosie_mandlebrot_core::error::{MbError, MbResult};
 use rosie_mandlebrot_core::palette::ColorScheme;
@@ -31,6 +39,14 @@ pub struct Cli {
     /// Override center coordinates as "re,im" decimal strings.
     #[arg(long, value_parser = parse_center)]
     pub center: Option<(String, String)>,
+
+    /// Render the Julia set of this point instead of the Mandelbrot set: "re,im",
+    /// or "preset" for the preset's centre. The centre is then a point of the
+    /// Julia set's own plane [default: 0,0, its middle], and the depth where the
+    /// blank check starts is the square root of the preset's (the Julia set near
+    /// 0 is the Mandelbrot set near c, doubled).
+    #[arg(long, value_parser = parse_julia)]
+    pub julia: Option<String>,
 
     /// Override initial viewport width.
     #[arg(long)]
@@ -363,6 +379,11 @@ pub struct Cli {
     #[arg(long, default_value_t = 320, hide = true)]
     pub hero_size: u32,
 
+    /// The --heroes picture's file name, instead of the preset's (for a place
+    /// that is not a preset).
+    #[arg(long, hide = true)]
+    pub hero_name: Option<String>,
+
     /// Print the centre's atom-domain ladder — the minibrots it sits near, and
     /// the depth below which no new structure arrives — then exit. Renders
     /// nothing, so it answers "how deep can this go?" in milliseconds.
@@ -479,11 +500,23 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
         .unwrap_or_else(|| "seahorse".to_string());
     let preset = find_preset(&presets, &preset_name)?;
 
-    // Center: CLI --center > config center > preset.
+    // Julia: CLI --julia, where "preset" means the preset's centre.
+    let julia = match cli.julia.as_deref() {
+        None => None,
+        Some("preset") => Some(Julia { re: preset.center_re.clone(), im: preset.center_im.clone() }),
+        Some(s) => {
+            let (re, im) = parse_center(s).map_err(|reason| MbError::InvalidArg { flag: "--julia", reason })?;
+            Some(Julia { re, im })
+        }
+    };
+
+    // Center: CLI --center > config center > preset (a Julia set's middle, 0).
     let (center_re, center_im) = if let Some((r, i)) = &cli.center {
         (r.clone(), i.clone())
     } else if let Some(c) = &profile.center {
         parse_center(c).map_err(MbError::BadCenter)?
+    } else if julia.is_some() {
+        ("0".to_string(), "0".to_string())
     } else {
         (preset.center_re.clone(), preset.center_im.clone())
     };
@@ -605,9 +638,11 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
         // depth, so fast frames run unchecked until the coordinate is near
         // its limit, then checking begins.
         // Past f64 the run cannot get there anyway, so the check never starts.
-        blank_stop_after: cli
-            .blank_stop_after
-            .or(Some(preset.suggested_zoom_end.to_f64().unwrap_or(f64::MIN_POSITIVE))),
+        blank_stop_after: cli.blank_stop_after.or({
+            let end = preset.suggested_zoom_end.to_f64().unwrap_or(f64::MIN_POSITIVE);
+            Some(if julia.is_some() { end.sqrt() } else { end })
+        }),
+        julia,
     };
     cfg.validate()?;
     Ok(cfg)

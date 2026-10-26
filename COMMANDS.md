@@ -14,6 +14,7 @@ rosie_mandlebrot --run-dir runs/deep --resume                       # carry on a
 rosie_mandlebrot --preset seahorse_deep --probe-span 1e-25 --res 1080p   # one frame at any depth
 rosie_mandlebrot --run-dir runs/deep --assemble --palette electric  # remake the video, new colours
 rosie_mandlebrot --preset seahorse --res 1080p --per-frame          # every frame as a PNG (the 0.1 way)
+rosie_mandlebrot --preset seahorse_spiral --julia preset --res 1080p --zoom-end 1e-30   # its Julia set
 rosie_mandlebrot serve --open                                       # the web UI, in your browser
 ```
 
@@ -75,6 +76,7 @@ While a run is going, type into its terminal (`docker attach` for a container):
 |---|---|---|
 | `--preset NAME` | `seahorse` | a location; `--list-presets` shows them all |
 | `--center RE,IM` | from the preset | decimal strings, e.g. `--center="-0.7436438870371587,0.1318259042053120"`; one digit per decade of zoom |
+| `--julia RE,IM` | | the Julia set of this point instead of the Mandelbrot set (`preset` = the preset's centre); `--center` is then a point of the Julia set (default `0,0`, its middle). Near 0 a Julia set looks like the Mandelbrot set near its point, doubled, so it runs out of new detail near the square root of the preset's depth, where the blank check starts |
 | `--initial-span S` | from the preset (usually 3) | the starting view width; 3 shows the whole set |
 | `--palette NAME` | from the preset | `hot`, `grayscale`, `electric`, `rainbow`, `ember`, `spectrum`, `neon`, `aurora`, `sunset`, `wine`, `deepspace` |
 | `--presets FILE` | built in | a presets file of your own (format: `crates/core/presets.toml`) |
@@ -231,6 +233,7 @@ place is pictured down its zoom on the GPU, scored, and written as it is found.
 | `--palette NAME` | hot | the pictures' colours |
 | `--seed N` | 1 | the same seed and time give the same places |
 | `--describe SPAN` | | with `--center`: picture and score that one place (its end of zoom given), no search |
+| `--julia` | | with `--describe`: picture the place's Julia set instead, zooming into its middle down to the square root of SPAN |
 | `--cpu-percent N` | | use at most this share of the processor for the search |
 
 Interest % comes from how often the zoom passes new structure (minibrots and embedded Julia sets)

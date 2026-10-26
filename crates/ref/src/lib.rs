@@ -27,8 +27,9 @@ pub mod ladder;
 pub mod mp;
 mod xc;
 
-pub use bla::{bla_iterate, bla_walk, build_bla_table, Bla, BlaGpu, BlaResult, BlaTable, BLA_EPSILON_DS, BLA_EPSILON_F64};
+pub use bla::{bla_iterate, bla_walk, build_bla_table, julia_walk, Bla, BlaGpu, BlaResult, BlaTable, BLA_EPSILON_DS, BLA_EPSILON_F64};
 
+use rosie_mandlebrot_core::config::Julia;
 use rosie_mandlebrot_core::types::{RefOrbitEntry, RefOrbitEntryF64, SaCoeff};
 use rosie_mandlebrot_core::precision::orbit_bits_for_span;
 use mp::{dispatch, LimbsFn, Mp};
@@ -50,6 +51,14 @@ pub struct ReferenceData {
     /// Orbit entries smaller than an f32 can hold, with the size of the
     /// pixel deltas next to them. See [`ReferenceData::f32_orbit_limit`].
     pub tiny: Vec<TinyEntry>,
+    /// Where a pixel's orbit starts in `orbit`: 0 for the Mandelbrot set. A
+    /// Julia set's orbit holds its critical orbit (0, c, c² + c, …) first —
+    /// rebasing returns to index 0 just as the Mandelbrot set's does — and,
+    /// from `start`, the centre's own orbit.
+    pub start: u32,
+    /// Length of the critical orbit at the front (the whole orbit for the
+    /// Mandelbrot set, and for a Julia set centred on 0).
+    pub crit_len: u32,
 }
 
 /// An orbit value below f32's normal range, which the GPU reads as zero.
@@ -84,19 +93,39 @@ pub struct RefRequest {
     pub want_sa: bool,
     /// Maximum |delta_c| over the tile (used to compute skip_n).
     pub max_delta: f64,
+    /// Render this Julia set: the orbit starts at the centre and adds `c`.
+    /// `None` is the Mandelbrot set (the orbit of 0, adding the centre).
+    pub julia: Option<Julia>,
 }
 
 
 pub fn compute_reference(req: &RefRequest) -> ReferenceData {
-    let span_hint = req.max_delta.max(f64::MIN_POSITIVE);
-    let mut prec = orbit_bits_for_span(span_hint);
+    let Some(j) = &req.julia else {
+        return section(req, None, (&req.center_re, &req.center_im), orbit_bits_for_span(req.max_delta.max(f64::MIN_POSITIVE)));
+    };
+    let prec = orbit_bits_for_span(req.max_delta.max(f64::MIN_POSITIVE)).max(j.bits());
+    let crit = section(req, None, (&j.re, &j.im), prec);
+    let primary = (!is_zero(&req.center_re) || !is_zero(&req.center_im))
+        .then(|| section(req, Some((&req.center_re, &req.center_im)), (&j.re, &j.im), prec));
+    join(crit, primary)
+}
+
+/// Is this decimal string exactly zero?
+fn is_zero(s: &str) -> bool {
+    Mp::<2>::parse(s, 128).is_some_and(|m| m.is_zero())
+}
+
+/// One orbit, `z -> z² + c` from `z0` (0 when `None`), at `prec` bits or
+/// more: see [`compute_reference`] for when it doubles.
+fn section(req: &RefRequest, z0: Option<(&str, &str)>, c: (&str, &str), prec: u32) -> ReferenceData {
+    let mut prec = prec;
     // If the orbit terminates before `max_iter` AND `|z|² > 4`, the
     // arithmetic ran out of significant bits and the orbit *artificially*
     // escaped. Retry at 2× precision (up to a cap). For a true exterior
     // point the orbit really does escape and no amount of precision will
     // change that, in which case we return the short orbit as-is.
     let max_prec: u32 = 32_768;
-    let mut data = compute_reference_at_prec(req, prec);
+    let mut data = orbit_with(req, z0, c, prec);
     // An orbit that stops short with |z|^2 > 4 either escapes for real or ran
     // out of bits. Doubling the precision tells them apart: a real escape
     // happens at the same iteration, and the loop stops there. Without that
@@ -110,7 +139,7 @@ pub fn compute_reference(req: &RefRequest) -> ReferenceData {
             prec,
             new_prec,
         );
-        let retry = compute_reference_at_prec(req, new_prec);
+        let retry = orbit_with(req, z0, c, new_prec);
         let same = retry.orbit.len() == data.orbit.len();
         data = retry;
         prec = new_prec;
@@ -120,6 +149,38 @@ pub fn compute_reference(req: &RefRequest) -> ReferenceData {
         }
     }
     data
+}
+
+/// A Julia set's reference: the critical orbit, zeros up to an aligned
+/// `start` (so BLA's levels line up from the centre's first step), then the
+/// centre's orbit. Neither part is ever stepped across: the kernels end a
+/// pass at the end of the part they are in.
+fn join(crit: ReferenceData, primary: Option<ReferenceData>) -> ReferenceData {
+    let crit_len = crit.orbit.len();
+    let Some(p) = primary else {
+        return ReferenceData { start: 0, crit_len: crit_len as u32, ..crit };
+    };
+    let align = crit_len.next_power_of_two().min(1 << 14);
+    let start = crit_len.div_ceil(align) * align;
+    let mut orbit = crit.orbit;
+    let mut orbit_f64 = crit.orbit_f64;
+    orbit.resize(start, RefOrbitEntry::default());
+    orbit_f64.resize(start, RefOrbitEntryF64::default());
+    orbit.extend_from_slice(&p.orbit);
+    orbit_f64.extend_from_slice(&p.orbit_f64);
+    let mut tiny = crit.tiny;
+    tiny.extend(p.tiny.iter().map(|t| TinyEntry { n: t.n + start as u32, ..*t }));
+    ReferenceData {
+        orbit,
+        orbit_f64,
+        sa: p.sa,
+        skip_n: 0,
+        precision_bits: crit.precision_bits.max(p.precision_bits),
+        escaped: p.escaped,
+        tiny,
+        start: start as u32,
+        crit_len: crit_len as u32,
+    }
 }
 
 fn ends_escaped(data: &ReferenceData) -> bool {
@@ -132,22 +193,28 @@ fn ends_escaped(data: &ReferenceData) -> bool {
 /// the arithmetic ran out of precision and drifted out of bounds — caller
 /// checks).
 pub fn compute_reference_at_prec(req: &RefRequest, prec: u32) -> ReferenceData {
-    struct Run<'a>(&'a RefRequest, u32);
+    orbit_with(req, None, (&req.center_re, &req.center_im), prec)
+}
+
+fn orbit_with(req: &RefRequest, z0: Option<(&str, &str)>, c: (&str, &str), prec: u32) -> ReferenceData {
+    struct Run<'a>(&'a RefRequest, Option<(&'a str, &'a str)>, (&'a str, &'a str), u32);
     impl LimbsFn for Run<'_> {
         type Out = ReferenceData;
         fn call<const N: usize>(self) -> ReferenceData {
-            orbit_at::<N>(self.0, self.1)
+            orbit_at::<N>(self.0, self.1, self.2, self.3)
         }
     }
-    dispatch(prec, Run(req, prec))
+    dispatch(prec, Run(req, z0, c, prec))
 }
 
-fn orbit_at<const N: usize>(req: &RefRequest, prec: u32) -> ReferenceData {
-    let cre = parse_or_zero::<N>(&req.center_re, prec);
-    let cim = parse_or_zero::<N>(&req.center_im, prec);
+fn orbit_at<const N: usize>(req: &RefRequest, z0: Option<(&str, &str)>, c: (&str, &str), prec: u32) -> ReferenceData {
+    let cre = parse_or_zero::<N>(c.0, prec);
+    let cim = parse_or_zero::<N>(c.1, prec);
 
-    let mut z_re = Mp::<N>::ZERO;
-    let mut z_im = Mp::<N>::ZERO;
+    let (mut z_re, mut z_im) = match z0 {
+        Some((re, im)) => (parse_or_zero::<N>(re, prec), parse_or_zero::<N>(im, prec)),
+        None => (Mp::<N>::ZERO, Mp::<N>::ZERO),
+    };
 
     let mut orbit = Vec::with_capacity(req.max_iter as usize);
     let mut orbit_f64 = Vec::with_capacity(req.max_iter as usize);
@@ -240,12 +307,14 @@ fn orbit_at<const N: usize>(req: &RefRequest, prec: u32) -> ReferenceData {
     }
 
     ReferenceData {
-        orbit,
-        orbit_f64,
         sa: sa_at_skip,
         skip_n,
         precision_bits: prec,
         escaped: false,
+        start: 0,
+        crit_len: orbit.len() as u32,
+        orbit,
+        orbit_f64,
         tiny,
     }
 }
@@ -331,20 +400,62 @@ fn compute_sa_and_skip(
     (sa_at_skip, skip_n)
 }
 
-/// Cached reference orbit data. Keyed by the high-precision center string;
-/// holds the orbit (in both f32 and f64) plus the precision used to compute
-/// it. SA coefficients and `skip_n` are *not* cached because they depend on
-/// `max_delta` (which shrinks every frame); we recompute them via
-/// `compute_sa_and_skip`.
+/// Cached reference orbit data. Keyed by the high-precision center string
+/// (and a Julia set's `c`); holds the orbit (in both f32 and f64) plus the
+/// precision used to compute it. SA coefficients and `skip_n` are *not*
+/// cached because they depend on `max_delta` (which shrinks every frame); we
+/// recompute them via `compute_sa_and_skip`.
 #[derive(Debug, Clone)]
 pub struct RefCache {
     center_re: String,
     center_im: String,
+    julia: Option<Julia>,
+    /// The orbit; for a Julia set the critical orbit, then the centre's (see
+    /// [`ReferenceData::start`]), each kept whole so it can be cut to length.
+    parts: Vec<CachedPart>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedPart {
     orbit: Vec<RefOrbitEntry>,
     orbit_f64: Vec<RefOrbitEntryF64>,
     precision_bits: u32,
     escaped: bool,
     tiny: Vec<TinyEntry>,
+}
+
+impl CachedPart {
+    fn of(d: &ReferenceData, from: usize, to: usize) -> CachedPart {
+        CachedPart {
+            orbit: d.orbit[from..to].to_vec(),
+            orbit_f64: d.orbit_f64[from..to].to_vec(),
+            precision_bits: d.precision_bits,
+            escaped: d.escaped,
+            tiny: d.tiny.iter().filter(|t| (from..to).contains(&(t.n as usize))).map(|t| TinyEntry { n: t.n - from as u32, ..*t }).collect(),
+        }
+    }
+
+    /// The first `len` entries as a reference on their own.
+    fn cut(&self, len: usize) -> ReferenceData {
+        let len = len.min(self.orbit.len());
+        ReferenceData {
+            orbit: self.orbit[..len].to_vec(),
+            orbit_f64: self.orbit_f64[..len].to_vec(),
+            sa: [num_complex::Complex64::new(0.0, 0.0); 5],
+            skip_n: 0,
+            precision_bits: self.precision_bits,
+            escaped: self.escaped && len == self.orbit.len(),
+            tiny: self.tiny.iter().filter(|t| (t.n as usize) < len).copied().collect(),
+            start: 0,
+            crit_len: len as u32,
+        }
+    }
+}
+
+/// The precision a request needs from an orbit.
+fn bits_needed(req: &RefRequest) -> u32 {
+    let span = orbit_bits_for_span(req.max_delta.max(f64::MIN_POSITIVE));
+    req.julia.as_ref().map_or(span, |j| span.max(j.bits()))
 }
 
 /// Wraps `compute_reference` with a reuse-and-overshoot cache. The first call
@@ -359,65 +470,39 @@ pub fn compute_reference_cached(
 ) -> ReferenceData {
     let request_len = req.max_iter as usize;
 
-    if let Some(c) = cache.as_ref() {
-        // Precision is part of the key: an orbit computed for a shallower
-        // frame is not precise enough for a deeper one.
-        if c.center_re == req.center_re
+    // Precision is part of the key: an orbit computed for a shallower frame
+    // is not precise enough for a deeper one.
+    let hit = cache.as_ref().is_some_and(|c| {
+        c.center_re == req.center_re
             && c.center_im == req.center_im
-            && c.precision_bits >= orbit_bits_for_span(req.max_delta.max(f64::MIN_POSITIVE))
-            && (request_len <= c.orbit.len() || c.escaped)
-        {
-            let request_len = request_len.min(c.orbit.len());
-            let (sa, skip_n) = if req.want_sa {
-                compute_sa_and_skip(&c.orbit_f64[..request_len], req.max_delta)
-            } else {
-                ([num_complex::Complex64::new(0.0, 0.0); 5], 0)
-            };
-            return ReferenceData {
-                orbit: c.orbit[..request_len].to_vec(),
-                orbit_f64: c.orbit_f64[..request_len].to_vec(),
-                sa,
-                skip_n,
-                precision_bits: c.precision_bits,
-                escaped: c.escaped && request_len == c.orbit.len(),
-                tiny: c.tiny.iter().filter(|t| (t.n as usize) < request_len).copied().collect(),
-            };
-        }
-    }
-
-    // Miss: recompute with 50% overshoot so the next ~50% of max_iter growth
-    // hits the cache. Min +200 to give very-shallow first frames a useful buffer.
-    let overshoot_iter = (req.max_iter as u64 * 3 / 2).max(req.max_iter as u64 + 200);
-    let overshoot_iter = overshoot_iter.min(u32::MAX as u64) as u32;
-    let mut overshoot_req = req.clone();
-    overshoot_req.max_iter = overshoot_iter;
-    let data = compute_reference(&overshoot_req);
-
-    *cache = Some(RefCache {
-        center_re: req.center_re.clone(),
-        center_im: req.center_im.clone(),
-        orbit: data.orbit.clone(),
-        orbit_f64: data.orbit_f64.clone(),
-        precision_bits: data.precision_bits,
-        escaped: data.escaped,
-        tiny: data.tiny.clone(),
+            && c.julia == req.julia
+            && c.parts.iter().all(|p| p.precision_bits >= bits_needed(req) && (request_len <= p.orbit.len() || p.escaped))
     });
-
-    let len = request_len.min(data.orbit.len());
-    let (sa, skip_n) = if req.want_sa {
-        compute_sa_and_skip(&data.orbit_f64[..len], req.max_delta)
-    } else {
-        ([num_complex::Complex64::new(0.0, 0.0); 5], 0)
-    };
-    ReferenceData {
-        orbit: data.orbit[..len].to_vec(),
-        orbit_f64: data.orbit_f64[..len].to_vec(),
-        sa,
-        skip_n,
-        precision_bits: data.precision_bits,
-        escaped: data.escaped && len == data.orbit.len(),
-        tiny: data.tiny.iter().filter(|t| (t.n as usize) < len).copied().collect(),
+    if !hit {
+        // Miss: recompute with 50% overshoot so the next ~50% of max_iter growth
+        // hits the cache. Min +200 to give very-shallow first frames a useful buffer.
+        let overshoot_iter = (req.max_iter as u64 * 3 / 2).max(req.max_iter as u64 + 200);
+        let overshoot_iter = overshoot_iter.min(u32::MAX as u64) as u32;
+        let mut overshoot_req = req.clone();
+        overshoot_req.max_iter = overshoot_iter;
+        let data = compute_reference(&overshoot_req);
+        let (crit, start) = (data.crit_len as usize, data.start as usize);
+        let mut parts = vec![CachedPart::of(&data, 0, crit)];
+        if start > 0 {
+            parts.push(CachedPart::of(&data, start, data.orbit.len()));
+        }
+        *cache = Some(RefCache { center_re: req.center_re.clone(), center_im: req.center_im.clone(), julia: req.julia.clone(), parts });
     }
+
+    let c = cache.as_ref().expect("filled above");
+    let mut out = c.parts[0].cut(request_len);
+    if req.julia.is_some() {
+        return join(out, c.parts.get(1).map(|p| p.cut(request_len)));
+    }
+    if req.want_sa {
+        (out.sa, out.skip_n) = compute_sa_and_skip(&out.orbit_f64, req.max_delta);
+    }
+    out
 }
 
 pub fn sa_as_gpu_coeffs(sa: &[Complex64; 5]) -> [SaCoeff; 5] {
@@ -470,14 +555,29 @@ pub fn iterate_single_pixel_exact(
     max_iter: u32,
     prec_bits: u32,
 ) -> rosie_mandlebrot_core::types::PixelOut {
-    struct Run<'a>(&'a str, &'a str, f64, f64, u32, u32);
+    pixel_exact(center_re_str, center_im_str, delta_re, delta_im, None, max_iter, prec_bits)
+}
+
+/// [`iterate_single_pixel_exact`] for the Julia set of `julia` (`None`: the
+/// Mandelbrot set): the orbit starts at the pixel, `z_0` included in the
+/// escape test, and adds `c` at every step.
+pub fn pixel_exact(
+    center_re_str: &str,
+    center_im_str: &str,
+    delta_re: f64,
+    delta_im: f64,
+    julia: Option<&Julia>,
+    max_iter: u32,
+    prec_bits: u32,
+) -> rosie_mandlebrot_core::types::PixelOut {
+    struct Run<'a>(&'a str, &'a str, f64, f64, Option<&'a Julia>, u32, u32);
     impl LimbsFn for Run<'_> {
         type Out = rosie_mandlebrot_core::types::PixelOut;
         fn call<const N: usize>(self) -> Self::Out {
-            single_pixel::<N>(self.0, self.1, self.2, self.3, self.4, self.5)
+            single_pixel::<N>(self.0, self.1, self.2, self.3, self.4, self.5, self.6)
         }
     }
-    dispatch(prec_bits, Run(center_re_str, center_im_str, delta_re, delta_im, max_iter, prec_bits))
+    dispatch(prec_bits, Run(center_re_str, center_im_str, delta_re, delta_im, julia, max_iter, prec_bits))
 }
 
 fn single_pixel<const N: usize>(
@@ -485,6 +585,7 @@ fn single_pixel<const N: usize>(
     center_im_str: &str,
     delta_re: f64,
     delta_im: f64,
+    julia: Option<&Julia>,
     max_iter: u32,
     p: u32,
 ) -> rosie_mandlebrot_core::types::PixelOut {
@@ -496,8 +597,14 @@ fn single_pixel<const N: usize>(
     let cre = parse_or_zero::<N>(center_re_str, p).add(&exact(delta_re), p);
     let cim = parse_or_zero::<N>(center_im_str, p).add(&exact(delta_im), p);
 
-    let mut z_re = Mp::<N>::ZERO;
-    let mut z_im = Mp::<N>::ZERO;
+    let (mut z_re, mut z_im) = (Mp::<N>::ZERO, Mp::<N>::ZERO);
+    let (cre, cim) = match julia {
+        Some(j) => {
+            (z_re, z_im) = (cre, cim);
+            (parse_or_zero::<N>(&j.re, p), parse_or_zero::<N>(&j.im, p))
+        }
+        None => (cre, cim),
+    };
 
     for n in 0..max_iter {
         let z_re_sq = z_re.sqr(p);
@@ -534,6 +641,7 @@ mod tests {
             center_im: "0.0".into(),
             max_iter: 100,
             max_delta: 1e-12,
+            julia: None,
         });
         assert_eq!(r.orbit.len(), 100);
         assert!(r.orbit.iter().all(|e| e.z_re == 0.0 && e.z_im == 0.0));
@@ -547,6 +655,7 @@ mod tests {
             center_im: "0.131825904205330".into(),
             max_iter: 2000,
             max_delta: 1e-12,
+            julia: None,
         };
         let with = compute_reference(&req(true));
         let without = compute_reference(&req(false));
@@ -565,6 +674,7 @@ mod tests {
             center_im: "0.0".into(),
             max_iter: 1000,
             max_delta: 1e-12,
+            julia: None,
         });
         // c=2 escapes very quickly (within a handful of iterations).
         assert!(r.orbit.len() < 10);
@@ -585,6 +695,7 @@ mod cache_tests {
             max_iter,
             want_sa: false,
             max_delta: 1e-13,
+            julia: None,
         }
     }
 
@@ -607,6 +718,32 @@ mod cache_tests {
                 "orbit[{i}] diverges between cached and fresh"
             );
         }
+    }
+
+    /// A Julia reference is two orbits cut to length and joined; a cache hit
+    /// must give exactly what a fresh computation gives (layout included), or
+    /// a resumed run would render differently from an unbroken one.
+    #[test]
+    fn a_julia_cache_hit_matches_a_fresh_reference_exactly() {
+        // seahorse_spiral's c, centred on c itself, which lies on its Julia set,
+        // so the centre's orbit runs as long as asked.
+        let (re, im) = (
+            "-0.775683768009053797469483503934741045728246504615800394794952001400666017222819589894883159368782255028252296689050972509",
+            "0.13646736829469012473327440961784876519777211159246769640780019540083566597481550087544861124417865662570682305975983601",
+        );
+        let julia = Some(Julia { re: re.into(), im: im.into() });
+        let jreq = |max_iter| RefRequest { julia: julia.clone(), center_re: re.into(), center_im: im.into(), ..req(max_iter) };
+        let mut cache = None;
+        let _seed = compute_reference_cached(&jreq(3000), &mut cache);
+        let hit = compute_reference_cached(&jreq(2500), &mut cache);
+        let fresh = compute_reference(&jreq(2500));
+        assert!(hit.start > 0 && hit.orbit_f64.len() == hit.start as usize + 2500, "two parts, the second full length");
+        assert_eq!((hit.start, hit.crit_len, hit.orbit_f64.len()), (fresh.start, fresh.crit_len, fresh.orbit_f64.len()));
+        let bits = |r: &ReferenceData| r.orbit_f64.iter().map(|e| (e.z_re.to_bits(), e.z_im.to_bits())).collect::<Vec<_>>();
+        assert_eq!(bits(&hit), bits(&fresh));
+        // And the Mandelbrot set at the same centre is not served from it.
+        let m = compute_reference_cached(&req(2500), &mut cache);
+        assert_eq!(bits(&m), bits(&compute_reference(&req(2500))));
     }
 
     /// Precision follows the span, so an orbit cached for a shallow frame must
@@ -633,6 +770,7 @@ mod cache_tests {
             max_iter: 500,
             want_sa: false,
             max_delta: 1e-13,
+            julia: None,
         };
         let got = compute_reference_cached(&other, &mut cache);
         let fresh = compute_reference(&other);
@@ -676,6 +814,7 @@ mod escape_tests {
             max_iter,
             want_sa: false,
             max_delta: 1e-6,
+            julia: None,
         }
     }
 
@@ -720,6 +859,7 @@ mod f32_orbit_tests {
             max_iter,
             want_sa: false,
             max_delta: span,
+            julia: None,
         })
     }
 

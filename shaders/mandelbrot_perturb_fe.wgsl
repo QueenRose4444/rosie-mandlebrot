@@ -84,6 +84,13 @@ override STRIP : bool = false;
 // minibrot's nucleus): read their exponents from ref_exp and guard the steps
 // that pass close to 0. Off, the kernel is exactly the one without them.
 override NEAR_ZERO : bool = false;
+// A Julia set: dz starts at the pixel's offset from the centre and there is
+// no dc. The reference holds the critical orbit (from 0) first, where rebasing
+// returns, then from params[3].y the centre's orbit, where every pixel starts;
+// params[3].z is the critical orbit's length. A pass never runs past the end
+// of the part of the reference it is in. Always compiled with NEAR_ZERO: the
+// step from the critical point is dz² alone, which the plain step flushes.
+override JULIA : bool = false;
 // Below this exponent a value is handled at a common exponent, not absolutely.
 const ABS_FLOOR : i32 = -100;
 // 2^-100: a w smaller than this is re-formed at a common exponent.
@@ -232,6 +239,30 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var last_w2 : f32 = 1.0;
     var last_we : i32 = 0;
 
+    let julia_start = bitcast<u32>(U.params[3].y);
+    let crit_len = bitcast<u32>(U.params[3].z);
+    if (JULIA) {
+        m_re = mc_re;
+        m_im = mc_im;
+        mc_re = vec2<f32>(0.0, 0.0);
+        mc_im = vec2<f32>(0.0, 0.0);
+        n = julia_start;
+        // z_0 is the pixel itself, so it can already be outside.
+        let e0 = ref_orbit[n];
+        var e0e = 0;
+        if (NEAR_ZERO) {
+            e0e = ref_exp[n];
+        }
+        let w0r = ds_add(ds_scale2(e0.xy, e0e), ds_scale2(m_re, S));
+        let w0i = ds_add(ds_scale2(e0.zw, e0e), ds_scale2(m_im, S));
+        let m0 = w0r.x * w0r.x + w0i.x * w0i.x;
+        if (m0 > BAILOUT_SQ) {
+            out_buf[pixel_id].iter = 0u;
+            out_buf[pixel_id].smooth_val = smooth_iter(0u, m0);
+            return;
+        }
+    }
+
     loop {
         if (iter >= U.max_iter) { break; }
 
@@ -241,9 +272,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var skipped = false;
         var skip_d2 : f32 = 1.0;
         var skip_de : i32 = 0;
+        // The end of the part of the reference this pass is in.
+        var part_end = ref_len;
+        if (JULIA && n < julia_start) {
+            part_end = crit_len;
+        }
         if (BLA && n >= 1u) {
             let dzl = log2(max(abs(m_re.x), abs(m_im.x))) + f32(S) + 0.5;
-            let kb = bla_find(n, dzl, ref_len, U.max_iter - iter);
+            let kb = bla_find(n, dzl, part_end, U.max_iter - iter);
             if (kb > 0u) {
                 let b = bla[kb - 1u];
                 let p_re = ds_sub(ds_mul(b.a.xy, m_re), ds_mul(b.a.zw, m_im));
@@ -276,7 +312,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let mm_re = ds_sub(ds_mul(m_re, m_re), ds_mul(m_im, m_im));
                 let mm_im = ds_mul2(ds_mul(m_re, m_im));
                 let ze = ref_exp[n];
-                let k = Sc - S;
+                // A Julia set has no dc term to keep in frame.
+                var k = Sc - S;
+                if (JULIA) {
+                    k = 0;
+                }
                 // The step is taken in dz's frame (exponent S), which flushes a term
                 // 2^126 below it as negligible. That holds while 2Z·dz is the large
                 // term. Where Z_n is tiny — the orbit passing extremely close to 0
@@ -414,7 +454,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         // Rebase when w is nearer the critical point than dz (both at w's
         // exponent), or when the reference runs out.
-        if (w_inf < dz_inf || n >= ref_len - 1u) {
+        if (w_inf < dz_inf || n >= part_end - 1u) {
             // dz := w, with the mantissa re-anchored into [1, 2).
             let kk = ilog2f(w_inf);
             let sc = exp2i(clamp(-kk, -126, 127));

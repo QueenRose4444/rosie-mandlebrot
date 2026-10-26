@@ -40,6 +40,7 @@ pub(crate) fn render_deep_cpu_bla(req: &FrameRequest) -> MbResult<FrameResult> {
         center_im: req.center_im.clone(),
         max_iter,
         max_delta: req.span.max(1e-300),
+        julia: None,
     });
     let orbit = std::sync::Arc::new(reference.orbit_f64);
     // |dc| never exceeds the frame's half-diagonal.
@@ -367,6 +368,7 @@ pub(crate) fn render_deep_cpu(req: &FrameRequest, glitch_threshold: usize) -> Mb
             center_im: reference_im.clone(),
             max_iter,
             max_delta: req.span.max(1e-300),
+            julia: None,
         });
         let ref_orbit = std::sync::Arc::new(reference.orbit_f64);
         let ref_len = ref_orbit.len();

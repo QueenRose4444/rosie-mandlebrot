@@ -5,7 +5,7 @@
 //! orbit cache and the GPU timer all live here because every path touches them.
 
 use rosie_mandlebrot_core::error::MbResult;
-use rosie_mandlebrot_core::precision::{select_tier, Tier};
+use rosie_mandlebrot_core::precision::{select_tier_for, Tier};
 use rosie_mandlebrot_core::types::PixelOut;
 use rosie_mandlebrot_ref::{
     compute_reference, compute_reference_cached, RefCache, RefRequest, ReferenceData,
@@ -118,7 +118,7 @@ pub(crate) const BLA_SPAN_THRESHOLD: f64 = 1e-11;
 
 pub fn render_frame(gpu: &GpuCtx, req: &FrameRequest) -> MbResult<FrameResult> {
     reset_gpu_timer();
-    let tier = select_tier(req.span, req.width);
+    let tier = select_tier_for(req.span, req.width, req.julia.is_some());
     let total_pixels = (req.width * req.height) as usize;
     let glitch_threshold = ((total_pixels as f64) * GLITCH_THRESHOLD_FRACTION) as usize;
 

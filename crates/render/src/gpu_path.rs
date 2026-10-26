@@ -15,7 +15,7 @@ use rosie_mandlebrot_ref::{
     sa_as_gpu_coeffs, BlaGpu, RefRequest, ReferenceData, BLA_EPSILON_DS,
 };
 use crate::gpu::{readback, GpuCtx};
-use crate::{frame::*, perturb::*};
+use crate::frame::*;
 use bytemuck::cast_slice;
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
@@ -65,11 +65,12 @@ pub(crate) fn render_deep_gpu(gpu: &GpuCtx, req: &FrameRequest) -> MbResult<Fram
                 let y = (i as u32) / req.width;
                 let delta_re = (x as f64 - half_w) * px_dx;
                 let delta_im = (y as f64 - half_h) * px_dy;
-                let px = iterate_single_pixel_exact(
+                let px = rosie_mandlebrot_ref::pixel_exact(
                     &req.center_re,
                     &req.center_im,
                     delta_re,
                     delta_im,
+                    req.julia.as_ref(),
                     req.max_iter,
                     rug_prec_bits,
                 );
@@ -97,7 +98,7 @@ pub(crate) fn render_deep_gpu(gpu: &GpuCtx, req: &FrameRequest) -> MbResult<Fram
         .iter()
         .filter(|&&i| pixels[i].smooth_val.is_nan())
         .count();
-    let engine_used = match rosie_mandlebrot_core::precision::effective_deep_engine(req.span, req.deep_engine) {
+    let engine_used = match req.engine() {
         rosie_mandlebrot_core::config::DeepEngine::GpuF32 => "gpu_f32",
         rosie_mandlebrot_core::config::DeepEngine::GpuF64 => "gpu_f64",
         rosie_mandlebrot_core::config::DeepEngine::GpuFe => "gpu_fe",
@@ -187,14 +188,12 @@ pub(crate) fn dispatch_pass_with(
             // Only the legacy gpu-f32 shader reads sa_coeffs, and even there the
             // bootstrap is disabled (sa_terms = 0). Everything else would pay a
             // full orbit walk per frame to build a buffer nothing samples.
-            want_sa: matches!(
-                rosie_mandlebrot_core::precision::effective_deep_engine(req.span, req.deep_engine),
-                rosie_mandlebrot_core::config::DeepEngine::GpuF32
-            ),
+            want_sa: matches!(req.engine(), rosie_mandlebrot_core::config::DeepEngine::GpuF32),
             center_re: ref_re.to_string(),
             center_im: ref_im.to_string(),
             max_iter: req.max_iter,
             max_delta: req.span.max(1e-300),
+            julia: req.julia.clone(),
         };
         let data = timed_orbit(|| {
             if ref_re == req.center_re && ref_im == req.center_im {
@@ -206,7 +205,7 @@ pub(crate) fn dispatch_pass_with(
         // Every GPU kernel but gpu-f64 reads the orbit as f32; SE3 carries an
         // exponent for the entries f32 cannot hold.
         let f32_orbit = !matches!(
-            rosie_mandlebrot_core::precision::effective_deep_engine(req.span, req.deep_engine),
+            req.engine(),
             rosie_mandlebrot_core::config::DeepEngine::GpuF64 | rosie_mandlebrot_core::config::DeepEngine::GpuFe
         );
         if let Some(n) = data.f32_orbit_limit(req.span).filter(|_| f32_orbit) {
@@ -249,11 +248,18 @@ pub(crate) fn dispatch_pass_with(
     // The default `gpu-ds` engine auto-upgrades to DS-floatexp (`gpu-fe`) once
     // the span is deep enough that DS would underflow; explicit engines pass
     // through unchanged. Span is constant across tiles, so resolve once here.
-    let eff_engine = rosie_mandlebrot_core::precision::effective_deep_engine(req.span, req.deep_engine);
+    let eff_engine = req.engine();
+    let julia = req.julia.is_some();
+    if julia && tier == Tier::DeepPerturb && !matches!(eff_engine, rosie_mandlebrot_core::config::DeepEngine::GpuDs | rosie_mandlebrot_core::config::DeepEngine::GpuFe) {
+        return Err(MbError::BeyondEngine("Julia sets render on the gpu-ds and gpu-fe engines only".into()));
+    }
     // An orbit that passes closer to 0 than f32 holds (a centre at or beside a
-    // minibrot's nucleus) needs the SE3 kernel's near-zero variant.
+    // minibrot's nucleus) needs the SE3 kernel's near-zero variant. So does
+    // every Julia set: its critical orbit starts at exactly 0, where a step is
+    // the square of the pixel's delta alone, which the plain step flushes to
+    // zero once that square leaves f32's range.
     let near_zero = eff_engine == rosie_mandlebrot_core::config::DeepEngine::GpuFe
-        && reference.as_ref().is_some_and(|r| r.orbit_f64.iter().any(|e| tiny_exponent(e).is_some()));
+        && (julia || reference.as_ref().is_some_and(|r| r.orbit_f64.iter().any(|e| tiny_exponent(e).is_some())));
 
     // Decided before the timer starts: a calibration probe is not this frame's work.
     // Every |dc| in the frame is at most its half-diagonal plus any shift of
@@ -357,9 +363,11 @@ pub(crate) fn dispatch_pass_with(
     });
 
     // BLA table for the DS and SE3 kernels.
+    // A Julia set has no dc, so its table's radii do not depend on the frame.
+    let table_delta = if julia { 0.0 } else { max_delta };
     let bla_buf = (tier == Tier::DeepPerturb).then(|| {
         let r = reference.as_ref().expect("reference computed for deep tier");
-        bla_buffers(gpu, req, r, ref_re, ref_im, use_bla.then_some(max_delta))
+        bla_buffers(gpu, req, r, ref_re, ref_im, use_bla.then_some(table_delta))
     });
 
     for tile in &tiles {
@@ -389,6 +397,9 @@ pub(crate) fn dispatch_pass_with(
                     px_dx as f32,
                     px_dy as f32,
                 ];
+                if let Some(j) = &req.julia {
+                    uniforms.params[1] = [parse_f32(&j.re), parse_f32(&j.im), 0.0, 0.0];
+                }
             }
             Tier::Medium => {
                 let cre = parse_f64(ref_re);
@@ -464,6 +475,12 @@ pub(crate) fn dispatch_pass_with(
                         uniforms.params[3] = [eb(r.orbit.len() as i32), 0.0, 0.0, 0.0];
                     }
                     _ => {}
+                }
+                // Julia: where the centre's orbit starts and where the critical
+                // orbit ends (params[3].y, .z in both deep kernels).
+                if julia {
+                    uniforms.params[3][1] = f32::from_bits(r.start);
+                    uniforms.params[3][2] = f32::from_bits(r.crit_len);
                 }
                 // Strip: params[0] = (radius of the tile's first row as mantissa
                 // and exponent, d). ref_len stays where each kernel reads it.
@@ -544,8 +561,11 @@ pub(crate) fn dispatch_pass_with(
                         bla: use_bla,
                         strip: strip.is_some(),
                         near_zero,
+                        julia,
                     },
                 )
+            } else if julia {
+                gpu.pipelines.julia_for_tier(tier)
             } else {
                 gpu.pipelines.for_tier(tier)
             };
@@ -635,7 +655,7 @@ fn bla_buffers(
 ) -> std::sync::Arc<[wgpu::Buffer; 3]> {
     use std::sync::{Arc, Mutex};
     struct Cached {
-        key: (String, String, usize),
+        key: (String, String, usize, Option<rosie_mandlebrot_core::config::Julia>),
         built_for: f64,
         buffers: Arc<[wgpu::Buffer; 3]>,
     }
@@ -659,10 +679,12 @@ fn bla_buffers(
     let Some(max_delta) = max_delta else {
         return EMPTY.lock().expect("BLA cache poisoned").get_or_insert_with(|| upload(&BlaGpu::empty())).clone();
     };
-    let key = (ref_re.to_string(), ref_im.to_string(), r.orbit_f64.len());
+    let key = (ref_re.to_string(), ref_im.to_string(), r.orbit_f64.len(), req.julia.clone());
     let mut cache = CACHE.lock().expect("BLA cache poisoned");
     if let Some(c) = cache.as_ref() {
-        if c.key == key && max_delta <= c.built_for && max_delta * 4.0 > c.built_for {
+        // A Julia set's table (built for no dc) suits every frame.
+        let fits = (max_delta <= c.built_for && max_delta * 4.0 > c.built_for) || (max_delta == 0.0 && c.built_for == 0.0);
+        if c.key == key && fits {
             return c.buffers.clone();
         }
     }

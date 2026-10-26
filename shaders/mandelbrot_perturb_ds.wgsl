@@ -61,6 +61,12 @@ override BLA : bool = false;
 // row y the circle of radius r_top * exp(-y*d). params[0] = (r_top mantissa,
 // bitcast exponent, d, unused); the tile's first column is tile_origin_px.x.
 override STRIP : bool = false;
+// A Julia set: dz starts at the pixel's offset from the centre and there is
+// no dc. The reference holds the critical orbit (from 0) first, where rebasing
+// returns, then from params[3].y the centre's orbit, where every pixel starts;
+// params[3].z is the critical orbit's length. A pass never runs past the end
+// of the part of the reference it is in.
+override JULIA : bool = false;
 
 // ---- DS (double-single) primitives. A DS value is vec2<f32> = (hi, lo). ----
 
@@ -257,6 +263,26 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    let julia_start = bitcast<u32>(U.params[3].y);
+    let crit_len = bitcast<u32>(U.params[3].z);
+    if (JULIA) {
+        dz_re = dc_re;
+        dz_im = dc_im;
+        dc_re = vec2<f32>(0.0, 0.0);
+        dc_im = vec2<f32>(0.0, 0.0);
+        n = julia_start;
+        // z_0 is the pixel itself, so it can already be outside.
+        let e0 = ref_orbit[n];
+        let w0r = ds_add(e0.xy, dz_re);
+        let w0i = ds_add(e0.zw, dz_im);
+        let m0 = w0r.x * w0r.x + w0i.x * w0i.x;
+        if (m0 > BAILOUT_SQ) {
+            out_buf[pixel_id].iter = 0u;
+            out_buf[pixel_id].smooth_val = smooth_iter(0u, m0);
+            return;
+        }
+    }
+
     loop {
         if (iter >= U.max_iter) { break; } // inside-set
 
@@ -266,9 +292,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var skipped = false;
         var skip_d2 : f32 = 1.0;
         var skip_de : i32 = 0;
+        // The end of the part of the reference this pass is in.
+        var part_end = ref_len;
+        if (JULIA && n < julia_start) {
+            part_end = crit_len;
+        }
         if (BLA && n >= 1u) {
             let dzl = log2(max(abs(dz_re.x), abs(dz_im.x))) + 0.5;
-            let k = bla_find(n, dzl, ref_len, U.max_iter - iter);
+            let k = bla_find(n, dzl, part_end, U.max_iter - iter);
             if (k > 0u) {
                 let b = bla[k - 1u];
                 let p_re = ds_sub(ds_mul(b.a.xy, dz_re), ds_mul(b.a.zw, dz_im));
@@ -372,7 +403,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // holds under either. It is also ~4 ops instead of ~38.
         let w_inf = max(abs(wr.x), abs(wi.x));
         let dz_inf = max(abs(dz_re.x), abs(dz_im.x));
-        if (w_inf < dz_inf || n >= ref_len - 1u) {
+        if (w_inf < dz_inf || n >= part_end - 1u) {
             dz_re = wr;
             dz_im = wi;
             n = 0u;

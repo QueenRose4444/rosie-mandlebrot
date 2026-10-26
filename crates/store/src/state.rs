@@ -415,6 +415,7 @@ mod tests {
             blank_stop_interval: 20,
             blank_stop_threshold: 0.997,
             blank_stop_after: None,
+            julia: None,
         }
     }
 

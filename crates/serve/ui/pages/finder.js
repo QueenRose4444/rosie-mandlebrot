@@ -207,13 +207,54 @@ export function mount(root, params) {
         h('button', { type: 'button', class: 'btn primary', onclick: () => save(job, p, true) }, 'Render…'),
         h('button', { type: 'button', class: 'btn', onclick: () => save(job, p, false) }, 'Save to Library'));
     }
+    actions.append(juliaControl(job, p));
     return h('article', { class: 'find' },
       strip,
+      juliaStrip(p),
       h('div', { class: 'find-body' },
         h('strong', null, 'Goes to ', h('span', { class: 'num' }, fmtSpan(p.end))),
         h('span', null, `Interest ${Math.round(p.interest)}% · minibrot period ${Number(p.period).toLocaleString()}`),
         est,
         actions));
+  }
+
+  // The job picturing this place's Julia set, if one was started.
+  function juliaJob(p) {
+    const key = `${p.re},${p.im}`;
+    const jobs = jobsOf(latestState()).filter((j) => j.kind === 'find' && j.find && j.find.mode === 'julia' && j.find.center === key);
+    return jobs[jobs.length - 1] || null;
+  }
+
+  function juliaControl(job, p) {
+    const jj = juliaJob(p);
+    if (jj && (jj.state === 'queued' || jj.state === 'running')) return h('span', { class: 'muted small' }, 'Picturing its Julia set…');
+    if (jj && (jj.places || []).length) {
+      const go = async () => {
+        const name = p.saved || (await save(job, p, false));
+        if (name) location.hash = `#/new?preset=${encodeURIComponent(name)}&julia=1`;
+      };
+      return h('button', { type: 'button', class: 'btn quiet', onclick: go }, 'Render its Julia set…');
+    }
+    return h('button', { type: 'button', class: 'btn quiet', title: 'Pictures of the Julia set of this place\'s point, zooming into its middle',
+      onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          await post('/api/jobs', { kind: 'find', mode: 'julia', center: `${p.re},${p.im}`, end: p.end, seconds: 10 });
+        } catch (err) {
+          status.textContent = `Could not start: ${err.message}`;
+        }
+      } }, 'See its Julia set');
+  }
+
+  function juliaStrip(p) {
+    const jj = juliaJob(p);
+    const jp = jj && (jj.places || [])[0];
+    if (!jp) return null;
+    return h('div', { class: 'stack', style: { gap: '4px' } },
+      h('span', { class: 'muted small' }, 'Its Julia set, zooming into the middle:'),
+      h('div', { class: 'find-strip' },
+        (jp.pictures || []).map((u, i) => h('button', { type: 'button', class: 'pic-btn', onclick: () => show(u, jp, i), 'aria-label': `Julia set picture ${i + 1} of ${jp.pictures.length}, larger` },
+          h('img', { src: u, alt: '', loading: 'lazy', decoding: 'async' })))));
   }
 
   function estimateText(job, p) {
@@ -233,8 +274,10 @@ export function mount(root, params) {
       const saved = await post('/api/found', { job: job.id, n: p.n });
       status.textContent = `Saved as ${saved.label}.`;
       if (thenRender) location.hash = `#/new?preset=${encodeURIComponent(saved.name)}`;
+      return saved.name;
     } catch (err) {
       status.textContent = `Could not save: ${err.message}`;
+      return null;
     }
   }
 
@@ -275,7 +318,8 @@ export function mount(root, params) {
 
   const off = on('state', (s) => {
     const job = currentJob();
-    const key = job ? `${job.id}:${job.state}:${(job.places || []).length}:${(job.places || []).filter((p) => p.saved).length}` : '';
+    const julias = jobsOf(s).filter((j) => j.kind === 'find' && j.find?.mode === 'julia').map((j) => `${j.id}${j.state}${(j.places || []).length}`).join(',');
+    const key = job ? `${job.id}:${job.state}:${(job.places || []).length}:${(job.places || []).filter((p) => p.saved).length}:${julias}` : '';
     if (key !== lastKey) {
       const stateChanged = lastKey.split(':')[1] !== key.split(':')[1];
       lastKey = key;

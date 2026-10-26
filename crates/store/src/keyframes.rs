@@ -428,6 +428,9 @@ pub struct Manifest {
     /// Rendering time across every process that worked on this strip.
     #[serde(default)]
     pub elapsed_secs: f64,
+    /// The Julia set this strip shows, if it is not the Mandelbrot set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub julia: Option<rosie_mandlebrot_core::config::Julia>,
 }
 
 impl Manifest {
@@ -667,6 +670,7 @@ mod tests {
             stop_reason: None,
             video_end_span: Some(1e-20),
             elapsed_secs: 12.5,
+            julia: None,
         }
     }
 

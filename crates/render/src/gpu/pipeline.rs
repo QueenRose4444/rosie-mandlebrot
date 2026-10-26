@@ -13,6 +13,8 @@ pub struct Pipelines {
     pub shallow: wgpu::ComputePipeline,
     pub medium: wgpu::ComputePipeline,
     pub deep: wgpu::ComputePipeline,
+    /// The shallow kernel for Julia sets (z starts at the pixel, c is fixed).
+    pub shallow_julia: wgpu::ComputePipeline,
     /// Double-single (2×f32) and DS-floatexp (SE3) deep kernels, in up to
     /// eight variants each (interior exit × BLA × strip), compiled on first
     /// use: most runs need two or three of the sixteen.
@@ -154,6 +156,14 @@ impl Pipelines {
             compilation_options: Default::default(),
             cache: None,
         });
+        let shallow_julia = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("pipeline-shallow-julia"),
+            layout: Some(&pl_simple),
+            module: &mod_f32,
+            entry_point: Some("cs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions { constants: &[("JULIA", 1.0)], ..Default::default() },
+            cache: None,
+        });
         let deep_variants = DeepVariants {
             device: device.clone(),
             layout: pl_perturb.clone(),
@@ -191,6 +201,7 @@ impl Pipelines {
             shallow,
             medium,
             deep,
+            shallow_julia,
             deep_variants,
             deep_f64,
         })
@@ -255,6 +266,15 @@ impl Pipelines {
         }
     }
 
+    /// [`Pipelines::for_tier`] for a Julia set: only the shallow tier has one
+    /// here (the deep tier's come from [`Pipelines::deep_for_engine`]).
+    pub fn julia_for_tier(&self, tier: Tier) -> &wgpu::ComputePipeline {
+        match tier {
+            Tier::Shallow => &self.shallow_julia,
+            other => self.for_tier(other),
+        }
+    }
+
     pub fn bgl_for_tier(&self, tier: Tier) -> &wgpu::BindGroupLayout {
         match tier {
             Tier::Shallow | Tier::Medium | Tier::MidF64 => &self.bgl_simple,
@@ -298,11 +318,13 @@ pub struct DeepVariant {
     pub strip: bool,
     /// The reference orbit passes closer to 0 than f32 holds (SE3 only).
     pub near_zero: bool,
+    /// A Julia set: the pixel's offset starts dz, there is no dc.
+    pub julia: bool,
 }
 
 impl DeepVariant {
     fn index(self) -> usize {
-        self.interior_exit as usize | (self.bla as usize) << 1 | (self.strip as usize) << 2 | (self.near_zero as usize) << 3
+        self.interior_exit as usize | (self.bla as usize) << 1 | (self.strip as usize) << 2 | (self.near_zero as usize) << 3 | (self.julia as usize) << 4
     }
 }
 
@@ -311,8 +333,8 @@ struct DeepVariants {
     layout: wgpu::PipelineLayout,
     ds: wgpu::ShaderModule,
     fe: wgpu::ShaderModule,
-    ds_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 16],
-    fe_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 16],
+    ds_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 32],
+    fe_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 32],
 }
 
 impl DeepVariants {
@@ -322,8 +344,13 @@ impl DeepVariants {
         let (cache, module, name) = if fe { (&self.fe_cache, &self.fe, "fe") } else { (&self.ds_cache, &self.ds, "ds") };
         cache[v.index()].get_or_init(|| {
             let flag = |on: bool| if on { 1.0 } else { 0.0 };
-            let label = format!("pipeline-deep-{name}-i{}-b{}-s{}-z{}", v.interior_exit as u8, v.bla as u8, v.strip as u8, v.near_zero as u8);
+            let label = format!("pipeline-deep-{name}-i{}-b{}-s{}-z{}-j{}", v.interior_exit as u8, v.bla as u8, v.strip as u8, v.near_zero as u8, v.julia as u8);
             let mut constants = vec![("INTERIOR_EXIT", flag(v.interior_exit)), ("BLA", flag(v.bla)), ("STRIP", flag(v.strip))];
+            // Mandelbrot pipelines are compiled exactly as before: the Julia
+            // constant is only given when it is on.
+            if v.julia {
+                constants.push(("JULIA", 1.0));
+            }
             if fe {
                 constants.push(("NEAR_ZERO", flag(v.near_zero)));
             }

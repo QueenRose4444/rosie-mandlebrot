@@ -905,6 +905,7 @@ fn render_reference(gpu: &GpuCtx, span: f64, factor: u32, max_iter: u32, ctx: &C
         progress: None,
         deep_engine: rosie_mandlebrot_core::config::DeepEngine::GpuDs,
         interior_exit: true,
+        julia: m.julia.clone(),
     };
     let frame = rosie_mandlebrot_render::render_frame(gpu, &req)?;
     let half = (factor as i64 - 1) / 2;
@@ -970,6 +971,7 @@ mod tests {
             stop_reason: None,
             video_end_span: None,
             elapsed_secs: 0.0,
+            julia: None,
         }
     }
 

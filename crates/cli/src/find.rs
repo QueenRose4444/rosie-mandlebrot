@@ -4,7 +4,7 @@
 //! `places.json` and reported as an event.
 
 use clap::Parser;
-use rosie_mandlebrot_core::config::{parse_center, DeepEngine};
+use rosie_mandlebrot_core::config::{parse_center, DeepEngine, Julia};
 use rosie_mandlebrot_core::encode::encode_rgb;
 use rosie_mandlebrot_core::palette::ColorScheme;
 use rosie_mandlebrot_core::sequence::{iter_cap_for, SequenceConfig, PLACE_MAX_ITER};
@@ -38,6 +38,11 @@ pub struct FindCli {
     /// Picture and score one place without searching: --center and its end of zoom (a span).
     #[arg(long, requires = "center")]
     pub describe: Option<f64>,
+    /// With --describe: picture the place's Julia set instead (c = --center),
+    /// zooming into its middle down to the square root of the end: the Julia
+    /// set near 0 is the Mandelbrot set near c, doubled.
+    #[arg(long, requires = "describe")]
+    pub julia: bool,
     /// Search for this long, in seconds.
     #[arg(long, default_value_t = 60)]
     pub seconds: u64,
@@ -206,13 +211,18 @@ fn picture_place(
     level: u32,
 ) -> anyhow::Result<PlaceEvent> {
     let seq = SequenceConfig::default();
-    let (top, bottom) = (seq.initial_span.log10(), (end * 8.0).log10());
+    let julia = cli.julia.then(|| Julia { re: re.to_string(), im: im.to_string() });
+    let deepest = if julia.is_some() { end.sqrt() } else { end };
+    let (top, bottom) = (seq.initial_span.log10(), (deepest * 8.0).log10());
     let k = cli.pictures.max(1);
     let mut pictures = Vec::new();
     let mut details = Vec::new();
     for i in 0..k {
         let span = 10f64.powf(top + (bottom - top) * (i + 1) as f64 / k as f64);
-        let (rgba, detail) = picture(gpu, re, im, span, period, cli.picture_size, palette)?;
+        let (rgba, detail) = match &julia {
+            Some(j) => picture(gpu, "0", "0", Some(j), span, period, cli.picture_size, palette)?,
+            None => picture(gpu, re, im, None, span, period, cli.picture_size, palette)?,
+        };
         let path = cli.out.join(format!("place-{n:03}-{i}.jpg"));
         write_jpeg(&rgba, cli.picture_size, cli.picture_size, &path)?;
         pictures.push(path.display().to_string());
@@ -240,7 +250,8 @@ fn picture_place(
 
 /// One frame, as RGBA in `palette`, and its detail: the mean difference
 /// between neighbouring pixels' grey levels (0 = flat, about 0.3 = noise).
-fn picture(gpu: &GpuCtx, re: &str, im: &str, span: f64, period: u32, size: u32, palette: ColorScheme) -> anyhow::Result<(Vec<u8>, f64)> {
+#[allow(clippy::too_many_arguments)]
+fn picture(gpu: &GpuCtx, re: &str, im: &str, julia: Option<&Julia>, span: f64, period: u32, size: u32, palette: ColorScheme) -> anyhow::Result<(Vec<u8>, f64)> {
     let seq = SequenceConfig::default();
     let max_iter = seq.max_iter_for_span(span).max(iter_cap_for(period)).min(PLACE_MAX_ITER);
     let req = FrameRequest {
@@ -256,6 +267,7 @@ fn picture(gpu: &GpuCtx, re: &str, im: &str, span: f64, period: u32, size: u32, 
         progress: None,
         deep_engine: DeepEngine::default(),
         interior_exit: true,
+        julia: julia.cloned(),
     };
     let frame = render_frame(gpu, &req)?;
     let rgb = encode_rgb(&frame.pixels, frame.width, frame.height, frame.max_iter, palette);

@@ -198,6 +198,27 @@ pub struct RunConfig {
     /// Span below which the blank check activates (None = always active).
     #[serde(default)]
     pub blank_stop_after: Option<f64>,
+    /// Render the Julia set of this point instead of the Mandelbrot set; the
+    /// centre is then a point of the Julia set's own plane.
+    #[serde(default)]
+    pub julia: Option<Julia>,
+}
+
+/// The constant `c` of a Julia set `z -> z^2 + c`, as the decimal strings the
+/// user gave: every digit counts, because a different `c` is a different set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Julia {
+    pub re: String,
+    pub im: String,
+}
+
+impl Julia {
+    /// Bits needed to hold every digit of `c`, so the orbit is the orbit of
+    /// this exact set and not of a neighbour.
+    pub fn bits(&self) -> u32 {
+        let digits = |s: &str| s.bytes().filter(u8::is_ascii_digit).count() as f64;
+        ((digits(&self.re).max(digits(&self.im)) + 2.0) * std::f64::consts::LOG2_10).ceil() as u32
+    }
 }
 
 fn default_save_every() -> u64 { 1 }
@@ -214,6 +235,16 @@ impl RunConfig {
         for part in [&self.center_re, &self.center_im] {
             if !is_decimal(part) {
                 return Err(MbError::BadCenter(format!("'{part}' is not a decimal number")));
+            }
+        }
+        if let Some(j) = &self.julia {
+            for part in [&j.re, &j.im] {
+                if !is_decimal(part) {
+                    return bad("--julia", format!("'{part}' is not a decimal number"));
+                }
+            }
+            if !matches!(self.deep_engine, DeepEngine::GpuDs | DeepEngine::GpuFe) {
+                return bad("--julia", "Julia sets render on the default deep engine (gpu-ds) or gpu-fe".into());
             }
         }
         if self.width == 0 || self.height == 0 {
@@ -385,6 +416,7 @@ mod tests {
             blank_stop_interval: 20,
             blank_stop_threshold: 0.997,
             blank_stop_after: None,
+            julia: None,
         }
     }
 

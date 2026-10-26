@@ -128,6 +128,7 @@ async fn presets(State(c): State<Ctx>) -> ApiResult<Json<serde_json::Value>> {
             let hero = heroes.join(&file).exists().then(|| format!("/heroes/{file}"));
             let vfile = format!("{}{}", p.name, rosie_mandlebrot_core::presets::HERO_VALUES_SUFFIX);
             let values = heroes.join(&vfile).exists().then(|| format!("/heroes/{vfile}"));
+            let (julia_hero, julia_values) = julia_pictures(&heroes, &p.name);
             serde_json::json!({
                 "name": p.name,
                 "kind": p.kind.map(|k| format!("{k:?}").to_lowercase()),
@@ -137,12 +138,30 @@ async fn presets(State(c): State<Ctx>) -> ApiResult<Json<serde_json::Value>> {
                 "center": format!("{}, {}", p.center_re, p.center_im),
                 "hero": hero,
                 "values": values,
+                "julia_hero": julia_hero,
+                "julia_values": julia_values,
             })
         })
         .collect();
     let mut list = list;
-    list.extend(found::load(&c.app.data).places.iter().map(found_json));
+    list.extend(found::load(&c.app.data).places.iter().map(|f| {
+        let mut v = found_json(f);
+        let (julia_hero, julia_values) = julia_pictures(&heroes, &f.name);
+        v["julia_hero"] = julia_hero.into();
+        v["julia_values"] = julia_values.into();
+        v
+    }));
     Ok(Json(serde_json::Value::Array(list)))
+}
+
+/// A place's Julia set picture and its values file, when they have been made.
+fn julia_pictures(heroes: &std::path::Path, name: &str) -> (Option<String>, Option<String>) {
+    use rosie_mandlebrot_core::presets::{HERO_SUFFIX, HERO_VALUES_SUFFIX, JULIA_TAG};
+    let url = |suffix: &str| {
+        let file = format!("{name}{JULIA_TAG}{suffix}");
+        heroes.join(&file).exists().then(|| format!("/heroes/{file}"))
+    };
+    (url(HERO_SUFFIX), url(HERO_VALUES_SUFFIX))
 }
 
 /// A kept place as a Library card: like a preset, with kind "found".
@@ -200,6 +219,43 @@ async fn delete_found(State(c): State<Ctx>, UrlPath(name): UrlPath<String>) -> A
         Ok(false) => Err(not_found("such place")),
         Err(e) => Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, e)),
     }
+}
+
+/// A place's centre, the end of its zoom, and for a kept place its base preset,
+/// period and label.
+struct PlaceInfo {
+    re: String,
+    im: String,
+    end: f64,
+    found: Option<found::FoundPlace>,
+}
+
+fn place_info(data: &std::path::Path, presets: &[Preset], name: &str) -> Option<PlaceInfo> {
+    if let Some(p) = presets.iter().find(|p| p.name == name) {
+        let end = p.suggested_zoom_end.to_f64().unwrap_or(1e-300).max(1e-300);
+        return Some(PlaceInfo { re: p.center_re.clone(), im: p.center_im.clone(), end, found: None });
+    }
+    let f = found::find(data, name)?;
+    Some(PlaceInfo { re: f.re.clone(), im: f.im.clone(), end: f.end, found: Some(f) })
+}
+
+/// "This place as a Julia set": the Julia set of the place's centre, zoomed
+/// into its middle (0) down to the square root of the place's end, where the
+/// Julia set shows what the place shows (the Julia set near 0 is the
+/// Mandelbrot set near c, doubled).
+fn julia_body(data: &std::path::Path, presets: &[Preset], b: &mut jobs::RenderBody) -> Result<String, String> {
+    let place = place_info(data, presets, &b.preset).ok_or("no such place")?;
+    b.julia = Some(format!("{},{}", place.re, place.im));
+    b.zoom_end = b.zoom_end.or(Some(place.end.sqrt()));
+    let label = match place.found {
+        Some(f) => {
+            b.iter_cap = b.iter_cap.or(Some(rosie_mandlebrot_core::sequence::iter_cap_for(f.period)));
+            b.preset = f.base.clone();
+            f.label
+        }
+        None => b.preset.clone(),
+    };
+    Ok(format!("{label} Julia set"))
 }
 
 /// A Library name that is not a preset but a kept place: render it as its
@@ -304,7 +360,11 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
     let job = match body {
         JobBody::Render(mut b) => {
             let settings: Settings = store::load(&app.data.join("settings.json"));
-            let found_label = found_place_body(&app.data, &preset_list()?, &mut b);
+            let found_label = if b.as_julia {
+                Some(julia_body(&app.data, &preset_list()?, &mut b).map_err(bad)?)
+            } else {
+                found_place_body(&app.data, &preset_list()?, &mut b)
+            };
             b.chunk_size = b.chunk_size.or(Some(settings.chunk_size.clone()));
             b.tone = b.tone.or(Some(settings.tone.clone()));
             b.format = b.format.or(Some(settings.video_format.clone()));
@@ -340,6 +400,14 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             let mut args = vec!["--heroes".to_string(), app.data.join("heroes").display().to_string()];
             args.extend(["--log-file".to_string(), app.data.join("logs").join("heroes.log").display().to_string()]);
             let label = match &b.presets {
+                Some(list) if list.len() == 1 && b.julia => {
+                    let name = &list[0];
+                    let place = place_info(&app.data, &preset_list()?, name).ok_or_else(|| not_found("such place"))?;
+                    let base = place.found.as_ref().map_or(name.clone(), |f| f.base.clone());
+                    args.extend(["--preset".to_string(), base, format!("--julia={},{}", place.re, place.im)]);
+                    args.extend(["--blank-stop-after".to_string(), format!("{:e}", place.end.sqrt()), "--hero-name".to_string(), name.clone()]);
+                    format!("Julia set picture of {name}")
+                }
                 Some(list) if list.len() == 1 => {
                     if !jobs::valid_name(&list[0]) {
                         return Err(bad("not a preset name"));
@@ -378,7 +446,12 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
                     }
                     (FindStart::New, name.to_string(), "seahorse".to_string(), format!("search for new places ({name})"))
                 }
-                other => return Err(bad(format!("mode {other:?}: expected deeper or new"))),
+                "julia" => {
+                    let c = b.center.clone().ok_or_else(|| bad("pictures of a Julia set need its point"))?;
+                    let (re, im) = c.split_once(',').ok_or_else(|| bad("the point is \"re,im\""))?;
+                    (FindStart::Center(re.trim().into(), im.trim().into()), "Julia set".into(), "seahorse".into(), "pictures of a Julia set".into())
+                }
+                other => return Err(bad(format!("mode {other:?}: expected deeper, new or julia"))),
             };
             let settings: Settings = store::load(&app.data.join("settings.json"));
             let finds = app.data.join("finds");
@@ -386,7 +459,8 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             let out = finds.join(format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())));
             let args = jobs::find_args(&b, &start, &out, settings.finder_picture_size).map_err(bad)?;
             let job = app.enqueue("find", None, what, args, false, Progress::default());
-            let info = FindInfo { mode: b.mode.clone(), seconds: b.seconds, label, base, out };
+            let center = (b.mode == "julia").then(|| b.center.clone()).flatten();
+            let info = FindInfo { mode: b.mode.clone(), seconds: b.seconds, label, base, center, out };
             app.update(job.id, false, |j| j.find = Some(info.clone()));
             let mut job = job;
             job.find = Some(info);

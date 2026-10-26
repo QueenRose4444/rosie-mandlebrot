@@ -256,6 +256,58 @@ pub fn bla_walk(table: &BlaTable, orbit: &[RefOrbitEntryF64], delta_c: Complex64
     }
 }
 
+/// [`bla_walk`] for a Julia set, on a reference laid out as
+/// [`crate::ReferenceData::start`] describes: the pixel starts at `start`
+/// with `dz = dz0` (its offset from the centre) and no `dc`; `z_0` itself is
+/// tested for escape; a pass never runs past the end of the part of the
+/// orbit it is in (the critical orbit ends at `crit_len`), and rebasing goes
+/// to index 0, the critical point, as for the Mandelbrot set.
+pub fn julia_walk(table: &BlaTable, orbit: &[RefOrbitEntryF64], start: usize, crit_len: usize, dz0: Complex64, max_iter: u32) -> (BlaResult, u32) {
+    let ref_len = orbit.len();
+    if crit_len < 2 || ref_len < 2 {
+        return (BlaResult::Inside, 0);
+    }
+    let end = |n: usize| if n >= start { ref_len } else { crit_len };
+    let mut dz = dz0;
+    let mut n = start;
+    let mut iter = 0u32;
+    let mut passes = 0u32;
+    let w0 = Complex64::new(orbit[n].z_re, orbit[n].z_im) + dz;
+    if w0.norm_sqr() > BAILOUT_SQ {
+        let smooth = 1.0 - (w0.norm_sqr().ln() * 0.5).log2();
+        return (BlaResult::Escaped { iter: 0, smooth }, 0);
+    }
+    loop {
+        if iter >= max_iter {
+            return (BlaResult::Inside, passes);
+        }
+        passes += 1;
+        match table.lookup(n, dz.norm(), end(n), max_iter - iter).filter(|b| b.len >= 2) {
+            Some(b) => {
+                dz = b.a * dz;
+                n += b.len as usize;
+                iter += b.len;
+            }
+            None => {
+                let z = Complex64::new(orbit[n].z_re, orbit[n].z_im);
+                dz = 2.0 * z * dz + dz * dz;
+                n += 1;
+                iter += 1;
+            }
+        }
+        let w = Complex64::new(orbit[n].z_re, orbit[n].z_im) + dz;
+        let w2 = w.norm_sqr();
+        if w2 > BAILOUT_SQ {
+            let smooth = iter as f64 + 1.0 - (w2.ln() * 0.5).log2();
+            return (BlaResult::Escaped { iter, smooth }, passes);
+        }
+        if w2 < dz.norm_sqr() || n >= end(n) - 1 {
+            dz = w;
+            n = 0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +323,7 @@ mod tests {
             center_im: im.into(),
             max_iter: max_iter + 2,
             max_delta: span,
+            julia: None,
         })
         .orbit_f64
     }
@@ -453,4 +506,91 @@ mod tests {
         }
         assert_eq!(flips, 0, "BLA called {flips} of 100 escaping points inside");
     }
+
+    /// A Julia set's reference and table: `c`, centred on `(re, im)`.
+    fn julia_setup(c: (&str, &str), centre: (&str, &str), span: f64, max_iter: u32) -> (crate::ReferenceData, BlaTable) {
+        let r = compute_reference(&RefRequest {
+            want_sa: false,
+            center_re: centre.0.into(),
+            center_im: centre.1.into(),
+            max_iter: max_iter + 2,
+            max_delta: span,
+            julia: Some(rosie_mandlebrot_core::config::Julia { re: c.0.into(), im: c.1.into() }),
+        });
+        let t = build_bla_table(&r.orbit_f64, 0.0, BLA_EPSILON_F64);
+        (r, t)
+    }
+
+    /// Exact matches and inside/outside flips of the plain and BLA walks
+    /// against the exact orbit, over a `g`×`g` grid.
+    fn julia_score(c: (&str, &str), centre: (&str, &str), span: f64, max_iter: u32, g: usize) -> [u32; 5] {
+        let (r, t) = julia_setup(c, centre, span, max_iter);
+        let julia = rosie_mandlebrot_core::config::Julia { re: c.0.into(), im: c.1.into() };
+        let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span).max(julia.bits()) + 256;
+        let (start, crit) = (r.start as usize, r.crit_len as usize);
+        let walk = |table: &BlaTable, dz: Complex64| match julia_walk(table, &r.orbit_f64, start, crit, dz, max_iter).0 {
+            BlaResult::Escaped { iter, .. } => iter,
+            _ => max_iter,
+        };
+        let [mut n, mut plain_ok, mut bla_ok, mut plain_flip, mut bla_flip] = [0u32; 5];
+        for dz in grid(span, g) {
+            let truth = crate::pixel_exact(centre.0, centre.1, dz.re, dz.im, Some(&julia), max_iter, prec).iter.min(max_iter);
+            let (p, b) = (walk(&BlaTable::default(), dz), walk(&t, dz));
+            n += 1;
+            plain_ok += u32::from(p == truth);
+            bla_ok += u32::from(b == truth);
+            plain_flip += u32::from((p >= max_iter) != (truth >= max_iter));
+            bla_flip += u32::from((b >= max_iter) != (truth >= max_iter));
+        }
+        eprintln!("julia {span:e} at ({}, {}): plain {plain_ok}/{n} exact, BLA {bla_ok}/{n}; flips {plain_flip} / {bla_flip}", &centre.0[..centre.0.len().min(8)], &centre.1[..centre.1.len().min(8)]);
+        [n, plain_ok, bla_ok, plain_flip, bla_flip]
+    }
+
+    const SPIRAL: (&str, &str) = (
+        "-0.775683768009053797469483503934741045728246504615800394794952001400666017222819589894883159368782255028252296689050972509",
+        "0.13646736829469012473327440961784876519777211159246769640780019540083566597481550087544861124417865662570682305975983601",
+    );
+
+    /// The Julia walk follows the exact orbit at the critical point (where
+    /// every pixel starts on the critical orbit) and off it (where it starts
+    /// on the centre's orbit and rebases onto the critical one), shallow and
+    /// deep, with and without skips.
+    #[test]
+    fn julia_walk_matches_the_exact_orbit() {
+        for (centre, span) in [(("0", "0"), 1e-3), (("0", "0"), 1e-30), (SPIRAL, 1e-10), (SPIRAL, 1e-60)] {
+            let [n, plain_ok, bla_ok, plain_flip, bla_flip] = julia_score(SPIRAL, centre, span, 30_000, 12);
+            assert_eq!((plain_flip, bla_flip), (0, 0), "inside/outside wrong at {span:e}");
+            assert!(plain_ok * 10 >= n * 9, "plain walk {plain_ok}/{n} at {span:e}");
+            assert!(bla_ok + 3 >= plain_ok, "BLA {bla_ok}/{n} vs plain {plain_ok}/{n} at {span:e}");
+        }
+    }
+
+    /// With `c` a period-5022 nucleus of size 1.1e-65 the critical orbit
+    /// returns within 1e-41 of 0 every period, and pixels near 0 linger for
+    /// thousands of iterations: BLA must not change inside/outside, and must
+    /// match the exact orbit as often as plain perturbation does.
+    #[test]
+    fn julia_walk_beside_a_deep_minibrot() {
+        let c = (
+            "-0.7417974837062003136854778421527691043688748451101075978763208456332173641",
+            "0.1103942848342107617071374369842534866940757933450414369550756723954348098",
+        );
+        for span in [1e-12, 1e-30] {
+            let [n, plain_ok, bla_ok, plain_flip, bla_flip] = julia_score(c, ("0", "0"), span, 120_000, 10);
+            assert_eq!((plain_flip, bla_flip), (0, 0), "inside/outside wrong at {span:e}");
+            assert!(bla_ok + n / 10 >= plain_ok, "BLA {bla_ok}/{n} vs plain {plain_ok}/{n} at {span:e}");
+        }
+    }
+
+    /// A pixel whose `z_0` is already outside escapes at iteration 0, as the
+    /// exact orbit counts it.
+    #[test]
+    fn a_julia_pixel_outside_at_the_start_escapes_at_zero() {
+        let (r, t) = julia_setup(SPIRAL, ("0", "0"), 3.0, 100);
+        let res = julia_walk(&t, &r.orbit_f64, 0, r.crit_len as usize, Complex64::new(1.9, 1.9), 100).0;
+        assert!(matches!(res, BlaResult::Escaped { iter: 0, .. }), "{res:?}");
+        let j = rosie_mandlebrot_core::config::Julia { re: SPIRAL.0.into(), im: SPIRAL.1.into() };
+        assert_eq!(crate::pixel_exact("0", "0", 1.9, 1.9, Some(&j), 100, 128).iter, 0);
+    }
 }
+

@@ -21,6 +21,27 @@ pub fn effective_deep_engine(span: f64, configured: DeepEngine) -> DeepEngine {
     }
 }
 
+/// [`effective_deep_engine`] for a Julia set, which leaves DS sooner: a
+/// Julia orbit squares the pixel's own offset wherever it passes the critical
+/// point (0), and once that square is below f32's range DS reads it as zero.
+/// Measured (zooming into 0 of seahorse_spiral's Julia set, 256 samples):
+/// DS 96.9% exact at 1e-14 and 97.7% at 1e-16, then 20.7% at 1e-18 and 0% at
+/// 1e-19 (one flat colour), where SE3 stays 96.5-98.0%.
+pub const JULIA_FE_SPAN_THRESHOLD: f64 = 1e-15;
+
+/// [`JULIA_FE_SPAN_THRESHOLD`], or `MANDELBROT_JULIA_FE_SPAN` for measurements.
+fn julia_fe_span() -> f64 {
+    std::env::var("MANDELBROT_JULIA_FE_SPAN").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(JULIA_FE_SPAN_THRESHOLD)
+}
+
+/// [`effective_deep_engine`], with a Julia set's earlier change to SE3.
+pub fn effective_deep_engine_for(span: f64, configured: DeepEngine, julia: bool) -> DeepEngine {
+    match configured {
+        DeepEngine::GpuDs if julia && span < julia_fe_span() => DeepEngine::GpuFe,
+        other => effective_deep_engine(span, other),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
@@ -74,6 +95,24 @@ pub fn select_tier(span: f64, width: u32) -> Tier {
         Tier::Shallow
     } else {
         Tier::DeepPerturb // GPU DS perturbation + rebasing (exact)
+    }
+}
+
+/// Span below which a Julia frame leaves the f32 kernel for perturbation:
+/// every span (`MANDELBROT_JULIA_SHALLOW_SPAN` sets one, for measurements).
+/// A Julia frame's pixels near the set run hundreds of iterations, where plain
+/// f32 drifts from the exact orbit. Measured against it (256 samples, 640x360,
+/// zooming into 0 of seahorse_spiral's Julia set): f32 99.2% exact at spans 2
+/// and 1, 96.9% at 0.3, 94.5% at 0.1, 85.2% at 0.03, 66.8% at 0.01, 5.1% at
+/// 1e-3; perturbation 98.0-100% at all of them.
+pub const JULIA_SHALLOW_SPAN: f64 = f64::INFINITY;
+
+/// [`select_tier`], with a Julia set's earlier change to perturbation.
+pub fn select_tier_for(span: f64, width: u32, julia: bool) -> Tier {
+    let floor = std::env::var("MANDELBROT_JULIA_SHALLOW_SPAN").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(JULIA_SHALLOW_SPAN);
+    match select_tier(span, width) {
+        Tier::Shallow if julia && span < floor => Tier::DeepPerturb,
+        t => t,
     }
 }
 

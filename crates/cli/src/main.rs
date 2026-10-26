@@ -560,6 +560,7 @@ fn probe(
         progress: None,
         deep_engine: cfg.deep_engine,
         interior_exit: true,
+        julia: cfg.julia.clone(),
     };
     tracing::info!(
         "probe: {}x{} center=({}, {}) span={:.4e} max_iter={}",
@@ -602,7 +603,7 @@ fn oracle_check(cfg: &RunConfig, pixels: &[rosie_mandlebrot_core::types::PixelOu
     let px_dx = span * (w / h) / w;
     let px_dy = span / h;
     let side = (n as f64).sqrt().ceil() as u32;
-    let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span) + 256;
+    let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span).max(cfg.julia.as_ref().map_or(0, |j| j.bits())) + 256;
     let samples: Vec<(u32, u32)> = (0..side * side)
         .map(|i| {
             let x = ((i % side) as f64 + 0.5) / side as f64 * w;
@@ -617,10 +618,19 @@ fn oracle_check(cfg: &RunConfig, pixels: &[rosie_mandlebrot_core::types::PixelOu
             let gpu = pixels[(y * cfg.width + x) as usize].iter.min(max_iter);
             let d_re = (x as f64 - w * 0.5) * px_dx;
             let d_im = (y as f64 - h * 0.5) * px_dy;
-            let truth = rosie_mandlebrot_ref::iterate_single_pixel_exact(&cfg.center_re, &cfg.center_im, d_re, d_im, max_iter, prec);
+            let truth = rosie_mandlebrot_ref::pixel_exact(&cfg.center_re, &cfg.center_im, d_re, d_im, cfg.julia.as_ref(), max_iter, prec);
             (gpu, truth.iter.min(max_iter))
         })
         .collect();
+    // `MANDELBROT_ORACLE_DUMP=file.csv`: every sample's pixel and both counts.
+    if let Some(path) = std::env::var_os("MANDELBROT_ORACLE_DUMP") {
+        let rows: String = samples.iter().zip(&results).map(|((x, y), (g, t))| format!("{x},{y},{g},{t}
+")).collect();
+        if let Err(e) = std::fs::write(&path, format!("x,y,gpu,exact
+{rows}")) {
+            tracing::warn!("oracle dump: {e}");
+        }
+    }
     let total = results.len();
     let exact = results.iter().filter(|(g, t)| g == t).count();
     let class_flip = results.iter().filter(|(g, t)| (*g >= max_iter) != (*t >= max_iter)).count();
@@ -675,6 +685,7 @@ fn render_one_frame(
         progress: None,
         deep_engine: cfg.deep_engine,
         interior_exit: true,
+        julia: cfg.julia.clone(),
     };
     tracing::info!(
         "rendering one frame: {}x{} at center=({},{}) span={} max_iter={}",

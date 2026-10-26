@@ -158,6 +158,10 @@ pub const HERO_SUFFIX: &str = "-3.jpg";
 /// can show the picture in any palette.
 pub const HERO_VALUES_SUFFIX: &str = "-3.rmw";
 
+/// A place's Julia set picture: `<name><JULIA_TAG><HERO_SUFFIX>` (and its
+/// values file likewise).
+pub const JULIA_TAG: &str = "-julia";
+
 pub fn load_presets(custom_path: Option<&Path>) -> MbResult<Vec<Preset>> {
     let env_path = std::env::var_os("MANDELBROT_PRESETS").map(std::path::PathBuf::from);
     let path = custom_path.map(Path::to_path_buf).or(env_path);

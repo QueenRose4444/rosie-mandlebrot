@@ -138,6 +138,14 @@ pub struct RenderBody {
     /// than the usual cap).
     #[serde(default)]
     pub iter_cap: Option<u32>,
+    /// The Julia set of this point ("re,im") instead of the Mandelbrot set;
+    /// `center` is then a point of the Julia set's plane (0 when not given).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub julia: Option<String>,
+    /// From the page: render the place's own Julia set (the server fills
+    /// `julia`, the centre and the end from the place).
+    #[serde(default, skip_serializing)]
+    pub as_julia: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -180,13 +188,23 @@ pub struct ValuesBody {
 pub struct HeroesBody {
     #[serde(default)]
     pub presets: Option<Vec<String>>,
+    /// The one place's Julia set picture instead of its own.
+    #[serde(default)]
+    pub julia: bool,
 }
 
 /// A search for places to zoom into (the Finder page).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FindBody {
-    /// "deeper" (below `like`) or "new".
+    /// "deeper" (below `like`), "new", or "julia" (pictures of the Julia set
+    /// of `center`, down to the square root of `end`).
     pub mode: String,
+    /// For julia: the place's centre, "re,im".
+    #[serde(default)]
+    pub center: Option<String>,
+    /// For julia: the end of the place's zoom, as a span.
+    #[serde(default)]
+    pub end: Option<f64>,
     /// For deeper: the preset or kept place to look below.
     #[serde(default)]
     pub like: Option<String>,
@@ -221,6 +239,9 @@ pub struct FindInfo {
     pub label: String,
     /// The preset a render of a found place starts from.
     pub base: String,
+    /// For pictures of a Julia set: whose ("re,im").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<String>,
     /// The search's folder (pictures and places.json).
     #[serde(skip)]
     pub out: PathBuf,
@@ -361,6 +382,13 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
         // One argument: a centre starting with "-" would read as a flag.
         a.push(format!("--center={}", c.replace(' ', "")));
     }
+    if let Some(j) = &b.julia {
+        let ok = j.split_once(',').is_some_and(|(re, im)| decimal(re.trim()) && decimal(im.trim()));
+        if !ok {
+            return Err(format!("julia {j:?}: expected \"re,im\" as decimals"));
+        }
+        a.push(format!("--julia={}", j.replace(' ', "")));
+    }
     a.extend(["--width".into(), b.width.to_string(), "--height".into(), b.height.to_string()]);
     if let Some(z) = b.zoom_end {
         if !(z > 0.0 && z.is_finite()) {
@@ -465,6 +493,13 @@ pub fn find_args(b: &FindBody, start: &FindStart, out: &Path, picture_size: u32)
             a.extend(["--min-depth".into(), format!("{d:e}")]);
         }
     }
+    if b.mode == "julia" {
+        let end = b.end.ok_or("pictures of a Julia set need the place's end")?;
+        if !(1e-300..=1.0).contains(&end) {
+            return Err(format!("end {end:e}: must be 1e-300 to 1"));
+        }
+        a.extend(["--describe".into(), format!("{end:e}"), "--julia".into()]);
+    }
     if let Some(r) = b.reach {
         if !(0.5..=1.0).contains(&r) {
             return Err(format!("reach {r}: must be 0.5 to 1"));
@@ -529,7 +564,18 @@ mod tests {
             chunk_size: None,
             tone: None,
             iter_cap: None,
+            julia: None,
+            as_julia: false,
         }
+    }
+
+    #[test]
+    fn a_julia_render_passes_its_point_as_one_argument() {
+        let mut b = body();
+        b.julia = Some("-0.7756, 0.1364".into());
+        assert!(render_args(&b, Path::new("r"), false, 0).unwrap().contains(&"--julia=-0.7756,0.1364".to_string()));
+        b.julia = Some("1;rm -rf,2".into());
+        assert!(render_args(&b, Path::new("r"), false, 0).is_err());
     }
 
     #[test]
@@ -565,7 +611,7 @@ mod tests {
 
     #[test]
     fn a_search_becomes_separate_arguments_and_bad_ones_are_refused() {
-        let b = FindBody { mode: "new".into(), like: None, name: None, min_depth: Some(1e-50), interest: Some(60.0), seconds: 120, reach: None };
+        let b = FindBody { mode: "new".into(), center: None, end: None, like: None, name: None, min_depth: Some(1e-50), interest: Some(60.0), seconds: 120, reach: None };
         let a = find_args(&b, &FindStart::New, Path::new("finds/1"), 256).unwrap();
         assert_eq!(a[0], "find");
         assert!(a.windows(2).any(|w| w == ["--min-depth", "1e-50"]));

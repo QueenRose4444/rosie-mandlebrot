@@ -339,7 +339,7 @@ fn orbit() {
                 if want_sa && span < 1e-24 {
                     continue;
                 }
-                let req = RefRequest { center_re: re.clone(), center_im: im.clone(), max_iter: 20_000, want_sa, max_delta: span };
+                let req = RefRequest { center_re: re.clone(), center_im: im.clone(), max_iter: 20_000, want_sa, max_delta: span, julia: None };
                 let a = old::compute_reference(&old_req(&req));
                 let b = compute_reference(&req);
                 entries += b.orbit_f64.len() as u64;
@@ -351,7 +351,7 @@ fn orbit() {
         let mut span = 1e-2;
         let mut iters = 500u32;
         while span > 1e-40 {
-            let req = RefRequest { center_re: re.clone(), center_im: im.clone(), max_iter: iters, want_sa: false, max_delta: span };
+            let req = RefRequest { center_re: re.clone(), center_im: im.clone(), max_iter: iters, want_sa: false, max_delta: span, julia: None };
             let a = old::compute_reference_cached(&old_req(&req), &mut ca);
             let b = compute_reference_cached(&req, &mut cb);
             report(format!("cached {name} span {span:e} iters {iters}"), diff(&a, &b));
@@ -405,7 +405,7 @@ fn speed(reps: usize) {
             1101..=4100 => 5_000,
             _ => 1_500,
         };
-        let req = RefRequest { center_re: ULTRA_RE.into(), center_im: ULTRA_IM.into(), max_iter: iters, want_sa: false, max_delta: 1e-30 };
+        let req = RefRequest { center_re: ULTRA_RE.into(), center_im: ULTRA_IM.into(), max_iter: iters, want_sa: false, max_delta: 1e-30, julia: None };
         let oreq = old_req(&req);
         let (mut ta, mut tb) = (Vec::new(), Vec::new());
         let (mut last_a, mut last_b) = (None, None);
@@ -434,7 +434,7 @@ fn speed(reps: usize) {
     println!("| span | bits | MPFR (v0.3) | pure Rust | ratio |");
     println!("|---|---|---|---|---|");
     for span in [1e-15, 1e-32, 1e-60, 1e-100, 1e-200, 1e-300] {
-        let req = RefRequest { center_re: ULTRA_RE.into(), center_im: ULTRA_IM.into(), max_iter: 20_000, want_sa: false, max_delta: span };
+        let req = RefRequest { center_re: ULTRA_RE.into(), center_im: ULTRA_IM.into(), max_iter: 20_000, want_sa: false, max_delta: span, julia: None };
         let oreq = old_req(&req);
         let (mut ta, mut tb) = (Vec::new(), Vec::new());
         let mut bits = 0;
@@ -568,6 +568,7 @@ fn bla_check() {
             max_iter: max_iter + 2,
             want_sa: false,
             max_delta: 2.0 * r_bot,
+            julia: None,
         });
         let orbit = &reference.orbit_f64;
         let tables: Vec<(&str, BlaTable)> = vec![
@@ -643,7 +644,7 @@ fn bla_ds() {
     for (row0, rows) in [(27432u32, 254u32), (27686, 254), (27940, 254), (28194, 254)] {
         let r_top = (ln_r0 - row0 as f64 * d).exp();
         let r_bot = (ln_r0 - (row0 + rows - 1) as f64 * d).exp();
-        let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: 2.0 * r_bot }).orbit_f64;
+        let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: 2.0 * r_bot, julia: None }).orbit_f64;
         let orbit_ds: Vec<RefOrbitEntryF64> = orbit.iter().map(|e| RefOrbitEntryF64 { z_re: ds(e.z_re), z_im: ds(e.z_im), ..*e }).collect();
         let round_coeffs = |t: BlaTable| BlaTable {
             levels: t.levels.into_iter().map(|l| l.into_iter().map(|mut b| { b.a = dsc(b.a); b.b = dsc(b.b); b }).collect()).collect(),
@@ -755,7 +756,7 @@ fn bla_place() {
     for span in spans {
         let seq = rosie_mandlebrot_core::sequence::SequenceConfig::default();
         let max_iter = seq.max_iter_for_span(span);
-        let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span }).orbit_f64;
+        let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span, julia: None }).orbit_f64;
         let half = 0.5 * span * std::f64::consts::SQRT_2;
         let tables = [("plain", BlaTable::default()), ("BLA shipped", build_bla_table(&orbit, half, BLA_EPSILON_DS)), ("BLA scaled radius", table_scaled_radius(&orbit, half, BLA_EPSILON_DS))];
         let mut wrong = [0usize; 3];
@@ -815,7 +816,7 @@ fn rebase_rule() {
     let (re, im) = center.split_once(',').unwrap();
     let span: f64 = std::env::var("SPAN").unwrap().parse().unwrap();
     let max_iter = rosie_mandlebrot_core::sequence::SequenceConfig::default().max_iter_for_span(span);
-    let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span }).orbit_f64;
+    let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span, julia: None }).orbit_f64;
     let (mut wrong_inf, mut wrong_euc) = (0, 0);
     for i in 0..100 {
         let dc = Complex64::new(((i % 10) as f64 + 0.5) / 10.0 - 0.5, ((i / 10) as f64 + 0.5) / 10.0 - 0.5) * span;
@@ -1025,7 +1026,7 @@ fn se3_check() {
     let span: f64 = std::env::var("SPAN").unwrap().parse().unwrap();
     let trace: Option<usize> = std::env::var("TRACE").ok().and_then(|v| v.parse().ok());
     let max_iter = rosie_mandlebrot_core::sequence::SequenceConfig::default().max_iter_for_span(span);
-    let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span }).orbit_f64;
+    let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span, julia: None }).orbit_f64;
     let o: Vec<(se3::Ds, se3::Ds, i32)> = orbit
         .iter()
         .map(|e| {
@@ -1155,7 +1156,7 @@ fn interior_bla(a: &[String]) {
     let span: f64 = a[2].parse().unwrap();
     let max_iter: u32 = a[3].parse().unwrap();
     let side: u32 = a[4].parse().unwrap();
-    let orbit = compute_reference(&RefRequest { center_re: re.clone(), center_im: im.clone(), max_iter: max_iter + 2, want_sa: false, max_delta: span }).orbit_f64;
+    let orbit = compute_reference(&RefRequest { center_re: re.clone(), center_im: im.clone(), max_iter: max_iter + 2, want_sa: false, max_delta: span, julia: None }).orbit_f64;
     let zs: Vec<Complex64> = orbit.iter().map(|e| Complex64::new(e.z_re, e.z_im)).collect();
     let table = build_bla_table(&orbit, 0.5 * span * std::f64::consts::SQRT_2, BLA_EPSILON_DS);
     let small = zs.iter().skip(1).map(|z| z.norm()).fold(f64::INFINITY, f64::min);

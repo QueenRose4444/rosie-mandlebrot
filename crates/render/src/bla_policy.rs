@@ -15,7 +15,7 @@
 use crate::frame::*;
 use crate::gpu_path::StripSpec;
 use num_complex::Complex64;
-use rosie_mandlebrot_ref::{bla_walk, build_bla_table, BlaResult, BlaTable, ReferenceData};
+use rosie_mandlebrot_ref::{bla_walk, build_bla_table, julia_walk, BlaResult, BlaTable, ReferenceData};
 use std::sync::Mutex;
 
 /// BLA is used when its passes are at most this share of the plain
@@ -57,7 +57,8 @@ fn table_for(reference: &ReferenceData, max_delta: f64) -> std::sync::Arc<BlaTab
     let o = &reference.orbit_f64;
     let key = (o.len(), o.get(1).map_or(0, |e| e.z_re.to_bits()), o.last().map_or(0, |e| e.z_im.to_bits()));
     let mut cache = CACHE.lock().expect("BLA policy cache poisoned");
-    if let Some(c) = cache.as_ref().filter(|c| c.key == key && max_delta <= c.built_for && max_delta * 4.0 > c.built_for) {
+    let fits = |c: &&Cached| (max_delta <= c.built_for && max_delta * 4.0 > c.built_for) || (max_delta == 0.0 && c.built_for == 0.0);
+    if let Some(c) = cache.as_ref().filter(|c| c.key == key && fits(c)) {
         return c.table.clone();
     }
     let table = std::sync::Arc::new(build_bla_table(o, max_delta, crate::gpu_path::bla_epsilon()));
@@ -69,7 +70,8 @@ fn table_for(reference: &ReferenceData, max_delta: f64) -> std::sync::Arc<BlaTab
 /// loop passes with BLA, and the iterations they cover (the passes plain
 /// perturbation would take).
 fn cpu_cost(req: &FrameRequest, strip: Option<&StripSpec>, reference: &ReferenceData, max_delta: f64) -> (u64, u64) {
-    let table = table_for(reference, max_delta);
+    // A Julia set has no dc: its table is built for none.
+    let table = table_for(reference, if req.julia.is_some() { 0.0 } else { max_delta });
     let (mut passes, mut iters) = (0u64, 0u64);
     for j in 0..4 {
         for i in 0..4 {
@@ -85,7 +87,10 @@ fn cpu_cost(req: &FrameRequest, strip: Option<&StripSpec>, reference: &Reference
                     Complex64::new((fx - 0.5) * req.span * aspect, (fy - 0.5) * req.span)
                 }
             };
-            let (res, p) = bla_walk(&table, &reference.orbit_f64, dc, req.max_iter);
+            let (res, p) = match req.julia {
+                Some(_) => julia_walk(&table, &reference.orbit_f64, reference.start as usize, reference.crit_len as usize, dc, req.max_iter),
+                None => bla_walk(&table, &reference.orbit_f64, dc, req.max_iter),
+            };
             passes += u64::from(p);
             iters += u64::from(match res {
                 BlaResult::Escaped { iter, .. } => iter,

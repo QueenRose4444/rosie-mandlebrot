@@ -335,6 +335,7 @@ impl StripRun {
                     stop_reason: None,
                     video_end_span: None,
                     elapsed_secs: 0.0,
+                    julia: cfg.julia.clone(),
                 }
             }
         };
@@ -354,7 +355,8 @@ impl StripRun {
         }
         // A centre outside the set: frames whose corner is nearer than the proven
         // distance are smooth gradient.
-        if cfg.blank_stop_interval > 0 {
+        // (The proof is the Mandelbrot set's; a Julia set's centre is not tested.)
+        if cfg.blank_stop_interval > 0 && manifest.julia.is_none() {
             if let Some(b) = rosie_mandlebrot_ref::exterior::exterior_distance_log10(&manifest.center_re, &manifest.center_im, cfg.sequence.iter_cap) {
                 let s = span_with_corner_at(&g, 10f64.powf(b));
                 tracing::info!("the centre is outside the set, at least 1e{b:.2} from it: no frame deeper than span {s:.3e} shows any of it");
@@ -465,6 +467,7 @@ impl StripRun {
                     progress: None,
                     deep_engine: cfg.deep_engine,
                     interior_exit,
+                    julia: manifest.julia.clone(),
                 };
                 render_strip_chunk(gpu, &req, &spec)
             };
@@ -645,8 +648,8 @@ fn oracle_check(m: &Manifest, g: &StripGeometry, row0: u64, rows: u32, pixels: &
             let ln_r = g.ln_radius((row0 + u64::from(y)) as f64);
             let r = ln_r.exp();
             let a = f64::from(x) * d;
-            let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(r) + 256;
-            let truth = rosie_mandlebrot_ref::iterate_single_pixel_exact(&m.center_re, &m.center_im, r * a.cos(), r * a.sin(), max_iter, prec);
+            let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(r).max(m.julia.as_ref().map_or(0, |j| j.bits())) + 256;
+            let truth = rosie_mandlebrot_ref::pixel_exact(&m.center_re, &m.center_im, r * a.cos(), r * a.sin(), m.julia.as_ref(), max_iter, prec);
             (pixels[(y * g.cols + x) as usize].iter.min(max_iter), truth.iter.min(max_iter))
         })
         .collect();
@@ -703,6 +706,7 @@ mod tests {
             stop_reason: None,
             video_end_span: None,
             elapsed_secs: 0.0,
+            julia: None,
         }
     }
 

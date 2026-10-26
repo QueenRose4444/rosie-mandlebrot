@@ -333,7 +333,7 @@ impl PerFrameRun {
         // frame no longer reaches that far, it and every frame after it are smooth
         // gradient, so the run ends there rather than when a frame finally turns
         // one flat colour. Off with the rest of the auto-stop.
-        let exterior_bound_log10 = if run_cfg.blank_stop_interval > 0 {
+        let exterior_bound_log10 = if run_cfg.blank_stop_interval > 0 && run_cfg.julia.is_none() {
             rosie_mandlebrot_ref::exterior::exterior_distance_log10(&center_re, &center_im, run_cfg.sequence.iter_cap)
         } else {
             None
@@ -559,6 +559,7 @@ impl PerFrameRun {
                 progress: Some(frame_progress.clone()),
                 deep_engine: run_cfg.deep_engine,
                 interior_exit,
+                julia: run_cfg.julia.clone(),
             };
 
             let mut frame_result = render_frame(gpu, &req);
@@ -626,6 +627,7 @@ impl PerFrameRun {
                         progress: Some(frame_progress.clone()),
                         deep_engine: run_cfg.deep_engine,
                         interior_exit,
+                        julia: run_cfg.julia.clone(),
                     };
                     frame_result = render_frame(gpu, &retry);
                 }
@@ -1044,7 +1046,7 @@ impl PerFrameRun {
             frames_done.load(Ordering::SeqCst),
             last_rendered,
             sequence_cfg.frame(last_seq).span,
-            rosie_mandlebrot_core::precision::select_tier(sequence_cfg.frame(last_seq).span, run_cfg.width),
+            rosie_mandlebrot_core::precision::select_tier_for(sequence_cfg.frame(last_seq).span, run_cfg.width, run_cfg.julia.is_some()),
             // The budget actually used, not the schedule's guess — adaptation can
             // have raised it well above, and external monitors read this field.
             sequence_cfg.frame(last_seq).max_iter.max(adaptive_iter),

@@ -7,7 +7,7 @@
 //! crate — wgpu, naga and GMP included — to name the type it persists, which
 //! keeps the SQLite tests quick to build.
 
-use crate::config::DeepEngine;
+use crate::config::{DeepEngine, Julia};
 use crate::precision::Tier;
 use crate::types::{is_interior, PixelOut};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,9 +42,17 @@ pub struct FrameRequest {
     /// interior. The same pixels either way; it costs ~10% on a frame with no
     /// interior and saves up to ~20x on one that is all interior.
     pub interior_exit: bool,
+    /// Render this Julia set instead of the Mandelbrot set.
+    pub julia: Option<Julia>,
 }
 
 impl FrameRequest {
+    /// The deep engine this frame really runs on (see
+    /// [`crate::precision::effective_deep_engine_for`]).
+    pub fn engine(&self) -> DeepEngine {
+        crate::precision::effective_deep_engine_for(self.span, self.deep_engine, self.julia.is_some())
+    }
+
     /// Advance intra-frame progress by `n` units.
     #[inline]
     pub fn bump_progress(&self, n: u64) {
@@ -209,6 +217,7 @@ mod tests {
             progress: None,
             deep_engine: DeepEngine::default(),
             interior_exit: true,
+            julia: None,
         };
         req.bump_progress(5);
         req.reset_progress(10);
@@ -232,6 +241,7 @@ mod tests {
             progress: Some(progress.clone()),
             deep_engine: DeepEngine::default(),
             interior_exit: true,
+            julia: None,
         };
         assert!(!req.stop_requested());
         flag.store(true, Ordering::Relaxed);

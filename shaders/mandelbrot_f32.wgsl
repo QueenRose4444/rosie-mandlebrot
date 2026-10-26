@@ -18,6 +18,9 @@ struct PixelOut {
 @group(0) @binding(1) var<storage, read_write> out_buf : array<PixelOut>;
 
 const BAILOUT_SQ : f32 = 4.0;
+// A Julia set: z starts at the pixel and c (params[1].xy) is the same for
+// every pixel.
+override JULIA : bool = false;
 
 fn smooth_iter(n: u32, mag_sq: f32) -> f32 {
     let log_mag = 0.5 * log2(mag_sq);
@@ -60,7 +63,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let pixel_id = gid.y * tw + gid.x;
 
-    if (in_cardioid(cx, cy) || in_period2_bulb(cx, cy)) {
+    if (!JULIA && (in_cardioid(cx, cy) || in_period2_bulb(cx, cy))) {
         out_buf[pixel_id].iter = U.max_iter;
         out_buf[pixel_id].smooth_val =0.0;
         return;
@@ -68,6 +71,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var zx : f32 = 0.0;
     var zy : f32 = 0.0;
+    var jx = cx;
+    var jy = cy;
+    if (JULIA) {
+        zx = cx;
+        zy = cy;
+        jx = U.params[1].x;
+        jy = U.params[1].y;
+    }
     var n : u32 = 0u;
     var mag_sq : f32 = 0.0;
 
@@ -77,8 +88,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let zy2 = zy * zy;
         mag_sq = zx2 + zy2;
         if (mag_sq > BAILOUT_SQ) { break; }
-        let new_zx = zx2 - zy2 + cx;
-        zy = 2.0 * zx * zy + cy;
+        let new_zx = zx2 - zy2 + jx;
+        zy = 2.0 * zx * zy + jy;
         zx = new_zx;
         n = n + 1u;
     }

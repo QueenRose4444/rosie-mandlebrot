@@ -191,6 +191,8 @@ export function mount(root) {
         p.description ? h('div', { class: 'card-desc' }, p.description) : null,
         h('div', { class: 'card-actions' },
           h('a', { class: 'btn quiet', href: `#/new?preset=${encodeURIComponent(p.name)}` }, 'Render…'),
+          h('a', { class: 'btn quiet', href: `#/new?preset=${encodeURIComponent(p.name)}&julia=1`,
+            title: 'The Julia set of this place\'s point, zooming into its middle' }, 'As a Julia set…'),
           listsControl(p),
           remove)));
   }

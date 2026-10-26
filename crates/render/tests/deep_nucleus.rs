@@ -55,6 +55,7 @@ fn disagreements(gpu: &GpuCtx, c: (&str, &str), span: f64, max_iter: u32) -> (us
         progress: None,
         deep_engine: DeepEngine::default(),
         interior_exit: true,
+        julia: None,
     };
     let frame = render_frame(gpu, &req).expect("frame renders");
     let px = span / f64::from(size);

@@ -262,9 +262,11 @@ pub fn heroes(cli: &Cli, dir: &Path, shader_dir: Option<&Path>, ev: &dyn Events)
         let span = best.1;
         let (rgba, w, h, indices) = hero_frame(&gpu, &cfg, span, cli.hero_size)?;
         let frame = (w, h, cfg.sequence.max_iter_for_span(span));
-        let values = dir.join(format!("{name}{}", rosie_mandlebrot_core::presets::HERO_VALUES_SUFFIX));
+        // A Julia set's picture sits beside the place's own.
+        let stem = format!("{}{}", cli.hero_name.as_deref().unwrap_or(&name), if cfg.julia.is_some() { rosie_mandlebrot_core::presets::JULIA_TAG } else { "" });
+        let values = dir.join(format!("{stem}{}", rosie_mandlebrot_core::presets::HERO_VALUES_SUFFIX));
         rosie_mandlebrot_run::assemble::write_values_direct(w, h, span, &indices, &values)?;
-        let path = dir.join(format!("{name}{}", rosie_mandlebrot_core::presets::HERO_SUFFIX));
+        let path = dir.join(format!("{stem}{}", rosie_mandlebrot_core::presets::HERO_SUFFIX));
         write_jpeg(&rgba, frame.0, frame.1, &path)?;
         tracing::info!("{name}: span {span:.2e}, {} iterations -> {}", frame.2, path.display());
         ev.emit(Event::Image { path: path.display().to_string(), k: 0 });
@@ -291,6 +293,7 @@ fn hero_frame(gpu: &GpuCtx, cfg: &RunConfig, span: f64, side: u32) -> anyhow::Re
         progress: None,
         deep_engine: cfg.deep_engine,
         interior_exit: true,
+        julia: cfg.julia.clone(),
     };
     let frame = rosie_mandlebrot_render::render_frame(gpu, &req)?;
     let rgb = rosie_mandlebrot_core::encode::encode_rgb(&frame.pixels, frame.width, frame.height, frame.max_iter, cfg.palette);

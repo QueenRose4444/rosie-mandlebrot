@@ -34,7 +34,9 @@ export function mount(root, params, { go }) {
     depthMode: 'end', depthValue: '', seconds: 20,
     colour: '', // 'b:<name>' or 'm:<index>'
     speed: 4, fps: 60, memory: MEMORY_STEPS.length - 1,
+    julia: params.get('julia') === '1', // the place's Julia set instead
   };
+  let juliaAsked = false; // a Julia picture job was started from here
   let estimate = null;
   let estimateError = '';
   let busySubmitting = false;
@@ -51,28 +53,59 @@ export function mount(root, params, { go }) {
   // ---- left column: the place --------------------------------------------
   function renderPlace() {
     clear(left);
-    left.append(h('h1', null, 'New render'));
+    left.append(h('h1', null, f.julia ? 'New render · Julia set' : 'New render'));
     if (!preset) {
       left.append(h('p', { class: 'muted' }, presets.length ? 'That place is not in the library.' : 'Loading the places…'),
         h('a', { href: '#/library' }, 'Choose a place'));
       return;
     }
     const coords = preset.center || (preset.center_re && preset.center_im ? `${preset.center_re}, ${preset.center_im}` : null);
+    const name = preset.label || preset.name;
     // With a values file the picture is drawn here in the chosen colours.
-    heroCanvas = preset.values
-      ? h('canvas', { class: 'hero-big', role: 'img', 'aria-label': `Where the ${preset.label || preset.name} zoom goes, in the chosen colours` })
+    const values = f.julia ? preset.julia_values : preset.values;
+    const still = f.julia ? preset.julia_hero : preset.hero;
+    heroCanvas = values
+      ? h('canvas', { class: 'hero-big', role: 'img', 'aria-label': `Where the ${name}${f.julia ? ' Julia set' : ''} zoom goes, in the chosen colours` })
       : null;
-    heroEl = heroCanvas || picture(preset.hero, `Where the ${preset.label || preset.name} zoom goes`, 'hero-big');
+    heroEl = heroCanvas || (f.julia && !still ? juliaPlaceholder() : picture(still, `Where the ${name} zoom goes`, 'hero-big'));
     left.append(
       heroEl,
       h('div', { class: 'stack', style: { gap: '4px' } },
-        h('strong', { style: { fontSize: '18px' } }, preset.label || preset.name),
-        h('span', { class: 'muted' }, preset.description || '', ' Detail runs out near ', h('span', { class: 'num' }, fmtSpan(preset.depth)), '.'),
-        coords ? h('span', { class: 'coords' }, coords) : null,
+        h('strong', { style: { fontSize: '18px' } }, f.julia ? `${name}, as a Julia set` : name),
+        f.julia
+          ? h('span', { class: 'muted' }, 'The Julia set of this place\'s point, zooming into its middle. Near its middle it looks like the place itself, doubled, so it runs out of new detail near ',
+            h('span', { class: 'num' }, fmtSpan(juliaDepth())), ', the square root of the place\'s depth.')
+          : h('span', { class: 'muted' }, preset.description || '', ' Detail runs out near ', h('span', { class: 'num' }, fmtSpan(preset.depth)), '.'),
+        coords ? h('span', { class: 'coords' }, f.julia ? `c = ${coords}` : coords) : null,
         h('button', { type: 'button', class: 'btn quiet', style: { alignSelf: 'flex-start', marginTop: '6px' }, 'aria-expanded': String(picking),
           onclick: () => { picking = !picking; renderPlace(); } }, picking ? 'Close the list' : 'Change place…')));
     if (picking) left.append(placeGrid());
     paintHero();
+  }
+
+  // Where a Julia render's detail runs out: the square root of the place's.
+  function juliaDepth() {
+    const d = Number(preset?.depth);
+    return Number.isFinite(d) && d > 0 ? Math.sqrt(d) : null;
+  }
+
+  // No Julia picture yet: one short GPU job makes it.
+  function juliaPlaceholder() {
+    const busy = jobsOf(latestState()).some((j) => j.kind === 'heroes' && (j.state === 'queued' || j.state === 'running'));
+    const note = h('p', { class: 'hint' }, busy || juliaAsked ? 'Making the picture…' : 'No picture of this Julia set yet.');
+    const btn = h('button', { type: 'button', class: 'btn', disabled: busy || juliaAsked, onclick: async () => {
+      juliaAsked = true;
+      btn.disabled = true;
+      note.textContent = 'Making the picture…';
+      try {
+        await post('/api/jobs', { kind: 'heroes', presets: [preset.name], julia: true });
+      } catch (err) {
+        juliaAsked = false;
+        btn.disabled = false;
+        note.textContent = `Could not start: ${err.message}`;
+      }
+    } }, 'Make its picture');
+    return h('div', { class: 'hero-big julia-empty stack', style: { justifyContent: 'center', alignItems: 'center', gap: '8px' } }, note, btn);
   }
 
   // Every place's picture to pick from, without leaving the page.
@@ -88,7 +121,7 @@ export function mount(root, params, { go }) {
   function pickPlace(p) {
     preset = p;
     picking = false;
-    history.replaceState(null, '', `#/new?preset=${encodeURIComponent(p.name)}`);
+    history.replaceState(null, '', `#/new?preset=${encodeURIComponent(p.name)}${f.julia ? '&julia=1' : ''}`);
     if (!colourChosen) f.colour = ownColour();
     renderAll();
     refreshEstimate();
@@ -114,8 +147,8 @@ export function mount(root, params, { go }) {
   async function paintHero() {
     const canvas = heroCanvas;
     const pal = chosenPalette();
-    if (!canvas || !pal || !preset?.values) return;
-    const url = preset.values;
+    const url = f.julia ? preset?.julia_values : preset?.values;
+    if (!canvas || !pal || !url) return;
     let v = valuesFor.get(url);
     if (!v) { v = getBytes(url).then(parseRmw); valuesFor.set(url, v); }
     try {
@@ -131,7 +164,7 @@ export function mount(root, params, { go }) {
       ctx.putImageData(img, 0, 0);
     } catch {
       // No values to draw from: show the plain picture instead.
-      if (canvas === heroCanvas) { valuesFor.delete(url); heroEl = picture(preset.hero, '', 'hero-big'); canvas.replaceWith(heroEl); heroCanvas = null; }
+      if (canvas === heroCanvas) { valuesFor.delete(url); heroEl = picture(f.julia ? preset.julia_hero : preset.hero, '', 'hero-big'); canvas.replaceWith(heroEl); heroCanvas = null; }
     }
   }
 
@@ -227,7 +260,17 @@ export function mount(root, params, { go }) {
 
   function renderZoom() {
     clear(zoomBox);
-    const endText = preset ? `To the end of the detail (about ${fmtSpan(preset.depth)})` : 'To the end of the detail';
+    const juliaBox = h('label', { class: 'check full' },
+      h('input', { type: 'checkbox', checked: f.julia, 'data-k': 'julia', onchange: (e) => {
+        f.julia = e.target.checked;
+        if (preset) history.replaceState(null, '', `#/new?preset=${encodeURIComponent(preset.name)}${f.julia ? '&julia=1' : ''}`);
+        renderPlace();
+        rerender(renderZoom);
+        refreshEstimate();
+      } }),
+      h('span', null, h('strong', null, 'Julia set'), ' — render the Julia set of this place\'s point instead, zooming into its middle'));
+    const end = preset ? (f.julia ? juliaDepth() : preset.depth) : null;
+    const endText = end ? `To the end of the detail (about ${fmtSpan(end)})` : 'To the end of the detail';
     const depthSel = h('select', { class: 'input', 'data-k': 'depth', onchange: (e) => { f.depthMode = e.target.value; rerender(renderZoom); refreshEstimate(); } },
       h('option', { value: 'end', selected: f.depthMode === 'end' }, endText),
       h('option', { value: 'depth', selected: f.depthMode === 'depth' }, 'Stop at a depth…'),
@@ -269,7 +312,7 @@ export function mount(root, params, { go }) {
     const preview = zoomPreview(() => heroEl, () => Math.pow(1 / ZOOM_FACTORS[f.speed - 1], f.fps),
       'The place zooming in at the chosen speed');
 
-    zoomBox.append(depthField,
+    zoomBox.append(juliaBox, depthField,
       h('div', { class: 'field full' }, h('span', null, 'Colours'), colourSel),
       h('label', { class: 'field' }, h('span', null, 'Zoom speed · ', speedText), speed),
       h('label', { class: 'field' }, 'Frames per second', fpsSel),
@@ -315,7 +358,9 @@ export function mount(root, params, { go }) {
     if (!preset) return;
     const pd = pictureDims();
     const q = new URLSearchParams({ preset: preset.name, width: String(pd.w), height: String(pd.h) });
-    const ze = zoomEnd();
+    let ze = zoomEnd();
+    // A Julia set's zoom ends near the square root of the place's depth.
+    if (ze === null && f.julia) ze = juliaDepth();
     if (Number.isNaN(ze)) {
       estimate = null;
       estimateError = 'Type the depth as a number, for example 1e-10.';
@@ -384,6 +429,7 @@ export function mount(root, params, { go }) {
       // Without transparent bars the Settings' video format applies.
       format: transparent ? 'webm' : null, memory_limit_mb: MEMORY_STEPS[f.memory],
       bars: barsOn() ? { style: f.barStyle, colour: f.barStyle === 'solid' ? f.barColour : '#000000', picture_w: pd.w, picture_h: pd.h } : null,
+      as_julia: f.julia,
     };
     busySubmitting = true;
     renderSubmit();
@@ -429,7 +475,24 @@ export function mount(root, params, { go }) {
     }
   }
 
-  const offState = on('state', renderSubmit);
+  // A Julia picture asked for here: show it once its job is done.
+  let juliaBusy = false;
+  async function onState() {
+    renderSubmit();
+    const busy = jobsOf(latestState()).some((j) => j.kind === 'heroes' && (j.state === 'queued' || j.state === 'running'));
+    if (juliaBusy && !busy && f.julia && preset) {
+      try {
+        const list = await get('/api/presets');
+        if (!alive) return;
+        presets = Array.isArray(list) ? list : presets;
+        preset = presets.find((p) => p.name === preset.name) || preset;
+        juliaAsked = false;
+        renderPlace();
+      } catch { /* the next state change tries again */ }
+    }
+    juliaBusy = busy;
+  }
+  const offState = on('state', onState);
   load();
   return () => { alive = false; offState(); fetchEstimate.cancel(); };
 }
