@@ -113,6 +113,9 @@ impl Pipelines {
                 storage_ro(4),
                 storage_ro(5),
                 storage_ro(6),
+                // Per-entry exponents of the reference orbit; only the SE3
+                // kernel reads them.
+                storage_ro(7),
             ],
         });
 
@@ -293,11 +296,13 @@ pub struct DeepVariant {
     pub bla: bool,
     /// Exponential-map strip instead of a frame.
     pub strip: bool,
+    /// The reference orbit passes closer to 0 than f32 holds (SE3 only).
+    pub near_zero: bool,
 }
 
 impl DeepVariant {
     fn index(self) -> usize {
-        self.interior_exit as usize | (self.bla as usize) << 1 | (self.strip as usize) << 2
+        self.interior_exit as usize | (self.bla as usize) << 1 | (self.strip as usize) << 2 | (self.near_zero as usize) << 3
     }
 }
 
@@ -306,27 +311,29 @@ struct DeepVariants {
     layout: wgpu::PipelineLayout,
     ds: wgpu::ShaderModule,
     fe: wgpu::ShaderModule,
-    ds_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 8],
-    fe_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 8],
+    ds_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 16],
+    fe_cache: [std::sync::OnceLock<wgpu::ComputePipeline>; 16],
 }
 
 impl DeepVariants {
     fn get(&self, fe: bool, v: DeepVariant) -> &wgpu::ComputePipeline {
+        // Only the SE3 kernel has the near-zero code.
+        let v = DeepVariant { near_zero: v.near_zero && fe, ..v };
         let (cache, module, name) = if fe { (&self.fe_cache, &self.fe, "fe") } else { (&self.ds_cache, &self.ds, "ds") };
         cache[v.index()].get_or_init(|| {
             let flag = |on: bool| if on { 1.0 } else { 0.0 };
-            let label = format!("pipeline-deep-{name}-i{}-b{}-s{}", v.interior_exit as u8, v.bla as u8, v.strip as u8);
+            let label = format!("pipeline-deep-{name}-i{}-b{}-s{}-z{}", v.interior_exit as u8, v.bla as u8, v.strip as u8, v.near_zero as u8);
+            let mut constants = vec![("INTERIOR_EXIT", flag(v.interior_exit)), ("BLA", flag(v.bla)), ("STRIP", flag(v.strip))];
+            if fe {
+                constants.push(("NEAR_ZERO", flag(v.near_zero)));
+            }
             self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(&label),
                 layout: Some(&self.layout),
                 module,
                 entry_point: Some("cs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[
-                        ("INTERIOR_EXIT", flag(v.interior_exit)),
-                        ("BLA", flag(v.bla)),
-                        ("STRIP", flag(v.strip)),
-                    ],
+                    constants: &constants,
                     ..Default::default()
                 },
                 cache: None,

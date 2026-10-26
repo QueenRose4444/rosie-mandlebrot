@@ -315,13 +315,25 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (mag_sq > BAILOUT_SQ) { escaped = true; break; }
 
         if (INTERIOR_EXIT) {
+            var we = 0;
             if (skipped) {
                 d_m = d_m * skip_d2;
                 d_e = d_e + skip_de;
             } else {
-                d_m = d_m * (4.0 * mag_sq);
+                // |w|² in f32 flushes to zero below 2^-126 (w passing close to
+                // 0, as beside a deep minibrot's nucleus), which would zero |d|
+                // and stop an escaping pixel as interior: square a rescaled w.
+                var w2 = mag_sq;
+                if (w2 < 1.1754944e-38) {
+                    let kw = ilog2f(max(abs(wr.x), abs(wi.x)));
+                    let sc = exp2i(clamp(-kw, -126, 127));
+                    w2 = (wr.x * sc) * (wr.x * sc) + (wi.x * sc) * (wi.x * sc);
+                    we = kw;
+                }
+                d_m = d_m * (4.0 * w2);
+                d_e = d_e + 2 * we;
             }
-            if (skipped || d_m < 9.5367432e-7 || d_m > 1.0995116e12) {
+            if (skipped || we != 0 || d_m < 9.5367432e-7 || d_m > 1.0995116e12 || d_m == 0.0) {
                 let k = ilog2f(d_m);
                 d_e = d_e + k;
                 d_m = d_m * exp2i(clamp(-k, -126, 127));

@@ -6,7 +6,7 @@
 //! mathr, "Deep zoom theory and practice (again)", 2022):
 //!
 //! - level 0, entry `k`, covers the single step from `m = k+1` to `k+2`:
-//!   `A = 2Z_m`, `B = 1`, `r = max(0, (ε·|Z_m|/2 − |c|max) / |A|)`. `Z_0 = 0`
+//!   `A = 2Z_m`, `B = 1`, `r = max(0, (ε·|Z_m|/2 − |c|max) / (|A| + 2^-20))`. `Z_0 = 0`
 //!   admits no linear step, so the table starts at `m = 1`;
 //! - level `L+1`, entry `k`, merges entries `2k` (x) and `2k+1` (y) of level `L`:
 //!   `A = Ay·Ax`, `B = Ay·Bx + By`, `r = min(rx, max(0, (ry − |Bx|·|c|max) / |Ax|))`.
@@ -33,6 +33,13 @@ pub const BLA_EPSILON_DS: f64 = 1.0 / 9_007_199_254_740_992.0; // 2^-53
 /// `ε` for f64 arithmetic.
 pub const BLA_EPSILON_F64: f64 = f64::EPSILON * 0.5; // 2^-53
 
+/// Floor under `|A|` in the single-step radius (see [`build_bla_table`]).
+const RADIUS_FLOOR: f64 = 1.0 / 1_048_576.0; // 2^-20
+/// An orbit with an entry below this (2^-60) gets the floor. seahorse_deep's
+/// reference comes within 2^-52 of 0, where the oracle finds the two radii
+/// equally good; the deep nuclei that need it come within 2^-130 or closer.
+const NEAR_ZERO: f64 = 8.673_617_379_884_035e-19;
+
 /// One table entry: `dz' = a·dz + b·dc` for `len` steps, valid while `|dz| < r`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bla {
@@ -53,11 +60,26 @@ pub struct BlaTable {
 pub fn build_bla_table(orbit: &[RefOrbitEntryF64], max_delta: f64, epsilon: f64) -> BlaTable {
     let cmax = max_delta.max(0.0);
     let n = orbit.len().saturating_sub(2);
+    // The floor only matters where the orbit passes far closer to 0 than ε;
+    // elsewhere the radius is the one the tables have always had.
+    // Z_0 = 0 is where every orbit starts, not a pass close to 0.
+    let near_zero = orbit.iter().skip(1).any(|e| {
+        let m = e.z_re.abs().max(e.z_im.abs());
+        m != 0.0 && m < NEAR_ZERO
+    });
+    let floor = if near_zero { RADIUS_FLOOR } else { 0.0 };
     let mut level0 = Vec::with_capacity(n);
     for e in &orbit[1..1 + n] {
         let z = Complex64::new(e.z_re, e.z_im);
         let a = 2.0 * z;
-        let r = ((epsilon * 0.5 * z.norm() - cmax) / a.norm()).max(0.0);
+        // Shrinks with |Z| near 0: where the orbit passes close to 0 the
+        // dropped dz² term outgrows 2Z·dz unless dz is smaller still. Dividing
+        // by |A| alone made the radius about ε/4 whatever |Z| was, which beside
+        // a deep minibrot's nucleus admitted skips that called escaping pixels
+        // inside. The floor keeps the old radius for |Z| above about 2^-18,
+        // and bounds the dropped term below 2^-35 of the kept one anywhere; it
+        // is used only for orbits that come within NEAR_ZERO of 0.
+        let r = ((epsilon * 0.5 * z.norm() - cmax) / (a.norm() + floor)).max(0.0);
         level0.push(Bla { a, b: Complex64::new(1.0, 0.0), r, len: 1 });
     }
     let mut levels = vec![level0];
@@ -408,5 +430,27 @@ mod tests {
         }
         assert_eq!(escaping, 17, "the points this test was measured on");
         assert_eq!(flips, 0, "BLA disagrees with plain perturbation on {flips} of 64 points");
+    }
+
+    /// Centred on a period-5022 nucleus (size 1.1e-65) the reference orbit
+    /// passes within 1e-41 of 0 every period. A radius that did not shrink with
+    /// |Z| (it tended to ε/4) let skips cross those steps: at span 1e-58 the
+    /// walk called all 100 of these points inside; they escape after 10^4
+    /// iterations, as plain perturbation finds.
+    #[test]
+    fn bla_agrees_with_plain_centred_on_a_deep_nucleus() {
+        let re = "-0.7417974837062003136854778421527691043688748451101075978763208456332173641";
+        let im = "0.1103942848342107617071374369842534866940757933450414369550756723954348098";
+        let span = 1e-58;
+        let max_iter = 72_047;
+        let o = orbit(re, im, span, max_iter);
+        let table = build_bla_table(&o, 0.5 * span * std::f64::consts::SQRT_2, BLA_EPSILON_DS);
+        let out = |res: BlaResult| matches!(res, BlaResult::Escaped { .. });
+        let mut flips = 0;
+        for dc in grid(span, 10) {
+            assert!(out(plain(&o, dc, max_iter)), "every point escapes: {dc}");
+            flips += usize::from(!out(bla_iterate(&table, &o, dc, max_iter)));
+        }
+        assert_eq!(flips, 0, "BLA called {flips} of 100 escaping points inside");
     }
 }

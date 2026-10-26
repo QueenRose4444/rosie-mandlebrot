@@ -41,8 +41,12 @@ struct PixelOut {
 }
 
 @group(0) @binding(0) var<uniform> U : Uniforms;
-// (z_re_hi, z_re_lo, z_im_hi, z_im_lo), the same entries the DS kernel reads.
+// (z_re_hi, z_re_lo, z_im_hi, z_im_lo), the same entries the DS kernel reads,
+// except that an entry too small for f32 is stored scaled up: the value is
+// ref_orbit[n] * 2^ref_exp[n] (ref_exp is 0 for every other entry). Near a
+// deep minibrot's nucleus the orbit passes closer to 0 than f32 can hold.
 @group(0) @binding(1) var<storage, read>      ref_orbit : array<vec4<f32>>;
+@group(0) @binding(7) var<storage, read>      ref_exp   : array<i32>;
 // Strip mode: each column's unit direction (cos, sin), computed in f64 on the
 // CPU. The binding is the one the legacy f32 kernel uses for SA coefficients.
 @group(0) @binding(2) var<storage, read>      col_dir   : array<vec2<f32>>;
@@ -76,6 +80,10 @@ override BLA : bool = false;
 // bitcast exponent, d, unused); the tile's first column is tile_origin_px.x.
 // ref_len stays in params[3].x.
 override STRIP : bool = false;
+// The reference orbit has entries below 2^-100 (its centre is at or beside a
+// minibrot's nucleus): read their exponents from ref_exp and guard the steps
+// that pass close to 0. Off, the kernel is exactly the one without them.
+override NEAR_ZERO : bool = false;
 // Below this exponent a value is handled at a common exponent, not absolutely.
 const ABS_FLOOR : i32 = -100;
 // 2^-100: a w smaller than this is re-formed at a common exponent.
@@ -259,18 +267,60 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let e = ref_orbit[n];
             let two_z_re = ds_mul2(e.xy);
             let two_z_im = ds_mul2(e.zw);
-            let t_re = ds_sub(ds_mul(two_z_re, m_re), ds_mul(two_z_im, m_im));
-            let t_im = ds_add(ds_mul(two_z_re, m_im), ds_mul(two_z_im, m_re));
-            let q_re = ds_scale2(ds_sub(ds_mul(m_re, m_re), ds_mul(m_im, m_im)), S);
-            let q_im = ds_scale2(ds_mul2(ds_mul(m_re, m_im)), S);
-            let k = Sc - S;
-            m_re = ds_add(ds_add(t_re, q_re), ds_scale2(mc_re, k));
-            m_im = ds_add(ds_add(t_im, q_im), ds_scale2(mc_im, k));
+            if (NEAR_ZERO) {
+                var t_re = ds_sub(ds_mul(two_z_re, m_re), ds_mul(two_z_im, m_im));
+                var t_im = ds_add(ds_mul(two_z_re, m_im), ds_mul(two_z_im, m_re));
+                let mm_re = ds_sub(ds_mul(m_re, m_re), ds_mul(m_im, m_im));
+                let mm_im = ds_mul2(ds_mul(m_re, m_im));
+                let ze = ref_exp[n];
+                let k = Sc - S;
+                // The step is taken in dz's frame (exponent S), which flushes a term
+                // 2^126 below it as negligible. That holds while 2Z·dz is the large
+                // term. Where Z_n is tiny — the orbit passing extremely close to 0
+                // beside a deep minibrot's nucleus, or Z_0 = 0 after a rebase —
+                // 2Z·dz vanishes and dz² + dc may be all that is left; flushing it
+                // would set dz to 0 for good. Then, or when dc is too far above dz
+                // to scale into its frame, the step is taken in the frame of its
+                // largest term.
+                var big_frame = k > 127;
+                var big = 0;
+                if (big_frame || ((S < -126 || k < -126) && (ze != 0 || max(abs(e.x), abs(e.z)) < 9.094947e-13))) {
+                    let et = S + ze + ilog2f(max(abs(t_re.x), abs(t_im.x)));
+                    let eq = 2 * S + ilog2f(max(abs(mm_re.x), abs(mm_im.x)));
+                    let ec = Sc + ilog2f(max(abs(mc_re.x), abs(mc_im.x)));
+                    big = max(et, max(eq, ec));
+                    big_frame = big_frame || (S < -126 && eq > big - 50) || (k < -126 && ec > big - 50);
+                }
+                if (big_frame) {
+                    m_re = ds_add(ds_add(ds_scale2(t_re, S + ze - big), ds_scale2(mm_re, 2 * S - big)), ds_scale2(mc_re, Sc - big));
+                    m_im = ds_add(ds_add(ds_scale2(t_im, S + ze - big), ds_scale2(mm_im, 2 * S - big)), ds_scale2(mc_im, Sc - big));
+                    S = big;
+                } else {
+                    if (ze != 0) {
+                        t_re = ds_scale2(t_re, ze);
+                        t_im = ds_scale2(t_im, ze);
+                    }
+                    m_re = ds_add(ds_add(t_re, ds_scale2(mm_re, S)), ds_scale2(mc_re, k));
+                    m_im = ds_add(ds_add(t_im, ds_scale2(mm_im, S)), ds_scale2(mc_im, k));
+                }
+            } else {
+                let t_re = ds_sub(ds_mul(two_z_re, m_re), ds_mul(two_z_im, m_im));
+                let t_im = ds_add(ds_mul(two_z_re, m_im), ds_mul(two_z_im, m_re));
+                let q_re = ds_scale2(ds_sub(ds_mul(m_re, m_re), ds_mul(m_im, m_im)), S);
+                let q_im = ds_scale2(ds_mul2(ds_mul(m_re, m_im)), S);
+                let k = Sc - S;
+                m_re = ds_add(ds_add(t_re, q_re), ds_scale2(mc_re, k));
+                m_im = ds_add(ds_add(t_im, q_im), ds_scale2(mc_im, k));
+            }
             n = n + 1u;
             iter = iter + 1u;
         }
 
         let en = ref_orbit[n];
+        var en_e = 0;
+        if (NEAR_ZERO) {
+            en_e = ref_exp[n];
+        }
 
         // w = Z + dz, as a mantissa (w_re, w_im) times 2^w_e.
         var w_re : vec2<f32>;
@@ -285,8 +335,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // forms it. After a pixel's first rebase it nearly always does.
             let dz_re = ds_scale2(m_re, S);
             let dz_im = ds_scale2(m_im, S);
-            w_re = ds_add(en.xy, dz_re);
-            w_im = ds_add(en.zw, dz_im);
+            var z_re = en.xy;
+            var z_im = en.zw;
+            if (en_e != 0) {
+                z_re = ds_scale2(z_re, en_e);
+                z_im = ds_scale2(z_im, en_e);
+            }
+            w_re = ds_add(z_re, dz_re);
+            w_im = ds_add(z_im, dz_im);
             mag_sq = w_re.x * w_re.x + w_im.x * w_im.x;
             if (mag_sq > BAILOUT_SQ) { escaped = true; break; }
             w_mag_m = mag_sq;
@@ -297,9 +353,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (full_range) {
             // Form w at the larger of the two exponents so nothing underflows.
             let m_inf = max(abs(m_re.x), abs(m_im.x));
-            let eo = max(S + ilog2f(m_inf), ilog2f(max(abs(en.x), abs(en.z))));
-            w_re = ds_add(ds_scale2(en.xy, -eo), ds_scale2(m_re, S - eo));
-            w_im = ds_add(ds_scale2(en.zw, -eo), ds_scale2(m_im, S - eo));
+            let eo = max(S + ilog2f(m_inf), ilog2f(max(abs(en.x), abs(en.z))) + en_e);
+            w_re = ds_add(ds_scale2(en.xy, en_e - eo), ds_scale2(m_re, S - eo));
+            w_im = ds_add(ds_scale2(en.zw, en_e - eo), ds_scale2(m_im, S - eo));
             w_e = eo;
             w_inf = max(abs(w_re.x), abs(w_im.x));
             w_mag_m = w_re.x * w_re.x + w_im.x * w_im.x;
@@ -316,14 +372,27 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         if (INTERIOR_EXIT) {
             // d_e only means |d| once d_m is back in [1, 2), so test it there.
+            var we = 0;
             if (skipped) {
                 d_m = d_m * skip_d2;
                 d_e = d_e + skip_de;
             } else {
-                d_m = d_m * (4.0 * w_mag_m);
-                d_e = d_e + 2 * w_e;
+                // In the absolute branch |w|² is an f32 that flushes to zero
+                // below 2^-126 (w passing close to 0, as beside a deep
+                // minibrot's nucleus), which would zero |d| and stop an
+                // escaping pixel as interior: square a rescaled w there.
+                var w2 = w_mag_m;
+                we = w_e;
+                if (NEAR_ZERO && w_e == 0 && w2 < 1.1754944e-38) {
+                    let kw = ilog2f(w_inf);
+                    let sc = exp2i(clamp(-kw, -126, 127));
+                    w2 = (w_re.x * sc) * (w_re.x * sc) + (w_im.x * sc) * (w_im.x * sc);
+                    we = kw;
+                }
+                d_m = d_m * (4.0 * w2);
+                d_e = d_e + 2 * we;
             }
-            if (skipped || w_e != 0 || d_m < 9.5367432e-7 || d_m > 1.0995116e12) {
+            if (skipped || we != 0 || d_m < 9.5367432e-7 || d_m > 1.0995116e12 || d_m == 0.0) {
                 let k = ilog2f(d_m);
                 d_e = d_e + k;
                 d_m = d_m * exp2i(clamp(-k, -126, 127));

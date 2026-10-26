@@ -708,6 +708,351 @@ fn position_floor() {
     }
 }
 
+/// The BLA table with the single-step radius `(ε|Z|/2 − c)/(|2Z| + 1)`, which
+/// shrinks with |Z| (the shipped one tends to ε/4 as |Z| → 0).
+fn table_scaled_radius(orbit: &[rosie_mandlebrot_core::types::RefOrbitEntryF64], max_delta: f64, epsilon: f64) -> rosie_mandlebrot_ref::BlaTable {
+    use num_complex::Complex64;
+    use rosie_mandlebrot_ref::{Bla, BlaTable};
+    let cmax = max_delta.max(0.0);
+    let n = orbit.len().saturating_sub(2);
+    let level0: Vec<Bla> = orbit[1..1 + n]
+        .iter()
+        .map(|e| {
+            let z = Complex64::new(e.z_re, e.z_im);
+            let a = 2.0 * z;
+            let r = ((epsilon * 0.5 * z.norm() - cmax) / (a.norm() + std::env::var("FLOOR").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.0))).max(0.0);
+            Bla { a, b: Complex64::new(1.0, 0.0), r, len: 1 }
+        })
+        .collect();
+    let mut levels = vec![level0];
+    while levels.last().is_some_and(|l| l.len() > 1) {
+        let prev = levels.last().unwrap();
+        let next = prev
+            .chunks_exact(2)
+            .map(|p| {
+                let (x, y) = (p[0], p[1]);
+                let r = x.r.min(((y.r - x.b.norm() * cmax) / x.a.norm()).max(0.0));
+                let r = if r.is_finite() { r } else { 0.0 };
+                Bla { a: y.a * x.a, b: y.a * x.b + y.b, r, len: x.len + y.len }
+            })
+            .collect();
+        levels.push(next);
+    }
+    BlaTable { levels }
+}
+
+/// A frame of a place (`CENTER` = "re,im") at each span in `SPANS`: 10×10
+/// samples, exact orbit against plain perturbation and BLA with the shipped
+/// and the scaled radius.
+fn bla_place() {
+    use num_complex::Complex64;
+    use rosie_mandlebrot_ref::{bla_iterate, build_bla_table, BlaResult, BlaTable, BLA_EPSILON_DS};
+    let center = std::env::var("CENTER").expect("CENTER=re,im");
+    let (re, im) = center.split_once(',').unwrap();
+    let spans: Vec<f64> = std::env::var("SPANS").unwrap_or("1e-55,1e-58,1e-62".into()).split(',').map(|s| s.parse().unwrap()).collect();
+    for span in spans {
+        let seq = rosie_mandlebrot_core::sequence::SequenceConfig::default();
+        let max_iter = seq.max_iter_for_span(span);
+        let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span }).orbit_f64;
+        let half = 0.5 * span * std::f64::consts::SQRT_2;
+        let tables = [("plain", BlaTable::default()), ("BLA shipped", build_bla_table(&orbit, half, BLA_EPSILON_DS)), ("BLA scaled radius", table_scaled_radius(&orbit, half, BLA_EPSILON_DS))];
+        let mut wrong = [0usize; 3];
+        let mut exact = [0usize; 3];
+        for i in 0..100 {
+            let dc = Complex64::new(((i % 10) as f64 + 0.5) / 10.0 - 0.5, ((i / 10) as f64 + 0.5) / 10.0 - 0.5) * span;
+            let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span) + 256;
+            let t = rosie_mandlebrot_ref::iterate_single_pixel_exact(re, im, dc.re, dc.im, max_iter, prec).iter;
+            for (k, (_, table)) in tables.iter().enumerate() {
+                let g = match bla_iterate(table, &orbit, dc, max_iter) {
+                    BlaResult::Escaped { iter, .. } => iter,
+                    _ => max_iter,
+                };
+                wrong[k] += usize::from((g >= max_iter) != (t >= max_iter));
+                exact[k] += usize::from(g == t);
+            }
+        }
+        println!("span {span:e}, {max_iter} iterations:");
+        for (k, (name, _)) in tables.iter().enumerate() {
+            println!("  {name}: {} inside/outside wrong, {} exact of 100", wrong[k], exact[k]);
+        }
+    }
+}
+
+/// Plain perturbation with rebasing in f64, rebasing as the GPU kernels do
+/// (`|w|∞ < |dz|∞`) or as the CPU walk does (`|w| < |dz|`).
+fn walk_rebase(orbit: &[rosie_mandlebrot_core::types::RefOrbitEntryF64], dc: num_complex::Complex64, max_iter: u32, inf_norm: bool) -> u32 {
+    use num_complex::Complex64;
+    let ref_len = orbit.len();
+    let mut dz = Complex64::new(0.0, 0.0);
+    let (mut n, mut iter) = (0usize, 0u32);
+    let inf = |z: Complex64| z.re.abs().max(z.im.abs());
+    while iter < max_iter {
+        let z = Complex64::new(orbit[n].z_re, orbit[n].z_im);
+        dz = 2.0 * z * dz + dz * dz + dc;
+        n += 1;
+        iter += 1;
+        let w = Complex64::new(orbit[n].z_re, orbit[n].z_im) + dz;
+        if std::env::var("TRACE64").is_ok() && (iter % 9536 <= 2 || iter % 9536 >= 9534) && iter < 40000 {
+            println!("  f64 iter {iter} n {n}: log2|dz| = {:.1}, log2|Z| = {:.1}, log2|w| = {:.1}", dz.norm().log2(), Complex64::new(orbit[n].z_re, orbit[n].z_im).norm().log2(), w.norm().log2());
+        }
+        if w.norm_sqr() > 4.0 {
+            return iter;
+        }
+        let rebase = if inf_norm { inf(w) < inf(dz) } else { w.norm_sqr() < dz.norm_sqr() };
+        if rebase || n >= ref_len - 1 {
+            dz = w;
+            n = 0;
+        }
+    }
+    max_iter
+}
+
+fn rebase_rule() {
+    use num_complex::Complex64;
+    let center = std::env::var("CENTER").expect("CENTER=re,im");
+    let (re, im) = center.split_once(',').unwrap();
+    let span: f64 = std::env::var("SPAN").unwrap().parse().unwrap();
+    let max_iter = rosie_mandlebrot_core::sequence::SequenceConfig::default().max_iter_for_span(span);
+    let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span }).orbit_f64;
+    let (mut wrong_inf, mut wrong_euc) = (0, 0);
+    for i in 0..100 {
+        let dc = Complex64::new(((i % 10) as f64 + 0.5) / 10.0 - 0.5, ((i / 10) as f64 + 0.5) / 10.0 - 0.5) * span;
+        let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span) + 256;
+        let t = rosie_mandlebrot_ref::iterate_single_pixel_exact(re, im, dc.re, dc.im, max_iter, prec).iter >= max_iter;
+        wrong_inf += usize::from((walk_rebase(&orbit, dc, max_iter, true) >= max_iter) != t);
+        wrong_euc += usize::from((walk_rebase(&orbit, dc, max_iter, false) >= max_iter) != t);
+    }
+    println!("span {span:e}: inside/outside wrong of 100 — infinity-norm rebase {wrong_inf}, euclidean rebase {wrong_euc}");
+}
+
+/// The SE3 (floatexp) kernel's plain path replayed on the CPU in f32, line for
+/// line (fused multiply-add as on the GPU), to find where it parts from the
+/// f64 walk.
+mod se3 {
+    pub type Ds = (f32, f32);
+    fn two_sum(a: f32, b: f32) -> Ds {
+        let s = a + b;
+        let bb = s - a;
+        (s, (a - (s - bb)) + (b - bb))
+    }
+    fn quick_two_sum(a: f32, b: f32) -> Ds {
+        let s = a + b;
+        (s, b - (s - a))
+    }
+    fn two_prod(a: f32, b: f32) -> Ds {
+        let p = a * b;
+        (p, a.mul_add(b, -p))
+    }
+    pub fn mul2(a: Ds) -> Ds {
+        (a.0 + a.0, a.1 + a.1)
+    }
+    pub fn add(a: Ds, b: Ds) -> Ds {
+        let s = two_sum(a.0, b.0);
+        let e = two_sum(a.1, b.1);
+        let v1 = quick_two_sum(s.0, s.1 + e.0);
+        quick_two_sum(v1.0, v1.1 + e.1)
+    }
+    pub fn sub(a: Ds, b: Ds) -> Ds {
+        add(a, (-b.0, -b.1))
+    }
+    pub fn mul(a: Ds, b: Ds) -> Ds {
+        let p = two_prod(a.0, b.0);
+        quick_two_sum(p.0, p.1 + (a.0 * b.1 + a.1 * b.0))
+    }
+    pub fn exp2i(p: i32) -> f32 {
+        f32::from_bits(((127 + p).clamp(1, 254) as u32) << 23)
+    }
+    pub fn scale2(a: Ds, p: i32) -> Ds {
+        if p < -126 {
+            return (0.0, 0.0);
+        }
+        let s = exp2i(p.min(127));
+        (a.0 * s, a.1 * s)
+    }
+    pub fn ilog2f(x: f32) -> i32 {
+        let b = (x.abs().to_bits() >> 23) as i32;
+        if b == 0 {
+            -1000
+        } else {
+            b - 127
+        }
+    }
+    pub fn ds(x: f64) -> Ds {
+        let h = x as f32;
+        (h, (x - h as f64) as f32)
+    }
+
+    /// Returns the iteration count, and logs every rebase with `trace`.
+    pub fn run(orbit: &[(Ds, Ds, i32)], dc: (f64, f64), max_iter: u32, trace: bool) -> u32 {
+        const ABS_FLOOR: i32 = -100;
+        const W_SMALL: f32 = 7.888609e-31;
+        // dc as a shared-exponent mantissa.
+        let big = dc.0.abs().max(dc.1.abs());
+        let sc = (big.log2().floor()) as i32;
+        let mc_re = ds(dc.0 * 2f64.powi(-sc));
+        let mc_im = ds(dc.1 * 2f64.powi(-sc));
+        let (mut m_re, mut m_im) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
+        let mut s = sc;
+        let (mut n, mut iter) = (0usize, 0u32);
+        let ref_len = orbit.len();
+        let interior = std::env::var("INTERIOR").is_ok();
+        let (mut d_m, mut d_e) = (1.0f32, 0i32);
+        let mut last_print = 0u32;
+        loop {
+            if iter >= max_iter {
+                return max_iter;
+            }
+            let (zr, zi, ze) = orbit[n];
+            let (two_re, two_im) = (mul2(zr), mul2(zi));
+            let mut t_re = sub(mul(two_re, m_re), mul(two_im, m_im));
+            let mut t_im = add(mul(two_re, m_im), mul(two_im, m_re));
+            let mm_re = sub(mul(m_re, m_re), mul(m_im, m_im));
+            let mm_im = mul2(mul(m_re, m_im));
+            let k = sc - s;
+            let et = s + ze + ilog2f(t_re.0.abs().max(t_im.0.abs()));
+            let eq = 2 * s + ilog2f(mm_re.0.abs().max(mm_im.0.abs()));
+            let ec = sc + ilog2f(mc_re.0.abs().max(mc_im.0.abs()));
+            let big = et.max(eq).max(ec);
+            let q_lost = s < -126 && eq > big - 50;
+            let c_lost = k < -126 && ec > big - 50;
+            if k <= 127 && !q_lost && !c_lost {
+                if ze != 0 {
+                    t_re = scale2(t_re, ze);
+                    t_im = scale2(t_im, ze);
+                }
+                m_re = add(add(t_re, scale2(mm_re, s)), scale2(mc_re, k));
+                m_im = add(add(t_im, scale2(mm_im, s)), scale2(mc_im, k));
+            } else {
+                m_re = add(add(scale2(t_re, s + ze - big), scale2(mm_re, 2 * s - big)), scale2(mc_re, sc - big));
+                m_im = add(add(scale2(t_im, s + ze - big), scale2(mm_im, 2 * s - big)), scale2(mc_im, sc - big));
+                s = big;
+            }
+            n += 1;
+            iter += 1;
+            if trace && (iter % 9536 <= 2 || iter % 9536 >= 9534) && iter < 40000 {
+                println!("  SE3 iter {iter} n {n}: log2|dz| = {}", s + ilog2f(m_re.0.abs().max(m_im.0.abs())));
+            }
+            let (enr, eni, en_e) = orbit[n];
+            let (mut w_re, mut w_im);
+            let mut w_e = 0i32;
+            let (mut w_inf, mut dz_inf) = (0.0f32, 0.0f32);
+            let mut full = s < ABS_FLOOR;
+            if !full {
+                let dz_re = scale2(m_re, s);
+                let dz_im = scale2(m_im, s);
+                let (z_re, z_im) = if en_e != 0 { (scale2(enr, en_e), scale2(eni, en_e)) } else { (enr, eni) };
+                w_re = add(z_re, dz_re);
+                w_im = add(z_im, dz_im);
+                let mag = w_re.0 * w_re.0 + w_im.0 * w_im.0;
+                if mag > 4.0 {
+                    return iter;
+                }
+                w_inf = w_re.0.abs().max(w_im.0.abs());
+                dz_inf = dz_re.0.abs().max(dz_im.0.abs());
+                full = w_inf < W_SMALL;
+            } else {
+                w_re = (0.0, 0.0);
+                w_im = (0.0, 0.0);
+            }
+            if full {
+                let m_inf = m_re.0.abs().max(m_im.0.abs());
+                let eo = (s + ilog2f(m_inf)).max(ilog2f(enr.0.abs().max(eni.0.abs())) + en_e);
+                w_re = add(scale2(enr, en_e - eo), scale2(m_re, s - eo));
+                w_im = add(scale2(eni, en_e - eo), scale2(m_im, s - eo));
+                w_e = eo;
+                w_inf = w_re.0.abs().max(w_im.0.abs());
+                dz_inf = m_inf * exp2i((s - eo).clamp(-126, 127));
+                if s - eo < -126 {
+                    dz_inf = 0.0;
+                }
+                if eo > -60 {
+                    let sc2 = exp2i(eo);
+                    let (ar, ai) = (w_re.0 * sc2, w_im.0 * sc2);
+                    if ar * ar + ai * ai > 4.0 {
+                        return iter;
+                    }
+                }
+            }
+            if interior {
+                let w_mag_m = if full { w_re.0 * w_re.0 + w_im.0 * w_im.0 } else { w_re.0 * w_re.0 + w_im.0 * w_im.0 };
+                d_m *= 4.0 * w_mag_m;
+                d_e += 2 * w_e;
+                if w_e != 0 || d_m < 9.536_743e-7 || d_m > 1.099_511_6e12 {
+                    let k = ilog2f(d_m);
+                    d_e += k;
+                    d_m *= exp2i((-k).clamp(-126, 127));
+                    if trace && (d_e < -20 || iter >= last_print + 2000) {
+                        last_print = iter;
+                        println!("  iter {iter} n {n}: log2|d|^2 = {d_e}, w_e {w_e}, |w mantissa|^2 {w_mag_m:e}, full {full}");
+                    }
+                    if d_e < -20 {
+                        return max_iter;
+                    }
+                }
+            }
+            if w_inf < dz_inf || n >= ref_len - 1 {
+                let kk = ilog2f(w_inf);
+                let scl = exp2i((-kk).clamp(-126, 127));
+                if trace {
+                    println!("  iter {iter}: rebase at n {n}, |w| ~ 2^{}, |dz| ~ 2^{}, dz exponent {s}, dc exponent {sc}", w_e + kk, s + ilog2f(m_re.0.abs().max(m_im.0.abs())));
+                }
+                m_re = (w_re.0 * scl, w_re.1 * scl);
+                m_im = (w_im.0 * scl, w_im.1 * scl);
+                s = w_e + kk;
+                n = 0;
+            } else {
+                let m_inf = m_re.0.abs().max(m_im.0.abs());
+                if m_inf > 2.814_749_8e14 || (m_inf < 3.552_713_7e-15 && m_inf > 0.0) {
+                    let kk = ilog2f(m_inf);
+                    let scl = exp2i((-kk).clamp(-126, 127));
+                    m_re = (m_re.0 * scl, m_re.1 * scl);
+                    m_im = (m_im.0 * scl, m_im.1 * scl);
+                    s += kk;
+                }
+            }
+        }
+    }
+}
+
+/// One frame's samples through the replayed SE3 kernel, the f64 walk and the
+/// exact orbit; with TRACE=i, the rebases of sample i.
+fn se3_check() {
+    use rosie_mandlebrot_core::types::f64_to_ds;
+    let center = std::env::var("CENTER").expect("CENTER=re,im");
+    let (re, im) = center.split_once(',').unwrap();
+    let span: f64 = std::env::var("SPAN").unwrap().parse().unwrap();
+    let trace: Option<usize> = std::env::var("TRACE").ok().and_then(|v| v.parse().ok());
+    let max_iter = rosie_mandlebrot_core::sequence::SequenceConfig::default().max_iter_for_span(span);
+    let orbit = compute_reference(&RefRequest { center_re: re.into(), center_im: im.into(), max_iter: max_iter + 2, want_sa: false, max_delta: span }).orbit_f64;
+    let o: Vec<(se3::Ds, se3::Ds, i32)> = orbit
+        .iter()
+        .map(|e| {
+            let m = e.z_re.abs().max(e.z_im.abs());
+            let k = if m != 0.0 && m < 2f64.powi(-100) { m.log2().floor() as i32 } else { 0 };
+            let s = 2f64.powi(-k);
+            (f64_to_ds(e.z_re * s), f64_to_ds(e.z_im * s), k)
+        })
+        .collect();
+    let mut wrong = (0, 0);
+    for i in 0..100 {
+        let dc = (((i % 10) as f64 + 0.5) / 10.0 - 0.5) * span;
+        let dc = (dc, (((i / 10) as f64 + 0.5) / 10.0 - 0.5) * span);
+        let prec = rosie_mandlebrot_core::precision::orbit_bits_for_span(span) + 256;
+        let t = rosie_mandlebrot_ref::iterate_single_pixel_exact(re, im, dc.0, dc.1, max_iter, prec).iter;
+        let g = se3::run(&o, dc, max_iter, trace == Some(i));
+        let f = walk_rebase(&orbit, num_complex::Complex64::new(dc.0, dc.1), max_iter, true);
+        wrong.0 += usize::from((g >= max_iter) != (t >= max_iter));
+        if (g >= max_iter) != (t >= max_iter) && std::env::var("LIST").is_ok() {
+            println!("  wrong: sample {i}, exact {t}, replayed {g}");
+        }
+        wrong.1 += usize::from((f >= max_iter) != (t >= max_iter));
+        if trace == Some(i) {
+            println!("sample {i}: exact {t}, replayed SE3 {g}, f64 walk {f}");
+        }
+    }
+    println!("span {span:e}: inside/outside wrong of 100 — replayed SE3 {}, f64 walk {}", wrong.0, wrong.1);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -718,6 +1063,9 @@ fn main() {
         Some("bla") => bla_check(),
         Some("bla-ds") => bla_ds(),
         Some("position") => position_floor(),
+        Some("bla-place") => bla_place(),
+        Some("rebase") => rebase_rule(),
+        Some("se3") => se3_check(),
         _ => eprintln!("usage: mpfr-oracle ops [COUNT] | orbit | speed [REPS] | bare"),
     }
 }

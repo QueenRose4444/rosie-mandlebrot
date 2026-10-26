@@ -203,10 +203,11 @@ pub(crate) fn dispatch_pass_with(
                 compute_reference(&request)
             }
         });
-        // Every GPU kernel but gpu-f64 reads the orbit as f32.
+        // Every GPU kernel but gpu-f64 reads the orbit as f32; SE3 carries an
+        // exponent for the entries f32 cannot hold.
         let f32_orbit = !matches!(
             rosie_mandlebrot_core::precision::effective_deep_engine(req.span, req.deep_engine),
-            rosie_mandlebrot_core::config::DeepEngine::GpuF64
+            rosie_mandlebrot_core::config::DeepEngine::GpuF64 | rosie_mandlebrot_core::config::DeepEngine::GpuFe
         );
         if let Some(n) = data.f32_orbit_limit(req.span).filter(|_| f32_orbit) {
             return Err(MbError::BeyondEngine(format!(
@@ -249,6 +250,10 @@ pub(crate) fn dispatch_pass_with(
     // the span is deep enough that DS would underflow; explicit engines pass
     // through unchanged. Span is constant across tiles, so resolve once here.
     let eff_engine = rosie_mandlebrot_core::precision::effective_deep_engine(req.span, req.deep_engine);
+    // An orbit that passes closer to 0 than f32 holds (a centre at or beside a
+    // minibrot's nucleus) needs the SE3 kernel's near-zero variant.
+    let near_zero = eff_engine == rosie_mandlebrot_core::config::DeepEngine::GpuFe
+        && reference.as_ref().is_some_and(|r| r.orbit_f64.iter().any(|e| tiny_exponent(e).is_some()));
 
     // Decided before the timer starts: a calibration probe is not this frame's work.
     // Every |dc| in the frame is at most its half-diagonal plus any shift of
@@ -280,12 +285,19 @@ pub(crate) fn dispatch_pass_with(
         // otherwise.
         let ref_buf = match eff_engine {
             rosie_mandlebrot_core::config::DeepEngine::GpuDs | rosie_mandlebrot_core::config::DeepEngine::GpuFe => {
+                // The SE3 kernel also reads an exponent per entry, so entries
+                // too small for f32 go up scaled instead of flushing to zero.
+                let scale_tiny = near_zero;
                 let ds: Vec<RefOrbitEntryDs> = r
                     .orbit_f64
                     .iter()
                     .map(|e| {
-                        let (re_hi, re_lo) = f64_to_ds(e.z_re);
-                        let (im_hi, im_lo) = f64_to_ds(e.z_im);
+                        let (re, im) = match tiny_exponent(e).filter(|_| scale_tiny) {
+                            Some(k) => (e.z_re * 2f64.powi(-k), e.z_im * 2f64.powi(-k)),
+                            None => (e.z_re, e.z_im),
+                        };
+                        let (re_hi, re_lo) = f64_to_ds(re);
+                        let (im_hi, im_lo) = f64_to_ds(im);
                         RefOrbitEntryDs {
                             z_re_hi: re_hi,
                             z_re_lo: re_lo,
@@ -328,6 +340,21 @@ pub(crate) fn dispatch_pass_with(
     } else {
         (None, None)
     };
+    // Binding 7: the exponent of each orbit entry the SE3 kernel reads (0
+    // except for entries below f32's range), one zero for the other kernels.
+    let frame_exp_buf = (tier == Tier::DeepPerturb).then(|| {
+        let r = reference.as_ref().expect("reference computed for deep tier");
+        let exps: Vec<i32> = if near_zero {
+            r.orbit_f64.iter().map(|e| tiny_exponent(e).unwrap_or(0)).collect()
+        } else {
+            vec![0]
+        };
+        gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ref-orbit-exp"),
+            contents: cast_slice::<i32, u8>(&exps),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+    });
 
     // BLA table for the DS and SE3 kernels.
     let bla_buf = (tier == Tier::DeepPerturb).then(|| {
@@ -482,6 +509,7 @@ pub(crate) fn dispatch_pass_with(
                         wgpu::BindGroupEntry { binding: 4, resource: bla_entries_buf.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 5, resource: bla_levels_buf.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 6, resource: bla_radii_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 7, resource: frame_exp_buf.as_ref().expect("deep tier built an exponent buffer").as_entire_binding() },
                     ],
                 })
             }
@@ -511,7 +539,12 @@ pub(crate) fn dispatch_pass_with(
             let pipeline = if tier == Tier::DeepPerturb {
                 gpu.pipelines.deep_for_engine(
                     eff_engine,
-                    crate::gpu::DeepVariant { interior_exit: req.interior_exit, bla: use_bla, strip: strip.is_some() },
+                    crate::gpu::DeepVariant {
+                        interior_exit: req.interior_exit && std::env::var("MANDELBROT_INTERIOR_EXIT").as_deref() != Ok("0"),
+                        bla: use_bla,
+                        strip: strip.is_some(),
+                        near_zero,
+                    },
                 )
             } else {
                 gpu.pipelines.for_tier(tier)
@@ -645,4 +678,16 @@ fn bla_buffers(
     );
     *cache = Some(Cached { key, built_for: max_delta, buffers: buffers.clone() });
     buffers
+}
+
+/// For an orbit entry below 2^-100 — where a double-single copy loses its low
+/// half and, below 2^-126, flushes to zero — the power of two to divide it by
+/// so it fits, as the SE3 kernel's per-entry exponent. `None` for every other
+/// entry (and for zero).
+fn tiny_exponent(e: &RefOrbitEntryF64) -> Option<i32> {
+    let m = e.z_re.abs().max(e.z_im.abs());
+    if m == 0.0 || m >= 2f64.powi(-100) {
+        return None;
+    }
+    Some(if m.is_normal() { ((m.to_bits() >> 52) & 0x7ff) as i32 - 1023 } else { -1023 })
 }
