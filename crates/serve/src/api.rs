@@ -64,6 +64,10 @@ pub fn router(app: Arc<App>, previews: u32) -> Router {
         .route("/api/favourites", get(get_favourites).put(put_favourites))
         .route("/api/found", get(list_found).post(save_found))
         .route("/api/found/{name}", axum::routing::delete(delete_found))
+        .route("/api/share/place", post(share_place))
+        .route("/api/share/colours", post(share_colours))
+        .route("/api/share/decode", post(share_decode))
+        .route("/api/share/import", post(share_import))
         .nest_service("/files/runs", tower_http::services::ServeDir::new(runs::runs_dir(&data)))
         .nest_service("/files/finds", tower_http::services::ServeDir::new(data.join("finds")))
         .nest_service("/files/found", tower_http::services::ServeDir::new(found::dir(&data)))
@@ -146,6 +150,11 @@ async fn presets(State(c): State<Ctx>) -> ApiResult<Json<serde_json::Value>> {
     let mut list = list;
     list.extend(found::load(&c.app.data).places.iter().map(|f| {
         let mut v = found_json(f);
+        if f.pictures.is_empty() {
+            // A shared place's card picture is made like a preset's.
+            let file = format!("{}{}", f.name, rosie_mandlebrot_core::presets::HERO_SUFFIX);
+            v["hero"] = heroes.join(&file).exists().then(|| format!("/heroes/{file}")).into();
+        }
         let (julia_hero, julia_values) = julia_pictures(&heroes, &f.name);
         v["julia_hero"] = julia_hero.into();
         v["julia_values"] = julia_values.into();
@@ -170,7 +179,13 @@ fn found_json(f: &found::FoundPlace) -> serde_json::Value {
         "name": f.name,
         "label": f.label,
         "kind": "found",
-        "description": format!("Found by the finder: interest {:.0}%, a minibrot of period {} at the end.", f.interest, f.period),
+        "description": if f.shared {
+            "Imported from a share code.".to_string()
+        } else {
+            format!("Found by the finder: interest {:.0}%, a minibrot of period {} at the end.", f.interest, f.period)
+        },
+        "shared": f.shared,
+        "julia": f.julia,
         "depth": format!("{:.1e}", f.end),
         "palette": null,
         "center": format!("{}, {}", f.re, f.im),
@@ -271,6 +286,62 @@ fn found_place_body(data: &std::path::Path, presets: &[Preset], b: &mut jobs::Re
     b.iter_cap = b.iter_cap.or(Some(rosie_mandlebrot_core::sequence::iter_cap_for(f.period)));
     b.preset = f.base.clone();
     Some(f.label)
+}
+
+#[derive(Deserialize)]
+struct SharePlace {
+    name: String,
+    #[serde(default)]
+    julia: bool,
+}
+
+async fn share_place(State(c): State<Ctx>, Json(b): Json<SharePlace>) -> ApiResult<Json<serde_json::Value>> {
+    let code = crate::share::place_code(&c.app.data, &preset_list()?, &b.name, b.julia).map_err(bad)?;
+    Ok(Json(serde_json::json!({ "code": code })))
+}
+
+#[derive(Deserialize)]
+struct ShareColours {
+    name: String,
+    stops: Vec<(f64, String)>,
+    #[serde(default)]
+    inside: Option<String>,
+    #[serde(default)]
+    play: Option<rosie_mandlebrot_core::colour_play::ColourPlay>,
+}
+
+async fn share_colours(Json(b): Json<ShareColours>) -> ApiResult<Json<serde_json::Value>> {
+    let code = crate::share::colours_code(&b.name, b.stops, b.inside, b.play).map_err(bad)?;
+    Ok(Json(serde_json::json!({ "code": code })))
+}
+
+#[derive(Deserialize)]
+struct ShareCode {
+    code: String,
+}
+
+async fn share_decode(Json(b): Json<ShareCode>) -> ApiResult<Json<serde_json::Value>> {
+    crate::share::decode(&b.code).map(Json).map_err(bad)
+}
+
+/// A pasted place code joins the Library (and gets its card picture); a
+/// colours code is only read back, for the Colours page to use.
+async fn share_import(State(c): State<Ctx>, Json(b): Json<ShareCode>) -> ApiResult<Json<serde_json::Value>> {
+    match rosie_mandlebrot_core::share::Shared::decode(&b.code).map_err(bad)? {
+        rosie_mandlebrot_core::share::Shared::Place(p) => {
+            let presets = preset_list()?;
+            let kept = crate::share::import_place(&c.app.data, &presets, p, now()).map_err(bad)?;
+            let f = kept.clone();
+            let mut args = vec!["--heroes".to_string(), c.app.data.join("heroes").display().to_string()];
+            args.extend(["--log-file".to_string(), c.app.data.join("logs").join("heroes.log").display().to_string()]);
+            args.extend(["--preset".to_string(), f.base.clone(), format!("--center={},{}", f.re, f.im)]);
+            args.extend(["--blank-stop-after".to_string(), format!("{:e}", f.end), "--hero-name".to_string(), f.name.clone()]);
+            c.app.enqueue("heroes", None, format!("picture of {}", f.label), args, true, Progress::default());
+            c.app.bump(true);
+            Ok(Json(serde_json::json!({ "kind": "place", "place": found_json(&kept) })))
+        }
+        rosie_mandlebrot_core::share::Shared::Colours(col) => Ok(Json(serde_json::json!({ "kind": "colours", "colours": col }))),
+    }
 }
 
 async fn palettes() -> Json<serde_json::Value> {
@@ -412,6 +483,13 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
                     args.extend(["--preset".to_string(), base, format!("--julia={},{}", place.re, place.im)]);
                     args.extend(["--blank-stop-after".to_string(), format!("{:e}", place.end.sqrt()), "--hero-name".to_string(), name.clone()]);
                     format!("Julia set picture of {name}")
+                }
+                Some(list) if list.len() == 1 && !preset_list()?.iter().any(|p| p.name == list[0]) => {
+                    // A kept place without pictures (one from a share code).
+                    let f = found::find(&app.data, &list[0]).ok_or_else(|| not_found("such place"))?;
+                    args.extend(["--preset".to_string(), f.base.clone(), format!("--center={},{}", f.re, f.im)]);
+                    args.extend(["--blank-stop-after".to_string(), format!("{:e}", f.end), "--hero-name".to_string(), f.name.clone()]);
+                    format!("picture of {}", f.label)
                 }
                 Some(list) if list.len() == 1 => {
                     if !jobs::valid_name(&list[0]) {

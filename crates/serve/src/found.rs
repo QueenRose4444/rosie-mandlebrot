@@ -24,6 +24,12 @@ pub struct FoundPlace {
     /// Picture files in `found/<name>/`, top of the zoom first.
     pub pictures: Vec<String>,
     pub created: i64,
+    /// Came from a share code, not a search.
+    #[serde(default)]
+    pub shared: bool,
+    /// Shared as its Julia set: renders open with the Julia switch on.
+    #[serde(default)]
+    pub julia: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -105,6 +111,8 @@ pub fn save(data: &Path, presets: &[Preset], job: &Job, n: u32, created: i64) ->
         base: info.base.clone(),
         pictures,
         created,
+        shared: false,
+        julia: false,
     };
     found.places.push(kept.clone());
     crate::store::save(&path(data), &found).map_err(|e| e.to_string())?;
@@ -148,6 +156,8 @@ mod tests {
             base: "seahorse".into(),
             pictures: vec![],
             created: 0,
+            shared: false,
+            julia: false,
         });
         assert_eq!(next_name(&found, &presets, "my deep spiral").1, "my_deep_spiral_2");
         assert_eq!(slug("../../etc"), "etc");

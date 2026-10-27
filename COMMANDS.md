@@ -78,6 +78,7 @@ While a run is going, type into its terminal (`docker attach` for a container):
 | `--preset NAME` | `seahorse` | a location; `--list-presets` shows them all |
 | `--center RE,IM` | from the preset | decimal strings, e.g. `--center="-0.7436438870371587,0.1318259042053120"`; one digit per decade of zoom |
 | `--julia RE,IM` | | the Julia set of this point instead of the Mandelbrot set (`preset` = the preset's centre); `--center` is then a point of the Julia set (default `0,0`, its middle). Near 0 a Julia set looks like the Mandelbrot set near its point, doubled, so it runs out of new detail near the square root of the preset's depth, where the blank check starts |
+| `--from-code CODE` | | a share code from the app: a place (`rmp1.…`) sets where to zoom, its depth and its Julia set if it was shared as one; colours (`rmc1.…`) set the palette, inside colour and colour play. Options given beside it win |
 | `--initial-span S` | from the preset (usually 3) | the starting view width; 3 shows the whole set |
 | `--palette NAME` | from the preset | `hot`, `grayscale`, `electric`, `rainbow`, `ember`, `spectrum`, `neon`, `aurora`, `sunset`, `wine`, `deepspace` |
 | `--presets FILE` | built in | a presets file of your own (format: `crates/core/presets.toml`) |

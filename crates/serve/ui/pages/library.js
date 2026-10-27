@@ -2,6 +2,7 @@
 import { get, put, post, del, on, jobsOf, latestState } from '../api.js';
 import { h, clear, picture } from '../dom.js';
 import { kindName, KIND_CHIPS, span as fmtSpan } from '../format.js';
+import { showCode, askCode } from '../share.js';
 
 export function mount(root) {
   let presets = [];
@@ -31,7 +32,8 @@ export function mount(root) {
           'Pick a place to zoom into. Each card says how deep it goes before the picture runs out of new detail.')),
       h('label', { class: 'field' }, 'Search', searchInput)),
     chips,
-    h('div', { class: 'row' }, heroBar, status),
+    h('div', { class: 'row' }, heroBar, status,
+      h('button', { type: 'button', class: 'btn quiet', 'data-k': 'import-code', onclick: importCode }, 'Import a code…')),
     grid,
     footer,
   );
@@ -159,6 +161,24 @@ export function mount(root) {
     return details;
   }
 
+  async function sharePlace(p) {
+    try {
+      const { code } = await post('/api/share/place', { name: p.name, julia: !!p.julia });
+      showCode(`Share ${p.label || p.name}`, 'Anyone with Rosie_Mandlebrot can paste this into Library → Import a code to get this place. It holds where the place is and how deep it goes, nothing else.', code);
+    } catch (err) {
+      status.textContent = `Could not make a code: ${err.message}`;
+    }
+  }
+
+  function importCode() {
+    askCode('Import a code', 'Paste a place code (rmp1.…). It joins the Library with its own picture.', async (code) => {
+      const r = await post('/api/share/import', { code });
+      if (r.kind !== 'place') return 'That is a colour scheme: use it on the Colours page (Import colours…).';
+      loadPresets();
+      return `Added ${r.place.label || r.place.name} to the Library${r.place.julia ? ' (as a Julia set)' : ''}. Its picture is being made.`;
+    });
+  }
+
   async function removeFound(p, btn) {
     if (!confirm(`Remove ${p.label || p.name} from the Library? Its pictures go too; renders made from it stay.`)) return;
     btn.disabled = true;
@@ -187,13 +207,14 @@ export function mount(root) {
             'aria-label': `Favourite ${p.name}`, title: fav ? 'In favourites' : 'Add to favourites',
             onclick: () => toggleFav(p.name),
           }, fav ? '★' : '☆')),
-        h('div', { class: 'muted small' }, `${kindName(p.kind)} · goes to `, h('span', { class: 'num' }, fmtSpan(p.depth))),
+        h('div', { class: 'muted small' }, `${p.shared ? 'Shared place' : kindName(p.kind)} · goes to `, h('span', { class: 'num' }, fmtSpan(p.depth))),
         p.description ? h('div', { class: 'card-desc' }, p.description) : null,
         h('div', { class: 'card-actions' },
-          h('a', { class: 'btn quiet', href: `#/new?preset=${encodeURIComponent(p.name)}` }, 'Render…'),
+          h('a', { class: 'btn quiet', href: `#/new?preset=${encodeURIComponent(p.name)}${p.julia ? '&julia=1' : ''}` }, 'Render…'),
           h('a', { class: 'btn quiet', href: `#/new?preset=${encodeURIComponent(p.name)}&julia=1`,
             title: 'The Julia set of this place\'s point, zooming into its middle' }, 'As a Julia set…'),
           listsControl(p),
+          h('button', { type: 'button', class: 'btn quiet', 'aria-label': `Share ${p.label || p.name}`, onclick: () => sharePlace(p) }, 'Share'),
           remove)));
   }
 

@@ -6,7 +6,8 @@ use rosie_mandlebrot_core::config::RunConfig;
 use rosie_mandlebrot_core::error::MbError;
 use rosie_mandlebrot_render::GpuCtx;
 use rosie_mandlebrot_core::colour_play::{ColourPlay, Key, RandomMode, RandomStyle};
-use rosie_mandlebrot_core::palette::{parse_hex, parse_stops, ColorScheme, Palette};
+use rosie_mandlebrot_core::palette::{parse_hex, parse_stops, ColorScheme, Palette, Stop};
+use rosie_mandlebrot_core::share::Shared;
 use rosie_mandlebrot_run::assemble::{alpha_codec, BarStyle, Bars, Options, Tone};
 use rosie_mandlebrot_run::per_frame::{Explicit, PerFrameJob};
 use rosie_mandlebrot_run::assemble::{frame_at, frame_count, preview_size, recolour_weights, write_jpeg, write_values};
@@ -25,11 +26,23 @@ pub fn assemble_options(cli: &Cli, cfg: &RunConfig) -> anyhow::Result<Options> {
             return Err(MbError::InvalidArg { flag: "--tone", reason: format!("{other:?}: expected location or per-frame") }.into())
         }
     };
-    let palette = match &cli.palette_stops {
-        Some(s) => Palette::Stops(parse_stops(s)?),
-        None => Palette::Builtin(cfg.palette),
+    // A colours code from --from-code, where no explicit option says otherwise.
+    let shared = match cli.from_code.as_deref().map(Shared::decode).transpose().map_err(|reason| MbError::InvalidArg { flag: "--from-code", reason })? {
+        Some(Shared::Colours(c)) => Some(c),
+        _ => None,
     };
-    let inside = cli.inside_colour.as_deref().map(parse_hex).transpose()?;
+    let palette = match (&cli.palette_stops, &shared) {
+        (Some(s), _) => Palette::Stops(parse_stops(s)?),
+        (None, Some(c)) if cli.palette.is_none() => Palette::Stops(
+            c.stops.iter().map(|(pos, hex)| Ok(Stop { pos: *pos, rgb: parse_hex(hex)? })).collect::<anyhow::Result<Vec<_>>>()?,
+        ),
+        _ => Palette::Builtin(cfg.palette),
+    };
+    let inside = match (&cli.inside_colour, shared.as_ref().and_then(|c| c.inside.as_ref())) {
+        (Some(s), _) => Some(parse_hex(s)?),
+        (None, Some(s)) => Some(parse_hex(s)?),
+        (None, None) => None,
+    };
     let bars = match cli.bars.as_deref() {
         None | Some("none") => None,
         Some(style) => {
@@ -86,9 +99,13 @@ pub fn assemble_options(cli: &Cli, cfg: &RunConfig) -> anyhow::Result<Options> {
 /// single options.
 fn colour_play(cli: &Cli) -> anyhow::Result<ColourPlay> {
     let bad = |flag: &'static str, reason: String| anyhow::Error::from(MbError::InvalidArg { flag, reason });
+    let from_code = match cli.from_code.as_deref().map(Shared::decode) {
+        Some(Ok(Shared::Colours(c))) => c.play,
+        _ => None,
+    };
     let mut p: ColourPlay = match &cli.colour_play {
         Some(json) => serde_json::from_str(json).map_err(|e| bad("--colour-play", e.to_string()))?,
-        None => ColourPlay::default(),
+        None => from_code.unwrap_or_default(),
     };
     if let Some(v) = cli.colour_stretch {
         p.stretch = v;

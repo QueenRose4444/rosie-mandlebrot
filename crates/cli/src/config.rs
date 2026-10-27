@@ -21,6 +21,7 @@ fn parse_julia(s: &str) -> Result<String, String> {
 use rosie_mandlebrot_core::error::{MbError, MbResult};
 use rosie_mandlebrot_core::palette::ColorScheme;
 use rosie_mandlebrot_core::presets::{find_preset, load_presets};
+use rosie_mandlebrot_core::share::Shared;
 use rosie_mandlebrot_core::sequence::SequenceConfig;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -39,6 +40,12 @@ pub struct Cli {
     /// Override center coordinates as "re,im" decimal strings.
     #[arg(long, value_parser = parse_center)]
     pub center: Option<(String, String)>,
+
+    /// A share code from the app: a place (rmp1.…) sets where to zoom (and its
+    /// Julia set, if it was shared as one); colours (rmc1.…) set the palette,
+    /// the inside colour and the colour play. Explicit options win.
+    #[arg(long)]
+    pub from_code: Option<String>,
 
     /// Render the Julia set of this point instead of the Mandelbrot set: "re,im",
     /// or "preset" for the preset's centre. The centre is then a point of the
@@ -563,15 +570,25 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
     };
 
     let presets = load_presets(cli.presets.as_deref())?;
+    let code = cli.from_code.as_deref().map(Shared::decode).transpose().map_err(|reason| MbError::InvalidArg { flag: "--from-code", reason })?;
+    let place = match &code {
+        Some(Shared::Place(p)) => Some(p.clone()),
+        _ => None,
+    };
+
     let preset_name = cli
         .preset
         .clone()
         .or_else(|| profile.preset.clone())
+        // A shared place starts from its own base preset, when this build has it.
+        .or_else(|| place.as_ref().and_then(|p| p.base.clone()).filter(|b| presets.iter().any(|x| &x.name == b)))
         .unwrap_or_else(|| "seahorse".to_string());
     let preset = find_preset(&presets, &preset_name)?;
 
-    // Julia: CLI --julia, where "preset" means the preset's centre.
+    // Julia: CLI --julia, where "preset" means the preset's centre; or a
+    // place shared as its Julia set.
     let julia = match cli.julia.as_deref() {
+        None if place.as_ref().is_some_and(|p| p.julia) => place.as_ref().map(|p| Julia { re: p.re.clone(), im: p.im.clone() }),
         None => None,
         Some("preset") => Some(Julia { re: preset.center_re.clone(), im: preset.center_im.clone() }),
         Some(s) => {
@@ -587,6 +604,8 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
         parse_center(c).map_err(MbError::BadCenter)?
     } else if julia.is_some() {
         ("0".to_string(), "0".to_string())
+    } else if let Some(p) = &place {
+        (p.re.clone(), p.im.clone())
     } else {
         (preset.center_re.clone(), preset.center_im.clone())
     };
@@ -623,7 +642,11 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
             .or(preset.zoom_factor)
             .unwrap_or(0.98),
         initial_max_iter: cli.initial_max_iter,
-        iter_cap: cli.iter_cap,
+        // A shared place's minibrot needs its 20 periods.
+        iter_cap: match place.as_ref().and_then(|p| p.period) {
+            Some(period) => cli.iter_cap.max(rosie_mandlebrot_core::sequence::iter_cap_for(period)),
+            None => cli.iter_cap,
+        },
         iter_per_depth: cli
             .iter_per_depth
             .or(profile.iter_per_depth)
@@ -709,7 +732,7 @@ pub fn run_config_from_cli(cli: &Cli) -> MbResult<RunConfig> {
         // its limit, then checking begins.
         // Past f64 the run cannot get there anyway, so the check never starts.
         blank_stop_after: cli.blank_stop_after.or({
-            let end = preset.suggested_zoom_end.to_f64().unwrap_or(f64::MIN_POSITIVE);
+            let end = place.as_ref().map_or_else(|| preset.suggested_zoom_end.to_f64().unwrap_or(f64::MIN_POSITIVE), |p| p.end);
             Some(if julia.is_some() { end.sqrt() } else { end })
         }),
         julia,

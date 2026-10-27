@@ -13,6 +13,7 @@ mod found;
 mod jobs;
 mod notify;
 mod runs;
+mod share;
 mod store;
 mod ui;
 

@@ -28,6 +28,7 @@ pub mod paths;
 pub mod precision;
 pub mod presets;
 pub mod runclock;
+pub mod share;
 pub mod sequence;
 pub mod span;
 pub mod stop;

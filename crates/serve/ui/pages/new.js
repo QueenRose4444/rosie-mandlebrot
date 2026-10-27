@@ -5,6 +5,7 @@ import { bytes, duration, span as fmtSpan, kindName } from '../format.js';
 import { lutFromStops, recolour, cssGradient } from '../palette.js';
 import { parseRmw } from '../rmw.js';
 import { ZOOM_FACTORS, speedLabel, zoomPreview } from '../speed.js';
+import { showCode } from '../share.js';
 
 const SIZES = [
   { w: 1080, h: 1080, label: '1080 × 1080 square' },
@@ -77,8 +78,15 @@ export function mount(root, params, { go }) {
             h('span', { class: 'num' }, fmtSpan(juliaDepth())), ', the square root of the place\'s depth.')
           : h('span', { class: 'muted' }, preset.description || '', ' Detail runs out near ', h('span', { class: 'num' }, fmtSpan(preset.depth)), '.'),
         coords ? h('span', { class: 'coords' }, f.julia ? `c = ${coords}` : coords) : null,
-        h('button', { type: 'button', class: 'btn quiet', style: { alignSelf: 'flex-start', marginTop: '6px' }, 'aria-expanded': String(picking),
-          onclick: () => { picking = !picking; renderPlace(); } }, picking ? 'Close the list' : 'Change place…')));
+        h('div', { class: 'row', style: { gap: '8px', marginTop: '6px' } },
+          h('button', { type: 'button', class: 'btn quiet', 'aria-expanded': String(picking),
+            onclick: () => { picking = !picking; renderPlace(); } }, picking ? 'Close the list' : 'Change place…'),
+          h('button', { type: 'button', class: 'btn quiet', 'data-k': 'share-place', onclick: async () => {
+            try {
+              const { code } = await post('/api/share/place', { name: preset.name, julia: f.julia });
+              showCode(`Share ${name}${f.julia ? ' as a Julia set' : ''}`, 'Paste it into Library → Import a code on any copy of Rosie_Mandlebrot.', code);
+            } catch (err) { formError.textContent = `Could not make a code: ${err.message}`; formError.hidden = false; }
+          } }, 'Share this place'))));
     if (picking) left.append(placeGrid());
     paintHero();
   }

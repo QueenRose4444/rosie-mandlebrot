@@ -8,6 +8,7 @@ import { span as fmtSpan, when, size } from '../format.js';
 import { ZOOM_FACTORS, speedLabel, nearestStep, zoomPreview } from '../speed.js';
 import { framePalette, isPlain, setBuiltins } from '../play.js';
 import { playPanel } from '../playpanel.js';
+import { showCode, askCode } from '../share.js';
 
 const LONG_SIDE = 640;
 const USABLE = new Set(['done', 'stopped', 'incomplete']);
@@ -86,6 +87,8 @@ export function mount(root, params, { go }) {
       h('div', { class: 'field full speed-row' }, speedPreview.el,
         h('p', { class: 'hint' }, 'The preview zooms in at this speed, over and over. A different speed only re-makes the video: nothing is rendered again.'))));
   const saveBtn = h('button', { type: 'button', class: 'btn big', onclick: () => openSave(true) }, 'Save as my palette');
+  const shareBtn = h('button', { type: 'button', class: 'btn', 'data-k': 'share-colours', onclick: () => shareColours() }, 'Share these colours');
+  const importBtn = h('button', { type: 'button', class: 'btn quiet', 'data-k': 'import-colours', onclick: () => importColours() }, 'Import colours…');
   const saveName = h('input', { class: 'input', type: 'text', maxlength: '60', placeholder: 'My palette' });
   const saveForm = h('form', { class: 'save-row', hidden: true, onsubmit: (e) => { e.preventDefault(); savePalette(); } },
     h('label', { class: 'field' }, 'Palette name', saveName),
@@ -142,6 +145,7 @@ export function mount(root, params, { go }) {
         h('span', { class: 'row', style: { gap: '8px' } }, undoBtn, redoBtn))),
     play.el,
     speedBox,
+    h('div', { class: 'row', style: { gap: '12px' } }, shareBtn, importBtn),
     h('div', { class: 'row', style: { gap: '12px' } }, makeBtn, saveBtn,
       h('span', { class: 'hint' }, 'No rendering, only assembling and encoding: much quicker than the render. The old video is kept.')),
     saveForm, actionNote);
@@ -659,6 +663,32 @@ export function mount(root, params, { go }) {
     } finally {
       makeBtn.disabled = false;
     }
+  }
+
+  async function shareColours() {
+    const spec = play.spec();
+    try {
+      const { code } = await post('/api/share/colours', {
+        name: saveName.value.trim() || `${run?.preset || 'my'} colours`, stops: stopList(), inside, play: isPlain(spec) ? null : spec,
+      });
+      showCode('Share these colours', 'The stops, the inside colour and any colour play. Paste it into Colours → Import colours… on any copy of Rosie_Mandlebrot.', code);
+    } catch (err) {
+      actionNote.textContent = `Could not make a code: ${err.message}`;
+    }
+  }
+
+  function importColours() {
+    askCode('Import colours', 'Paste a colours code (rmc1.…). It replaces the stops, the inside colour and the colour play here; nothing is saved until you make a video or save the palette.', async (code) => {
+      const r = await post('/api/share/decode', { code });
+      if (r.kind !== 'colours') throw new Error('That is a place code: import it in the Library.');
+      const c = r.colours;
+      setStops(c.stops);
+      if (c.inside) { inside = normHex(c.inside); insideInput.value = inside; }
+      play.load(c.play || null);
+      saveName.value = c.name || '';
+      edited();
+      return `Using ${c.name}.`;
+    });
   }
 
   function openSave(open) {

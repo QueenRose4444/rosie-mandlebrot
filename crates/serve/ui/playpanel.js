@@ -2,7 +2,7 @@
 // the zoom, stretch and offset. It only builds a play spec (see play.js);
 // the page previews it and sends it with the video job.
 import { h, clear, keepFocus } from './dom.js';
-import { hexToRgb } from './palette.js';
+import { hexToRgb, rgbToHex } from './palette.js';
 import { roll, withDefaults, RANDOM_DEFAULT } from './play.js';
 
 const RANDOM_MODES = [
@@ -30,7 +30,7 @@ export function playPanel(opts) {
     range: [0.25, 0.75], lock: new Set(),
     cycle: 0, perVideo: false, mirror: true,
     keys: [], fade: 1, cut: false,
-    stretchStep: 3, offset: 0,
+    stretchStep: 3, stretch: 1, offset: 0,
   };
   const el = h('fieldset', { class: 'box play' }, h('legend', null, 'Play with the colours'));
   const body = h('div', { class: 'stack', style: { gap: '18px' } });
@@ -41,7 +41,7 @@ export function playPanel(opts) {
 
   function spec() {
     const out = withDefaults({});
-    out.stretch = STRETCHES[s.stretchStep];
+    out.stretch = s.stretch;
     out.offset = s.offset;
     out.mirror = s.mirror;
     out.cycle = s.cycle;
@@ -49,7 +49,7 @@ export function playPanel(opts) {
     out.fade = s.cut ? 0 : s.fade;
     const list = opts.palettes();
     out.keys = s.keys.map((k) => {
-      const src = k.palette === 'current' ? opts.stops() : (list.find((p) => p.name === k.palette)?.stops || opts.stops());
+      const src = k.palette === 'given' ? k.stops : k.palette === 'current' ? opts.stops() : (list.find((p) => p.name === k.palette)?.stops || opts.stops());
       return { at: k.at, stops: toStops(src), inside: null };
     }).sort((a, b) => a.at - b.at);
     if (s.randomMode !== 'off') {
@@ -123,7 +123,7 @@ export function playPanel(opts) {
     s.keys.forEach((k, i) => {
       box.append(h('div', { class: 'row key-row', style: { gap: '8px', alignItems: 'flex-end' } },
         h('label', { class: 'field', style: { width: '110px' } }, 'At (%)', num(`key-at-${i}`, Math.round(k.at * 1000) / 10, 0, 100, 1, (v) => { k.at = v / 100; changed(); }, 'Where in the video, in percent')),
-        h('label', { class: 'field', style: { flex: '1 1 160px' } }, 'Palette', sel(`key-pal-${i}`, [['current', 'These stops'], ...list.map((p) => [p.name, p.name])], k.palette, (v) => { k.palette = v; changed(); }, 'Palette at this point')),
+        h('label', { class: 'field', style: { flex: '1 1 160px' } }, 'Palette', sel(`key-pal-${i}`, [...(k.stops ? [['given', 'From the code']] : []), ['current', 'These stops'], ...list.map((p) => [p.name, p.name])], k.palette, (v) => { k.palette = v; changed(); }, 'Palette at this point')),
         h('button', { type: 'button', class: 'icon-btn', 'data-k': `key-rm-${i}`, 'aria-label': `Remove the palette at ${pct(k.at)}`, onclick: () => { s.keys.splice(i, 1); changed(); } }, '✕')));
     });
     box.append(h('div', { class: 'row', style: { gap: '10px', alignItems: 'flex-end' } },
@@ -140,7 +140,7 @@ export function playPanel(opts) {
   function stretchSection() {
     return h('div', { class: 'stack', style: { gap: '10px' } }, h('strong', null, 'Stretch and offset'),
       h('div', { class: 'grid-2' },
-        range('stretch', s.stretchStep, 0, STRETCHES.length - 1, 1, (v) => { s.stretchStep = v; opts.onChange(); }, 'Stretch', (v) => `${STRETCHES[v]}× (the palette ${STRETCHES[v] > 1 ? 'repeats' : 'spreads'})`),
+        range('stretch', s.stretchStep, 0, STRETCHES.length - 1, 1, (v) => { s.stretchStep = v; s.stretch = STRETCHES[v]; opts.onChange(); }, 'Stretch', (v) => `${STRETCHES[v]}× (the palette ${STRETCHES[v] > 1 ? 'repeats' : 'spreads'})`),
         range('offset', s.offset, 0, 1, 0.01, (v) => { s.offset = v; opts.onChange(); }, 'Offset', pct),
         h('div', { class: 'field full' }, h('span', null, 'Repeats (stretch and cycling)'),
           h('div', { class: 'row', role: 'group', 'aria-label': 'How the palette repeats' },
@@ -163,11 +163,12 @@ export function playPanel(opts) {
     // Shared-code import: replace the panel's settings from a spec.
     load(p) {
       const sp = withDefaults(p);
-      const si = STRETCHES.indexOf(sp.stretch);
-      s.stretchStep = si >= 0 ? si : 3;
+      // The exact stretch is kept; the slider shows the nearest step.
+      s.stretch = sp.stretch;
+      s.stretchStep = STRETCHES.reduce((best, v, i) => (Math.abs(v - sp.stretch) < Math.abs(STRETCHES[best] - sp.stretch) ? i : best), 0);
       s.offset = sp.offset; s.mirror = sp.mirror; s.cycle = sp.cycle; s.perVideo = sp.cycle_per_video;
       s.cut = sp.fade === 0; s.fade = sp.fade || 1;
-      s.keys = []; // keys come back as stops, which the panel cannot name; see the page
+      s.keys = sp.keys.map((k) => ({ at: k.at, palette: 'given', stops: k.stops.map((st) => [st.pos, rgbToHex(st.rgb)]) }));
       if (sp.random) {
         const r = sp.random;
         s.randomMode = r.mode === 'once' && (r.range[0] > 0 || r.range[1] < 1) ? 'range' : r.mode;
