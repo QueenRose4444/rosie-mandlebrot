@@ -1,6 +1,7 @@
 // Entry point: the hash router, the top menu's Runs badge and the GPU chip.
 import { startEvents, on, latestState, isConnected, jobsOf, request } from './api.js';
 import { clear, h } from './dom.js';
+import { installWheelSliders } from './wheel.js';
 import * as library from './pages/library.js';
 import * as finder from './pages/finder.js';
 import * as newRender from './pages/new.js';
@@ -165,6 +166,7 @@ on('state', refreshHeader);
 on('connection', refreshHeader);
 window.addEventListener('hashchange', route);
 startEvents();
+installWheelSliders();
 if (!location.hash) location.replace('#/library');
 route();
 refreshHeader();
