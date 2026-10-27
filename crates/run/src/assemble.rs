@@ -62,6 +62,8 @@ pub struct Options {
     /// Colour exactly as a values file recolours (see
     /// [`Assembler::with_exact_colour`]).
     pub exact: bool,
+    /// Video quality (CRF) instead of the codec's default.
+    pub crf: Option<u32>,
 }
 
 /// How the space around a smaller picture is filled.
@@ -479,7 +481,7 @@ pub fn run(
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-y", "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pix_fmt", "rgba"])
             .args(["-s", &format!("{vw}x{vh}"), "-r", &opt.fps.to_string(), "-i", "-"])
-            .args(rosie_mandlebrot_store::video::codec_args(&opt.codec)?)
+            .args(rosie_mandlebrot_store::video::codec_args_with(&opt.codec, opt.crf)?)
             .args(["-pix_fmt", output_pix_fmt(&opt.codec, alpha)]);
         if opt.container == "mp4" {
             // The index at the front, so a browser can play it while it loads.

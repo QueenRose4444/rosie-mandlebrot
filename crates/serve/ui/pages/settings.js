@@ -96,6 +96,11 @@ export function mount(root) {
         ['webm', 'WebM VP9 (keeps transparent bars)'],
         ['mov', 'MOV ProRes 4444 (keeps transparent bars, large files)'],
       ], 'For new videos unless a render asks for something else (transparent bars pick WebM).'),
+      choice('Video quality', 'video_crf', [
+        ['', 'Best (recommended; CRF 18)'],
+        ['23', 'Balanced (about 40% of the size; CRF 23)'],
+        ['28', 'Small files (about 20% of the size; CRF 28)'],
+      ], 'Measured on a 1,914-frame zoom: best 66 MB at 1080 × 1080 and 7 MB at 320 × 320; balanced is 3.7 dB less sharp by PSNR, small 6.5 dB. Used for new videos.', (v) => (v === '' ? null : Number(v))),
       choice('Finder pictures', 'finder_picture_size', [
         ['192', 'Small (192 pixels)'],
         ['384', 'Large (384 pixels, recommended)'],

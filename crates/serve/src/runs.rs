@@ -10,7 +10,12 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunMeta {
     pub id: String,
+    /// The preset the render starts from (a kept place's base).
     pub preset: String,
+    /// The Library place it is of, when that is not the preset (a kept or
+    /// shared place).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
     pub label: String,
     pub created: i64,
     pub settings: RenderBody,
@@ -55,6 +60,7 @@ pub struct SnapshotView {
 pub struct Run {
     pub id: String,
     pub preset: String,
+    pub place: Option<String>,
     pub label: String,
     pub created: i64,
     pub width: u32,
@@ -170,6 +176,7 @@ pub fn load_run(data: &Path, meta: RunMeta, job: Option<(u64, bool)>) -> Run {
     };
     Run {
         preset: meta.preset.clone(),
+        place: meta.place.clone(),
         label: meta.label.clone(),
         created: meta.created,
         width: s.width,

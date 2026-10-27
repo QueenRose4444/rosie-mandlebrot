@@ -183,6 +183,11 @@ pub struct Cli {
     #[arg(long, default_value = "exact")]
     pub colouring: String,
 
+    /// Video quality as a CRF, 0-51: lower is better and bigger [default: the
+    /// codec's own, 18 for h264] (keyframe videos).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=51))]
+    pub video_crf: Option<u32>,
+
     /// Colour play as JSON (what the web UI sends); the options below change it.
     #[arg(long)]
     pub colour_play: Option<String>,

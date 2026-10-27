@@ -48,6 +48,12 @@ pub fn encode_run(
 
 /// ffmpeg arguments for one of the supported codecs.
 pub fn codec_args(codec: &str) -> MbResult<Vec<String>> {
+    codec_args_with(codec, None)
+}
+
+/// [`codec_args`] with the quality (CRF: lower is better and bigger) set
+/// instead of the codec's default.
+pub fn codec_args_with(codec: &str, crf: Option<u32>) -> MbResult<Vec<String>> {
     // Low-RAM, ~4-thread encoder settings. The default x264/x265 "slow" preset
     // keeps ~50 frames of lookahead resident — ~1.25 GB at 4K, which blows a
     // 2 GB memory cap. "medium" + a short rc-lookahead holds it to a few hundred
@@ -56,20 +62,20 @@ pub fn codec_args(codec: &str) -> MbResult<Vec<String>> {
     let args: Vec<String> = match codec {
         "h264" => vec![
             "-c:v".into(), "libx264".into(),
-            "-crf".into(), "18".into(),
+            "-crf".into(), crf.unwrap_or(18).to_string(),
             "-preset".into(), "medium".into(),
             "-threads".into(), "4".into(),
             "-x264-params".into(), "rc-lookahead=10:sync-lookahead=0".into(),
         ],
         "h265" => vec![
             "-c:v".into(), "libx265".into(),
-            "-crf".into(), "22".into(),
+            "-crf".into(), crf.unwrap_or(22).to_string(),
             "-preset".into(), "medium".into(),
             "-x265-params".into(), "frame-threads=2:rc-lookahead=10:pools=4".into(),
         ],
         "vp9" => vec![
             "-c:v".into(), "libvpx-vp9".into(),
-            "-crf".into(), "30".into(),
+            "-crf".into(), crf.unwrap_or(30).to_string(),
             "-b:v".into(), "0".into(),
             "-threads".into(), "4".into(),
         ],

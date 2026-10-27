@@ -69,6 +69,7 @@ pub fn router(app: Arc<App>, previews: u32) -> Router {
         .route("/api/share/decode", post(share_decode))
         .route("/api/share/import", post(share_import))
         .route("/api/community", get(community_list))
+        .route("/api/finds/clear", post(clear_finds))
         .route("/api/community/get", post(community_get))
         .nest_service("/files/runs", tower_http::services::ServeDir::new(runs::runs_dir(&data)))
         .nest_service("/files/finds", tower_http::services::ServeDir::new(data.join("finds")))
@@ -472,6 +473,7 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
     let job = match body {
         JobBody::Render(mut b) => {
             let settings: Settings = store::load(&app.data.join("settings.json"));
+            let place = (!preset_list()?.iter().any(|p| p.name == b.preset)).then(|| b.preset.clone());
             let found_label = if b.as_julia {
                 Some(julia_body(&app.data, &preset_list()?, &mut b).map_err(bad)?)
             } else {
@@ -480,13 +482,14 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             b.chunk_size = b.chunk_size.or(Some(settings.chunk_size.clone()));
             b.tone = b.tone.or(Some(settings.tone.clone()));
             b.colouring = b.colouring.or(Some(settings.colouring.clone()));
+            b.video_crf = b.video_crf.or(settings.video_crf);
             b.format = b.format.or(Some(settings.video_format.clone()));
             // Checked before the run folder exists.
             jobs::render_args(&b, std::path::Path::new("x"), false, 0).map_err(bad)?;
             let label = found_label.unwrap_or_else(|| b.preset.clone());
             let id_name: String = label.chars().take(48).map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' }).collect();
             let id = runs::new_run_id(&app.data, &id_name, now() + local_offset_secs());
-            let meta = RunMeta { id, preset: b.preset.clone(), label, created: now(), settings: b };
+            let meta = RunMeta { id, preset: b.preset.clone(), place, label, created: now(), settings: b };
             runs::write_meta(&app.data, &meta).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             queue_render(app, &meta, false, c.previews).map_err(bad)?
         }
@@ -494,6 +497,7 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             let settings: Settings = store::load(&app.data.join("settings.json"));
             b.tone = b.tone.or(Some(settings.tone.clone()));
             b.colouring = b.colouring.or(Some(settings.colouring.clone()));
+            b.video_crf = b.video_crf.or(settings.video_crf);
             b.format = b.format.or(Some(settings.video_format.clone()));
             let meta = meta_of(app, &b.run_id)?;
             let size = (meta.settings.width, meta.settings.height);
@@ -593,6 +597,27 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
 
 /// Searches' folders that no job in the list points at any more (kept places
 /// have their own copies of their pictures).
+/// Bytes under a folder.
+fn dir_bytes(p: &std::path::Path) -> u64 {
+    std::fs::read_dir(p).map_or(0, |d| {
+        d.filter_map(Result::ok).map(|e| {
+            let p = e.path();
+            if p.is_dir() { dir_bytes(&p) } else { e.metadata().map_or(0, |m| m.len()) }
+        }).sum()
+    })
+}
+
+/// "Clear old searches": every finished search and its pictures (kept places
+/// have their own copies).
+async fn clear_finds(State(c): State<Ctx>) -> Json<serde_json::Value> {
+    let finds = c.app.data.join("finds");
+    let before = dir_bytes(&finds);
+    let searches = c.app.forget_finished("find");
+    prune_finds(&c.app, &finds);
+    c.app.bump(false);
+    Json(serde_json::json!({ "searches": searches, "bytes": before.saturating_sub(dir_bytes(&finds)) }))
+}
+
 fn prune_finds(app: &App, finds: &std::path::Path) {
     let keep: Vec<std::path::PathBuf> = app.jobs().iter().filter_map(|j| j.find.as_ref().map(|f| f.out.clone())).collect();
     let Ok(dir) = std::fs::read_dir(finds) else { return };

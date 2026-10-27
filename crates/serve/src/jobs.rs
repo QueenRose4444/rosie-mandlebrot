@@ -149,6 +149,9 @@ pub struct RenderBody {
     /// exact or float (see the settings); filled from the settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colouring: Option<String>,
+    /// Video quality (CRF); filled from the settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_crf: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -179,6 +182,8 @@ pub struct AssembleBody {
     pub play: Option<serde_json::Value>,
     #[serde(default)]
     pub colouring: Option<String>,
+    #[serde(default)]
+    pub video_crf: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -365,6 +370,14 @@ fn bars_args(bars: &Option<BarsBody>, w: u32, h: u32, format: &str) -> Result<Ve
     Ok(vec!["--bars".into(), b.style.clone(), "--bar-colour".into(), colour, "--picture".into(), format!("{}x{}", b.picture_w, b.picture_h)])
 }
 
+fn crf_args(c: Option<u32>) -> Result<Vec<String>, String> {
+    match c {
+        None => Ok(Vec::new()),
+        Some(c) if c <= 51 => Ok(vec!["--video-crf".into(), c.to_string()]),
+        Some(c) => Err(format!("video quality {c}: expected 0 to 51")),
+    }
+}
+
 fn colouring_args(c: &Option<String>) -> Result<Vec<String>, String> {
     match c.as_deref() {
         None => Ok(Vec::new()),
@@ -453,6 +466,7 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
     }
     a.extend(tone_args(&b.tone)?);
     a.extend(colouring_args(&b.colouring)?);
+    a.extend(crf_args(b.video_crf)?);
     if let Some(cap) = b.iter_cap {
         if !(1_000..=PLACE_MAX_ITER).contains(&cap) {
             return Err(format!("iter_cap {cap}: must be 1,000 to {PLACE_MAX_ITER}"));
@@ -494,6 +508,7 @@ pub fn assemble_args(b: &AssembleBody, run_dir: &Path, strip_size: (u32, u32)) -
     a.extend(bars_args(&b.bars, w, h, format)?);
     a.extend(tone_args(&b.tone)?);
     a.extend(colouring_args(&b.colouring)?);
+    a.extend(crf_args(b.video_crf)?);
     a.extend(play_args(&b.play)?);
     Ok(a)
 }
@@ -598,6 +613,7 @@ mod tests {
             julia: None,
             as_julia: false,
             colouring: None,
+            video_crf: None,
         }
     }
 

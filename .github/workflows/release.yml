@@ -17,7 +17,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: GNU toolchain (rust-toolchain.toml selects it)
         run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
       # The bundled SQLite and zstd are C, compiled with MinGW's gcc.
@@ -39,7 +39,7 @@ jobs:
           bash tools/release-build.sh
       - run: python tools/third_party.py
       - run: python tools/package.py windows
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/*.zip
@@ -54,7 +54,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential curl ca-certificates git python3 xz-utils
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build
         env:
           RUSTUP_TOOLCHAIN: stable
@@ -63,7 +63,7 @@ jobs:
           bash tools/release-build.sh
           python3 tools/third_party.py
           python3 tools/package.py linux
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/*.tar.xz
@@ -72,13 +72,13 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
         with:
@@ -97,13 +97,13 @@ jobs:
     needs: [windows, linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # By name: the image job also leaves a Docker build-record artifact.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux
           path: dist

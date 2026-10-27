@@ -52,6 +52,8 @@ pub struct Settings {
     pub colouring: String,
     /// The community list's signed index ("" turns the list off).
     pub community_url: String,
+    /// Video quality (CRF) for new videos; None = the codec's default (18).
+    pub video_crf: Option<u32>,
 }
 
 /// The finder's picture size unless the settings say otherwise. Picturing a
@@ -73,6 +75,7 @@ impl Default for Settings {
             finder_picture_size: FINDER_PICTURE_SIZE,
             colouring: "exact".into(),
             community_url: crate::community::DEFAULT_INDEX.into(),
+            video_crf: None,
         }
     }
 }
@@ -81,6 +84,9 @@ impl Settings {
     pub fn check(&self) -> Result<(), String> {
         if !matches!(self.chunk_size.as_str(), "octave" | "half" | "quarter" | "eighth") {
             return Err(format!("chunk_size {:?}: expected octave, half, quarter or eighth", self.chunk_size));
+        }
+        if self.video_crf.is_some_and(|c| c > 51) {
+            return Err("video quality (CRF) is 0 to 51".into());
         }
         if !(self.community_url.is_empty() || self.community_url.starts_with("https://")) {
             return Err("the community list's address must start https://".into());

@@ -12,6 +12,7 @@ const SIZES = [
   { w: 1920, h: 1080, label: '1920 × 1080 wide' },
   { w: 1080, h: 1920, label: '1080 × 1920 phone' },
   { w: 3840, h: 2160, label: '3840 × 2160 4K' },
+  { w: 320, h: 320, label: '320 × 320 quick test' },
 ];
 const MEMORY_STEPS = [256, 512, 1024, 2048, null];
 

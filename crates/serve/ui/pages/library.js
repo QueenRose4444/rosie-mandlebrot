@@ -79,7 +79,7 @@ export function mount(root, params, { go }) {
       ...favs.lists.map((l) => chip(l.name, collection === `list:${l.name}`,
         () => { collection = `list:${l.name}`; renderAll(); }, l.presets.length)),
       h('span', { class: 'chip-sep', 'aria-hidden': 'true' }),
-      ...KIND_CHIPS.map(([k, label]) => chip(label, kind === k, () => { kind = kind === k ? null : k; renderAll(); })),
+      ...KIND_CHIPS.map(([k, label]) => chip(label, kind === k, () => { kind = kind === k ? null : k; renderAll(); }, presets.filter((p) => p.kind === k).length)),
     );
   }
 

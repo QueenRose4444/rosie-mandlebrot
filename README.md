@@ -35,12 +35,16 @@ and [CHANGELOG.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/C
    Explorer's *Extract All* puts it in a folder inside a folder of the same name: the folder you
    want is the one that contains `rosie_mandlebrot.exe`.
 
-   *Checking it first (optional):* `Get-FileHash` on the zip in PowerShell should match its line in
-   the release's `SHA256SUMS` (PowerShell prints the hash in capitals). To check that `SHA256SUMS`
-   came from this project, get [minisign](https://jedisct1.github.io/minisign/) (its Windows zip has
-   `minisign.exe` in `minisign-win64\x86_64\`) and run it by its full path, for example
+   *Checking it first (optional):* download `SHA256SUMS` and `SHA256SUMS.minisig` from the same
+   release into the folder with the zip. In PowerShell there,
+   `Get-FileHash .\rosie_mandlebrot-<version>-windows-x86_64.zip` prints `SHA256  <64 hex digits>  <path>`;
+   the digits (shown in capitals) must match the zip's line in `SHA256SUMS`. To check that
+   `SHA256SUMS` itself came from this project, get [minisign](https://jedisct1.github.io/minisign/) (its
+   Windows zip has `minisign.exe` in `minisign-win64\x86_64\`) and run it by its full path:
    `C:\tools\minisign-win64\x86_64\minisign.exe -Vm SHA256SUMS -P RWQbNDTjNM+Dir3G6eU5L/mhi8lbXOi9B2qCfSXYunoNS6JX6DWCC3IH`.
-   The release's `minisign.pub` is the same key; `latest.json` is for a future auto-updater.
+   It should print `Signature and comment signature verified` and
+   `Trusted comment: Rosie_Mandlebrot v<version>`; anything else means do not run it. The release's
+   `minisign.pub` is the same key; `latest.json` is for a future auto-updater.
 2. **Double-click `rosie_mandlebrot.exe`.** Your browser opens the app at
    <http://127.0.0.1:8460>, and an orange icon in the notification area (by the clock) has Open,
    Pause and Quit. The exe is not code-signed yet, so Windows SmartScreen may warn the first time:
@@ -56,24 +60,48 @@ and [CHANGELOG.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/C
    again, most of the time going into encoding it (measured on an RTX 3060 Ti: 14 s for 625 frames at
    1080×1080 whose render took 35 s; about a minute for 1,900 frames). The earlier video is kept;
    **Runs** lists every video of a run.
-6. **Finder** looks for places for you. **Deeper like this**: pick a place and a search time, and it
+6. **Julia sets:** **As a Julia set…** on any Library card (or the **Julia set** switch in New
+   render) renders the Julia set of that place's point, zooming into its middle; near there it looks
+   like the place itself, doubled, so it runs out of new detail near the square root of the place's
+   depth. **Make its picture** draws it first.
+7. **Play with the colours** (in Recolour, under the stops) changes the colours as the video plays:
+   random colours (one roll, a new roll every few seconds, drifting, or only part of the palette,
+   with stops you keep), cycling, palettes that change along the zoom (fading or cutting), and
+   stretch and offset. The preview shows each frame exactly as the video will have it, and **Play
+   the colours** runs them over the picture.
+8. **Sharing:** **Share** on a Library card (or **Share this place** in New render, **Share these
+   colours** in Recolour) gives a line of text to paste to anyone; **Import a code…** in the Library
+   (or **Import colours…** in Recolour) takes one back. No account and no server. **Community** in the
+   Library lists places and colours other people shared (search, filter, sort by stars, downloads,
+   depth or interest, **Get** one); it lives in
+   [rosie-mandlebrot-presets](https://github.com/QueenRose4444/rosie-mandlebrot-presets), where a
+   👍 on an entry's page is a star and anyone can share their own.
+9. **Finder** looks for places for you. **Deeper like this**: pick a place and a search time, and it
    finds minibrots below the end of that zoom (*how far it may wander* decides how closely they
    follow the original). **New place**: give a name, a minimum depth and how interesting it should
    be. Places appear as they are found, each with six pictures down its zoom, how deep it goes, an
    interest % and the render time on your PC; **Save to Library** keeps one under Library →
-   **Found**, where **Render…** works as for any other place.
+   **Found**, where **Render…** works as for any other place. **See its Julia set** on a card shows
+   pictures of the place's Julia set. A long search finds hundreds: the best 20 are shown, with
+   **Show more**; **Clear old searches** frees their pictures.
 
 Only one job uses the GPU at a time; others wait in **Runs**. With **Pause rendering while a game is
 full screen** on (Settings), a render steps off the GPU completely while a game is in front and
-carries on afterwards. Everything lives beside the exe in `app\runs\<date>-<time>-<place>\`: the video
-in `out\` (`zoom.mp4`, then `zoom-2.mp4` …), the strip in `out\keyframes\`, the snapshots in
-`out\previews\`, the colour editor's preview data in `out\values\`, the log in `logs\`. The strip is what makes recolouring possible; once you have
+carries on afterwards. Everything lives beside the exe in `app\`: each run in
+`app\runs\<date>-<time>-<place>\` (the video in `out\`, `zoom.mp4` then `zoom-2.mp4` …, the strip in
+`out\keyframes\`, the snapshots in `out\previews\`, the colour editor's preview data in `out\values\`),
+the Finder's searches in `app\finds\` (one folder of pictures per search; **Clear old searches** empties
+it), places you kept in `app\found\`, card pictures in `app\heroes\`, the community list's last copy in
+`app\community\`, and the log in `logs\`. The strip is what makes recolouring possible; once you have
 the video you want you may delete the run's `out\keyframes\` folder (or the whole run, from Runs) to
 get the disk back.
 
 From a terminal, `.\rosie_mandlebrot.exe serve --open` starts the same app with its log in the
 terminal (Ctrl+C stops it); leave out `--open` to start it without opening a browser, then open
-<http://127.0.0.1:8460> yourself; [The command line](#the-command-line) renders without the app.
+<http://127.0.0.1:8460> yourself. It listens on `127.0.0.1` (this computer only) at port 8460 unless
+you give `--port <n>` or `--host 0.0.0.0` (every network the computer is on, with no password), and
+keeps its files in `app\` beside the exe unless you give `--data <folder>`.
+[The command line](#the-command-line) renders without the app.
 
 ## A server with Docker
 
@@ -139,7 +167,9 @@ finished video, in `dive\out\zoom.mkv`). **You should see your GPU** near the to
 (`selected GPU adapter: NVIDIA GeForce RTX 3060 Ti (DiscreteGpu, backend=Vulkan)`); if it names a CPU
 or "Microsoft Basic Render Driver", update your graphics driver.
 
-Without `--run-dir` the video appears as `out\zoom.mkv` beside the exe, with `progress.json` beside
+The command line makes `.mkv` videos unless you give `--video-container mp4`; the app makes `.mp4`
+(Settings → Video format), because a browser can play it. Without `--run-dir` the video appears as
+`out\zoom.mkv` beside the exe, with `progress.json` beside
 it in `out\` and the strip in `out\keyframes\`; the log is `logs\latest.log` beside the exe. The zip
 contains a `portable.txt`, which keeps everything beside the exe; delete it to use
 `%LOCALAPPDATA%\Rosie_Mandlebrot` instead. The strip goes about twelve octaves deeper than the last

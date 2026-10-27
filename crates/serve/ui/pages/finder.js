@@ -33,6 +33,11 @@ export function mount(root, params) {
   let busy = false;
   let picking = false; // the Start from grid is open
   let lastKey = '';
+  // Cards shown: the best PAGE, then PAGE more at a time (a long search finds
+  // hundreds, and a page of them all gets slow).
+  const PAGE = 20;
+  let shown = PAGE;
+  let shownFor = null;
   const estimates = new Map(); // `${base}|${end}` -> text
   const status = h('p', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
   const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'What to look for' });
@@ -41,8 +46,9 @@ export function mount(root, params) {
   const results = h('div', { class: 'finds' });
   const viewer = h('dialog', { class: 'viewer', 'aria-label': 'Picture' });
 
+  const clearBtn = h('button', { type: 'button', class: 'btn quiet', 'data-k': 'clear-searches', onclick: clearSearches }, 'Clear old searches');
   root.append(
-    h('h1', null, 'Finder'),
+    h('div', { class: 'row', style: { justifyContent: 'space-between', alignItems: 'baseline' } }, h('h1', null, 'Finder'), clearBtn),
     h('p', { class: 'muted', style: { marginTop: '6px' } },
       'Look for places to zoom into: deeper ones below a place you know, or new ones. Each find is shown down its zoom, from the top (left) to near its end (right).'),
     tabs, form, searchLine, status, results, viewer,
@@ -166,6 +172,17 @@ export function mount(root, params) {
     renderAll();
   }
 
+  async function clearSearches() {
+    if (!confirm('Clear every finished search and its pictures? Places you saved stay in the Library.')) return;
+    try {
+      const r = await post('/api/finds/clear');
+      status.textContent = `Cleared ${r.searches} finished ${r.searches === 1 ? 'search' : 'searches'} (${(r.bytes / 1e6).toFixed(1)} MB).`;
+      renderAll();
+    } catch (err) {
+      status.textContent = `Could not clear: ${err.message}`;
+    }
+  }
+
   async function stopSearch(job) {
     try {
       await post(`/api/jobs/${job.id}/stop`);
@@ -188,7 +205,8 @@ export function mount(root, params) {
     else if (job.state === 'running') parts.push('Searching', `${found} found`, `${clock(since)} of ${clock(total)}`);
     else if (job.state === 'failed') parts.push(`The search failed: ${job.error || 'see the log on the Runs page'}`);
     else parts.push(`Search finished`, `${found} found`);
-    if (Number.isFinite(deepest)) parts.push(`deepest so far ${fmtSpan(deepest)}`);
+    const done = !(job.state === 'running' || job.state === 'queued');
+    if (Number.isFinite(deepest)) parts.push(`${done ? 'deepest' : 'deepest so far'} ${fmtSpan(deepest)}`);
     searchLine.append(h('p', { class: job.state === 'failed' ? 'error' : 'muted' }, parts.join(' · ')));
   }
 
@@ -292,8 +310,9 @@ export function mount(root, params) {
   function renderResults(keep) {
     const job = currentJob();
     renderSearchLine(job);
-    const list = [...(job?.places || [])];
-    if (tab === 'new') list.sort((a, b) => b.interest - a.interest);
+    // Best first; among equally interesting places the deeper one first.
+    const list = [...(job?.places || [])].sort((a, b) => b.interest - a.interest || a.end - b.end);
+    if (shownFor !== job?.id) { shownFor = job?.id; shown = PAGE; }
     const rebuild = () => {
       clear(results);
       if (!job) {
@@ -305,7 +324,12 @@ export function mount(root, params) {
       if (!list.length && job.state !== 'running' && job.state !== 'queued') {
         results.append(h('p', { class: 'hint' }, 'Nothing found that time. Try searching longer, or a lower interest.'));
       }
-      for (const p of list) results.append(card(job, p));
+      for (const p of list.slice(0, shown)) results.append(card(job, p));
+      if (list.length > shown) {
+        results.append(h('div', { class: 'row', style: { justifyContent: 'center' } },
+          h('button', { type: 'button', class: 'btn', 'data-k': 'show-more', onclick: () => { shown += PAGE; renderResults(true); } },
+            `Show ${Math.min(PAGE, list.length - shown)} more (${list.length - shown} not shown)`)));
+      }
     };
     if (keep) keepFocus(results, rebuild); else rebuild();
   }

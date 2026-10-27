@@ -16,9 +16,19 @@ use std::path::Path;
 const DEFAULT_US: &[(i32, f64)] = &[(0, 0.06), (-6, 0.09), (-7, 0.35), (-24, 0.55), (-33, 0.15)];
 /// Strip bytes per sample over the same runs.
 const DEFAULT_BYTES_PER_SAMPLE: f64 = 1.2;
-/// Assembly and encoding, nanoseconds per output pixel (seahorse 1080², 300
-/// frames: 6.0 s including the x264 encode).
-const ASSEMBLE_NS_PER_PIXEL: f64 = 17.0;
+/// Assembly and encoding (the x264 encode included): seconds per frame plus
+/// nanoseconds per output pixel. Fitted to two videos of seahorse on an RTX
+/// 3060 Ti, 1,914 frames each: 4.45 s at 320², 40.4 s at 1080² (it gives 10.7 s
+/// for a 2,334-frame 640×360 video that took 11.5 s).
+const ASSEMBLE_SECS_PER_FRAME: f64 = 0.000_52;
+const ASSEMBLE_NS_PER_PIXEL: f64 = 17.6;
+/// The video's size, bytes per output pixel per frame at the default quality
+/// (measured 0.030–0.037 on the same three videos).
+const VIDEO_BYTES_PER_PIXEL: f64 = 0.033;
+/// Besides the strip and the video: values files, pictures, snapshots and
+/// logs, measured at 1.9, 8.0 and 4.1 MB on those runs.
+const OTHER_BYTES: f64 = 2.0e6;
+const OTHER_PER_STRIP_BYTE: f64 = 0.04;
 /// Starting the GPU and the first reference orbit.
 const STARTUP_SECS: f64 = 1.5;
 
@@ -31,6 +41,34 @@ pub struct Estimate {
     pub frames: u64,
     pub slowdown_pct: f64,
     pub basis: String,
+}
+
+/// This computer's videos: (their real assembly time over the model's, and
+/// their bytes per output pixel per frame), from each video's record.
+fn local_videos(data: &Path) -> Option<(f64, f64)> {
+    let (mut ratio, mut bpp, mut n) = (0.0, 0.0, 0.0);
+    for meta in crate::runs::list_meta(data) {
+        let out = crate::runs::run_dir(data, &meta.id).join("out");
+        let Ok(dir) = std::fs::read_dir(&out) else { continue };
+        for e in dir.filter_map(Result::ok) {
+            let p = e.path();
+            if p.extension().is_none_or(|x| x != "json") || !p.file_name().is_some_and(|f| f.to_string_lossy().starts_with("zoom")) {
+                continue;
+            }
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&std::fs::read(&p).unwrap_or_default()) else { continue };
+            let num = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+            let (frames, px, secs) = (num("frames"), num("width") * num("height"), num("secs"));
+            let video = p.with_extension("mp4");
+            let bytes = std::fs::metadata(&video).map_or(0.0, |m| m.len() as f64);
+            if frames < 10.0 || px <= 0.0 || secs <= 0.0 || bytes <= 0.0 {
+                continue;
+            }
+            ratio += secs / (frames * (ASSEMBLE_SECS_PER_FRAME + px * ASSEMBLE_NS_PER_PIXEL * 1e-9));
+            bpp += bytes / (frames * px);
+            n += 1.0;
+        }
+    }
+    (n > 0.0).then(|| (ratio / n, bpp / n))
 }
 
 /// Microseconds per sample by decade, from finished runs in `data`.
@@ -106,7 +144,9 @@ pub fn estimate(data: &Path, w: u32, h: u32, start: f64, end: f64, zoom: f64, ch
     }
     let samples = rows * f64::from(g.cols);
     let frames = ((end / start).ln() / zoom.ln()).floor().max(0.0) as u64 + 1;
-    let assemble = frames as f64 * f64::from(w) * f64::from(h) * ASSEMBLE_NS_PER_PIXEL * 1e-9;
+    let px = f64::from(w) * f64::from(h);
+    let (video_scale, video_bpp) = local_videos(data).unwrap_or((1.0, VIDEO_BYTES_PER_PIXEL));
+    let assemble = frames as f64 * (ASSEMBLE_SECS_PER_FRAME + px * ASSEMBLE_NS_PER_PIXEL * 1e-9) * video_scale;
     let secs = STARTUP_SECS + us_total * 1e-6 + assemble;
     let half_diag = rho;
     let window = rosie_mandlebrot_run::assemble::window_bytes_for(&g, half_diag, rosie_mandlebrot_run::assemble::WINDOW_BUDGET);
@@ -123,7 +163,8 @@ pub fn estimate(data: &Path, w: u32, h: u32, start: f64, end: f64, zoom: f64, ch
     };
     Estimate {
         secs,
-        disk_bytes: (samples * bps) as u64,
+        // The strip, the video and the rest (values files, pictures, snapshots).
+        disk_bytes: (samples * bps * (1.0 + OTHER_PER_STRIP_BYTE) + frames as f64 * px * video_bpp + OTHER_BYTES) as u64,
         ram_bytes: ram,
         gpu_bytes: window + chunk as u64,
         frames,

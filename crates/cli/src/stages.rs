@@ -92,6 +92,7 @@ pub fn assemble_options(cli: &Cli, cfg: &RunConfig) -> anyhow::Result<Options> {
         keep_existing: cli.assemble,
         play,
         exact,
+        crf: cli.video_crf,
     })
 }
 

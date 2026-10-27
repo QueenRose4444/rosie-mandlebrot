@@ -129,6 +129,14 @@ impl App {
         Some(job)
     }
 
+    /// Drop every finished job of `kind` from the list; how many went.
+    pub fn forget_finished(&self, kind: &str) -> usize {
+        let mut inner = self.inner.lock().unwrap();
+        let before = inner.jobs.len();
+        inner.jobs.retain(|j| j.kind != kind || j.state.is_active());
+        before - inner.jobs.len()
+    }
+
     /// The jobs list as the UI sees it.
     pub fn jobs(&self) -> Vec<Job> {
         self.inner.lock().unwrap().jobs.clone()
