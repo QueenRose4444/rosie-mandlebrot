@@ -737,12 +737,13 @@ export function mount(root, params, { go }) {
       const r = usable.find((x) => x.id === wanted) || usable[0] || null;
       run = r;
       renderRunSelect();
-      if (r) useRun(r);
-      // Colours chosen in the Library's community list.
-      let pending = null;
-      try { pending = JSON.parse(sessionStorage.getItem(PENDING_COLOURS) || 'null'); sessionStorage.removeItem(PENDING_COLOURS); } catch { /* none */ }
-      if (pending && r) actionNote.textContent = applyColours(pending);
-      else {
+      if (r) {
+        useRun(r);
+        // Colours chosen in the Library's community list.
+        let pending = null;
+        try { pending = JSON.parse(sessionStorage.getItem(PENDING_COLOURS) || 'null'); sessionStorage.removeItem(PENDING_COLOURS); } catch { /* none */ }
+        if (pending) actionNote.textContent = applyColours(pending);
+      } else {
         setStops(builtins[0]?.stops);
         showEmpty(h('span', null, 'There is no finished run to recolour yet. ', h('a', { href: '#/library' }, 'Start one from the Library.')));
         makeBtn.disabled = true;

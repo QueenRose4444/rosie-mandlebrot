@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.0 — 2026-10-27
+
+- **Julia sets.** Any place as a Julia set: **As a Julia set…** on a Library card, a **Julia set**
+  switch in New render, **See its Julia set** on a Finder card, `--julia RE,IM` (or `--julia preset`)
+  on the command line. They go as deep as the Mandelbrot set does, on the same GPU maths, checked
+  pixel by pixel against the exact calculation; Mandelbrot videos come out exactly as before.
+- **Colour play** (Recolour → Play with the colours): random colours (one roll for the whole video,
+  a new roll every few seconds, drifting, or only part of the palette, with stops you keep), colours
+  that cycle as the video plays, palettes that change along the zoom with fades or cuts, and
+  stretch and offset. The preview shows each frame exactly as the video will have it; **Play the
+  colours** runs them over the picture. All of it on the command line too (`--colour-cycle`,
+  `--random-colours`, `--colour-keys`, …).
+- **Previews match videos to the pixel.** Videos are now coloured from exactly what the page
+  recolours (they could differ by one colour level on about 1 pixel in 2,000). Settings → Colour
+  blending (and `--colouring float`) brings back 0.4's way.
+- **Share codes:** any place (as itself or as its Julia set) or colour scheme (with its colour play)
+  as one line of text. **Share** on Library cards and New render, **Import a code…** in the Library,
+  **Share these colours** and **Import colours…** in Recolour, `--from-code` on the command line.
+  Codes are checked before anything is used.
+- **Community list:** Library → **Community** lists places and colours people shared, with search,
+  filters and sorting by stars, downloads, newest, depth or interest; **Get** brings one in. It lives
+  in [rosie-mandlebrot-presets](https://github.com/QueenRose4444/rosie-mandlebrot-presets): a 👍 on
+  an entry is a star, GitHub counts the downloads, and the list is signed. Anyone can share their own.
+- **Discord, richer:** one message that updates itself while a render runs, a finished ping
+  (@here, @everyone or a role), the run's pictures uploaded beside the video if you want, and a
+  message when the uploads are done.
+- **Finder:** the best 20 places first (show more as you like), and **Clear old searches**.
+- **New render:** a 320 × 320 quick-test size, and estimates that count the video and the time to
+  make it. **Video quality** is a setting (`--video-crf`).
+- The README's download checks say exactly what each check prints.
+
 ## 0.4.4 — 2026-10-26
 
 - **Times for every run:** a run's card says how long its render took, and **Times** shows where

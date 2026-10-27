@@ -21,17 +21,17 @@ someone who has nothing but this repository's URL. The order of 0.4 to 0.6 can s
   time limit, or a new place with a name, a minimum depth and how interesting it should be; keep
   the good ones in the Library. The reference calculation moved to our own code, replacing the
   GMP/MPFR libraries, and deep renders beside minibrots were fixed against the exact maths.
+- **0.5 — Julia sets, sharing and colour play.** Any place as a Julia set, as deep as the Mandelbrot
+  set goes; colours that roll, drift, cycle and change along the zoom, previewed exactly; places and
+  colour schemes as copy-paste codes and through a community list on GitHub with stars and
+  download counts; Discord messages that update while a render runs.
 
 ## Next
 
-- **0.5 — Julia sets and sharing.** A second family of fractals; share places and colour schemes as
-  copy-paste codes, then through a community list with search, stars and download counts, all
-  hosted on GitHub.
-
-## Later
-
 - **0.6 — the Burning Ship family.** Burning Ship and about nine relatives, added together through
   one shared building block.
+
+## Later
 - **1.0 — installer, updates and a guide.** An installer and a portable version from one program
   that update themselves safely, a code-signed exe, and a how-it-works site with simple
   explanations and technical detail you can open.
