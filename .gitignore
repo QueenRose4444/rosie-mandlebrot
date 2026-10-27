@@ -1,4 +1,5 @@
 /target
+/tools/mpfr-oracle/target
 
 # Real values live here; .env.example is the committed template.
 /.env

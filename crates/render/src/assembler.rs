@@ -86,6 +86,11 @@ pub struct Assembler {
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     rgb: wgpu::ComputePipeline,
+    /// The colour pass from the recorded weights (see `exact_main`).
+    exact: wgpu::ComputePipeline,
+    /// Colour with `exact` (the default) rather than 0.4's float blend.
+    exact_colour: bool,
+    lut_buf: wgpu::Buffer,
     values: wgpu::ComputePipeline,
     weights: Option<wgpu::ComputePipeline>,
     staging: std::sync::Mutex<Option<wgpu::Buffer>>,
@@ -176,7 +181,7 @@ impl Assembler {
         let lut_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("asm-lut"),
             contents: bytemuck::cast_slice(&packed),
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("asm-uniforms"),
@@ -252,12 +257,32 @@ impl Assembler {
             uniforms,
             bind_group,
             rgb: pipeline("cs_main"),
+            exact: pipeline("exact_main"),
+            exact_colour: true,
+            lut_buf,
             values: pipeline("values_main"),
             weights: weights.then(|| pipeline("weights_main")),
             staging: std::sync::Mutex::new(None),
             shader_ms: std::cell::Cell::new(0.0),
             unsubmitted: std::cell::Cell::new(0),
         })
+    }
+
+    /// Colour frames from the weights a values file records (true, the
+    /// default: a page recolouring the file shows the frame to the pixel), or
+    /// by 0.4's float blend of the same colours, which differs from it by one
+    /// level on about 0.05% of pixels.
+    pub fn with_exact_colour(mut self, on: bool) -> Self {
+        self.exact_colour = on;
+        self
+    }
+
+    /// A new palette for the frames after this (colour play changes it frame
+    /// by frame).
+    pub fn set_lut(&self, gpu: &GpuCtx, lut: &[[u8; 3]; 1024], inside: [u8; 3]) {
+        let packed: Vec<u32> =
+            lut.iter().chain(std::iter::once(&inside)).map(|c| u32::from(c[0]) | u32::from(c[1]) << 8 | u32::from(c[2]) << 16).collect();
+        gpu.queue.write_buffer(&self.lut_buf, 0, bytemuck::cast_slice(&packed));
     }
 
     /// Every strip row's (lo, hi) tone range, from row 0.
@@ -332,6 +357,7 @@ impl Assembler {
                 }),
             });
             let pipeline = match pass {
+                Pass::Rgb if self.exact_colour => &self.exact,
                 Pass::Rgb => &self.rgb,
                 Pass::Values => &self.values,
                 Pass::Weights => self.weights.as_ref().ok_or_else(|| MbError::GpuInit("assembler made without weights".into()))?,

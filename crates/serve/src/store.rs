@@ -47,6 +47,9 @@ pub struct Settings {
     pub video_format: String,
     /// Size of the finder's pictures, in pixels (square).
     pub finder_picture_size: u32,
+    /// How video frames are coloured: exact (as the page previews them) or
+    /// float (0.4's blend, one level off on about 0.05% of pixels).
+    pub colouring: String,
 }
 
 /// The finder's picture size unless the settings say otherwise. Picturing a
@@ -66,6 +69,7 @@ impl Default for Settings {
             tone: "location".into(),
             video_format: "mp4".into(),
             finder_picture_size: FINDER_PICTURE_SIZE,
+            colouring: "exact".into(),
         }
     }
 }
@@ -74,6 +78,9 @@ impl Settings {
     pub fn check(&self) -> Result<(), String> {
         if !matches!(self.chunk_size.as_str(), "octave" | "half" | "quarter" | "eighth") {
             return Err(format!("chunk_size {:?}: expected octave, half, quarter or eighth", self.chunk_size));
+        }
+        if !matches!(self.colouring.as_str(), "exact" | "float") {
+            return Err(format!("colouring {:?}: expected exact or float", self.colouring));
         }
         if !matches!(self.tone.as_str(), "location" | "per-frame") {
             return Err(format!("tone {:?}: expected location or per-frame", self.tone));

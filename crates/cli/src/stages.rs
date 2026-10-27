@@ -5,7 +5,8 @@ use crate::config::Cli;
 use rosie_mandlebrot_core::config::RunConfig;
 use rosie_mandlebrot_core::error::MbError;
 use rosie_mandlebrot_render::GpuCtx;
-use rosie_mandlebrot_core::palette::{parse_hex, parse_stops, Palette};
+use rosie_mandlebrot_core::colour_play::{ColourPlay, Key, RandomMode, RandomStyle};
+use rosie_mandlebrot_core::palette::{parse_hex, parse_stops, ColorScheme, Palette};
 use rosie_mandlebrot_run::assemble::{alpha_codec, BarStyle, Bars, Options, Tone};
 use rosie_mandlebrot_run::per_frame::{Explicit, PerFrameJob};
 use rosie_mandlebrot_run::assemble::{frame_at, frame_count, preview_size, recolour_weights, write_jpeg, write_values};
@@ -47,6 +48,12 @@ pub fn assemble_options(cli: &Cli, cfg: &RunConfig) -> anyhow::Result<Options> {
             Some(Bars { style, colour: parse_hex(&cli.bar_colour)?, picture })
         }
     };
+    let exact = match cli.colouring.as_str() {
+        "exact" => true,
+        "float" => false,
+        other => return Err(MbError::InvalidArg { flag: "--colouring", reason: format!("{other:?}: expected exact or float") }.into()),
+    };
+    let play = colour_play(cli)?;
     if bars.is_some_and(|b| b.style == BarStyle::Transparent) && alpha_codec(&cfg.video_container) != Some(cfg.video_codec.as_str()) {
         return Err(MbError::InvalidArg {
             flag: "--bars",
@@ -70,7 +77,90 @@ pub fn assemble_options(cli: &Cli, cfg: &RunConfig) -> anyhow::Result<Options> {
         compare: cli.compare_frames.clone(),
         video: cli.frames.is_empty() && !(cfg.no_video || cfg.video_codec == "none"),
         keep_existing: cli.assemble,
+        play,
+        exact,
     })
+}
+
+/// The colour play the flags describe: --colour-play's JSON, changed by the
+/// single options.
+fn colour_play(cli: &Cli) -> anyhow::Result<ColourPlay> {
+    let bad = |flag: &'static str, reason: String| anyhow::Error::from(MbError::InvalidArg { flag, reason });
+    let mut p: ColourPlay = match &cli.colour_play {
+        Some(json) => serde_json::from_str(json).map_err(|e| bad("--colour-play", e.to_string()))?,
+        None => ColourPlay::default(),
+    };
+    if let Some(v) = cli.colour_stretch {
+        p.stretch = v;
+    }
+    if let Some(v) = cli.colour_offset {
+        p.offset = v;
+    }
+    if cli.colour_wrap {
+        p.mirror = false;
+    }
+    if let Some(v) = cli.colour_cycle {
+        p.cycle = v;
+    }
+    if cli.colour_cycle_per_video {
+        p.cycle_per_video = true;
+    }
+    if let Some(v) = cli.colour_fade {
+        p.fade = v;
+    }
+    if let Some(keys) = &cli.colour_keys {
+        p.keys = keys
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(|k| {
+                let (at, name) = k.split_once('=').ok_or_else(|| bad("--colour-keys", format!("{k:?}: expected AT=PALETTE")))?;
+                let at: f64 = at.trim().parse().map_err(|_| bad("--colour-keys", format!("{at:?} is not a number")))?;
+                let scheme = ColorScheme::parse(name.trim())?;
+                Ok(Key { at, stops: scheme.stops(), inside: None })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+    }
+    let random_set = cli.random_colours.is_some() || cli.random_style.is_some() || cli.random_mode.is_some();
+    if random_set || p.random.is_some() {
+        let mut r = p.random.take().unwrap_or_default();
+        if let Some(seed) = cli.random_colours {
+            r.seed = seed;
+        }
+        if let Some(s) = &cli.random_style {
+            r.style = match s.as_str() {
+                "together" => RandomStyle::Together,
+                "any" => RandomStyle::Any,
+                "shuffle" => RandomStyle::Shuffle,
+                other => return Err(bad("--random-style", format!("{other:?}: expected together, any or shuffle"))),
+            };
+        }
+        if let Some(m) = &cli.random_mode {
+            r.mode = match m.as_str() {
+                "once" => RandomMode::Once,
+                "over-time" | "over_time" => RandomMode::OverTime,
+                "drift" => RandomMode::Drift,
+                other => return Err(bad("--random-mode", format!("{other:?}: expected once, over-time or drift"))),
+            };
+        }
+        if let Some(v) = cli.random_every {
+            r.every = v;
+        }
+        if let Some(v) = cli.random_drift {
+            r.drift = v;
+        }
+        if let Some(range) = &cli.random_range {
+            let (lo, hi) = range.split_once(',').ok_or_else(|| bad("--random-range", format!("{range:?}: expected LO,HI")))?;
+            let num = |s: &str| s.trim().parse::<f64>().map_err(|_| bad("--random-range", format!("{s:?} is not a number")));
+            r.range = [num(lo)?, num(hi)?];
+        }
+        if !cli.random_lock.is_empty() {
+            r.lock = cli.random_lock.clone();
+        }
+        p.random = Some(r);
+    }
+    p.check().map_err(|reason| bad("--colour-play", reason))?;
+    Ok(p)
 }
 
 /// Assemble and log the outcome: 0, 3 when ffmpeg failed, 1 for anything else.
@@ -147,7 +237,7 @@ pub fn values(cli: &Cli, cfg: &RunConfig, which: &str, shader_dir: Option<&Path>
         n => Some(n.parse::<u64>().map_err(|_| MbError::InvalidArg { flag: "--values", reason: format!("{n:?}: expected a frame number, mid, auto or last") })?),
     };
     let (w, h) = preview_size(&m.geometry, cli.values_size);
-    let shot = frame_at(&gpu, &m, &dir, k, w, h, &opt.palette, opt.inside, true, true)?;
+    let shot = frame_at(&gpu, &m, &dir, k, w, h, &opt.palette, opt.inside, true, true, opt.exact)?;
     let path = cfg.output.join("values").join(format!("v_{}_{w}x{h}.rmw", shot.k));
     write_values(&shot, &path)?;
     tracing::info!("values of frame {} ({w}x{h}, span {:.3e}): {}", shot.k, shot.span, path.display());
@@ -171,7 +261,7 @@ fn lively_frame(gpu: &GpuCtx, m: &rosie_mandlebrot_store::keyframes::Manifest, d
     let mut best = (f64::MIN, n / 2);
     for i in 0..9u64 {
         let k = n * (15 + i * 70 / 8) / 100;
-        let shot = frame_at(gpu, m, dir, Some(k), SIDE, SIDE, &opt.palette, opt.inside, true, false)?;
+        let shot = frame_at(gpu, m, dir, Some(k), SIDE, SIDE, &opt.palette, opt.inside, true, false, opt.exact)?;
         let score = liveliness(&shot.rgba.unwrap_or_default(), SIDE, SIDE);
         if score > best.0 {
             best = (score, shot.k);

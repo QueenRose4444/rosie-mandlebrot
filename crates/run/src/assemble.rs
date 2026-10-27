@@ -57,6 +57,11 @@ pub struct Options {
     /// `zoom.<container>` (true for `--assemble`; the run's own video is
     /// replaced, because a resumed run's video covers more).
     pub keep_existing: bool,
+    /// How the colours change from frame to frame (the default: not at all).
+    pub play: rosie_mandlebrot_core::colour_play::ColourPlay,
+    /// Colour exactly as a values file recolours (see
+    /// [`Assembler::with_exact_colour`]).
+    pub exact: bool,
 }
 
 /// How the space around a smaller picture is filled.
@@ -451,8 +456,12 @@ pub fn run(
     let lut = opt.palette.lut_1024();
     let inside = opt.inside.unwrap_or(lut[1023]);
     let total_rows = m.next_row();
-    let asm = Assembler::new(gpu, g.cols, &plan.groups, total_rows as u32, w, h, &lut, inside, false)?;
+    let asm = Assembler::new(gpu, g.cols, &plan.groups, total_rows as u32, w, h, &lut, inside, false)?.with_exact_colour(opt.exact);
     asm.set_tone(gpu, &location_tone(&m));
+    let stops = opt.palette.stops();
+    if !opt.play.is_plain() {
+        tracing::info!("colour play: {}", serde_json::to_string(&opt.play).unwrap_or_default());
+    }
     tracing::info!(
         "assembling {frames} frames at {w}x{h}, {} fps, zoom {z} per frame, from {total_rows} strip rows ({:.0} MB GPU window, {} octaves at full width{})",
         opt.fps,
@@ -525,6 +534,11 @@ pub fn run(
         }
         if !wanted {
             continue;
+        }
+        if !opt.play.is_plain() {
+            let base = rosie_mandlebrot_core::colour_play::Base { lut: &lut, stops: &stops, inside: opt.inside };
+            let (frame_lut, frame_inside) = opt.play.frame(base, k, frames, opt.fps);
+            asm.set_lut(gpu, &frame_lut, frame_inside);
         }
         let rgba = asm.frame(gpu, &f)?;
         let luma: f64 = rgba
@@ -660,6 +674,7 @@ pub fn frame_at(
     inside: Option<[u8; 3]>,
     want_rgba: bool,
     want_weights: bool,
+    exact: bool,
 ) -> anyhow::Result<Shot> {
     anyhow::ensure!(!m.chunks.is_empty(), "the strip has no rows yet");
     let g = &m.geometry;
@@ -671,7 +686,7 @@ pub fn frame_at(
     let half_diag = f64::from(w).hypot(f64::from(h)) * 0.5;
     let plan = Plan::new(g, half_diag, SHOT_BUDGET);
     let lut = palette.lut_1024();
-    let asm = Assembler::new(gpu, g.cols, &plan.groups, m.next_row() as u32, w, h, &lut, inside.unwrap_or(lut[1023]), want_weights)?;
+    let asm = Assembler::new(gpu, g.cols, &plan.groups, m.next_row() as u32, w, h, &lut, inside.unwrap_or(lut[1023]), want_weights)?.with_exact_colour(exact);
     asm.set_tone(gpu, &location_tone(m));
     let ln_p = (span / f64::from(h)).ln();
     let corner = (g.ln_r0 - ln_p - half_diag.ln()) / g.d();

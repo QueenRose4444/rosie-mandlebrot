@@ -146,6 +146,9 @@ pub struct RenderBody {
     /// `julia`, the centre and the end from the place).
     #[serde(default, skip_serializing)]
     pub as_julia: bool,
+    /// exact or float (see the settings); filled from the settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colouring: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -171,6 +174,11 @@ pub struct AssembleBody {
     pub bars: Option<BarsBody>,
     #[serde(default)]
     pub tone: Option<String>,
+    /// Colour play (see ui/play.js), as the page builds it.
+    #[serde(default)]
+    pub play: Option<serde_json::Value>,
+    #[serde(default)]
+    pub colouring: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -357,6 +365,26 @@ fn bars_args(bars: &Option<BarsBody>, w: u32, h: u32, format: &str) -> Result<Ve
     Ok(vec!["--bars".into(), b.style.clone(), "--bar-colour".into(), colour, "--picture".into(), format!("{}x{}", b.picture_w, b.picture_h)])
 }
 
+fn colouring_args(c: &Option<String>) -> Result<Vec<String>, String> {
+    match c.as_deref() {
+        None => Ok(Vec::new()),
+        Some(c @ ("exact" | "float")) => Ok(vec!["--colouring".into(), c.into()]),
+        Some(c) => Err(format!("colouring {c:?}: expected exact or float")),
+    }
+}
+
+/// `--colour-play=<json>`, after checking the spec makes sense.
+fn play_args(p: &Option<serde_json::Value>) -> Result<Vec<String>, String> {
+    let Some(v) = p else { return Ok(Vec::new()) };
+    let play: rosie_mandlebrot_core::colour_play::ColourPlay = serde_json::from_value(v.clone()).map_err(|e| format!("colour play: {e}"))?;
+    play.check().map_err(|e| format!("colour play: {e}"))?;
+    if play.is_plain() {
+        return Ok(Vec::new());
+    }
+    let json = serde_json::to_string(&play).map_err(|e| e.to_string())?;
+    Ok(vec![format!("--colour-play={json}")])
+}
+
 fn tone_args(t: &Option<String>) -> Result<Vec<String>, String> {
     match t.as_deref() {
         None => Ok(Vec::new()),
@@ -424,6 +452,7 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
         a.extend(["--chunk-size".into(), c.clone()]);
     }
     a.extend(tone_args(&b.tone)?);
+    a.extend(colouring_args(&b.colouring)?);
     if let Some(cap) = b.iter_cap {
         if !(1_000..=PLACE_MAX_ITER).contains(&cap) {
             return Err(format!("iter_cap {cap}: must be 1,000 to {PLACE_MAX_ITER}"));
@@ -464,6 +493,8 @@ pub fn assemble_args(b: &AssembleBody, run_dir: &Path, strip_size: (u32, u32)) -
     a.extend(["--video-container".into(), format.into()]);
     a.extend(bars_args(&b.bars, w, h, format)?);
     a.extend(tone_args(&b.tone)?);
+    a.extend(colouring_args(&b.colouring)?);
+    a.extend(play_args(&b.play)?);
     Ok(a)
 }
 
@@ -566,6 +597,7 @@ mod tests {
             iter_cap: None,
             julia: None,
             as_julia: false,
+            colouring: None,
         }
     }
 

@@ -170,6 +170,76 @@ pub struct Cli {
     #[arg(long)]
     pub inside_colour: Option<String>,
 
+    /// How video frames are coloured: exact (the default: from the same
+    /// weights the web page recolours with, so its previews match to the
+    /// pixel) or float (0.4's blend, one level off on about 0.05% of pixels).
+    #[arg(long, default_value = "exact")]
+    pub colouring: String,
+
+    /// Colour play as JSON (what the web UI sends); the options below change it.
+    #[arg(long)]
+    pub colour_play: Option<String>,
+
+    /// Colour play: how many times the palette repeats over the values [default: 1].
+    #[arg(long)]
+    pub colour_stretch: Option<f64>,
+
+    /// Colour play: where in the palette the values start, 0 to 1 [default: 0].
+    #[arg(long)]
+    pub colour_offset: Option<f64>,
+
+    /// Colour play: repeats start again at the beginning instead of going there and back.
+    #[arg(long)]
+    pub colour_wrap: bool,
+
+    /// Colour play: cycle the palette at this many palette lengths per second
+    /// (negative: backwards).
+    #[arg(long, allow_hyphen_values = true)]
+    pub colour_cycle: Option<f64>,
+
+    /// Colour play: --colour-cycle counts per video, not per second.
+    #[arg(long)]
+    pub colour_cycle_per_video: bool,
+
+    /// Colour play: palettes along the zoom, "AT=PALETTE,…" with AT from 0 (first
+    /// frame) to 1 (last) and PALETTE a built-in name, e.g. "0=hot,0.5=neon,1=aurora".
+    #[arg(long)]
+    pub colour_keys: Option<String>,
+
+    /// Colour play: seconds a change between palettes takes (0 cuts) [default: 1].
+    #[arg(long)]
+    pub colour_fade: Option<f64>,
+
+    /// Colour play: random colours from this seed.
+    #[arg(long)]
+    pub random_colours: Option<u32>,
+
+    /// Random colours: together (hues that go together), any, or shuffle (a
+    /// built-in's colours shuffled) [default: together].
+    #[arg(long)]
+    pub random_style: Option<String>,
+
+    /// Random colours: once, over-time (a new roll every --random-every
+    /// seconds) or drift (each stop drifts to and fro) [default: once].
+    #[arg(long)]
+    pub random_mode: Option<String>,
+
+    /// Random colours over time: seconds between rolls [default: 4].
+    #[arg(long)]
+    pub random_every: Option<f64>,
+
+    /// Random colours: only stops with positions in "LO,HI" change.
+    #[arg(long)]
+    pub random_range: Option<String>,
+
+    /// Random colours: these stops (0 = the first) never change, e.g. "0,3".
+    #[arg(long, value_delimiter = ',')]
+    pub random_lock: Vec<usize>,
+
+    /// Random colours drifting: to-and-fro trips per second [default: 0.1].
+    #[arg(long)]
+    pub random_drift: Option<f64>,
+
     /// Keep the picture --picture WxH and fill the rest of the frame with bars:
     /// blur (a blurred copy of the picture), solid (--bar-colour) or
     /// transparent (needs --video-container webm or mov).

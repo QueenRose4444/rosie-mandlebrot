@@ -6,6 +6,8 @@ import { lutFromStops, recolour, sampleLut, rgbToHex, hexToRgb } from '../palett
 import { parseRmw } from '../rmw.js';
 import { span as fmtSpan, when, size } from '../format.js';
 import { ZOOM_FACTORS, speedLabel, nearestStep, zoomPreview } from '../speed.js';
+import { framePalette, isPlain, setBuiltins } from '../play.js';
+import { playPanel } from '../playpanel.js';
 
 const LONG_SIDE = 640;
 const USABLE = new Set(['done', 'stopped', 'incomplete']);
@@ -92,6 +94,41 @@ export function mount(root, params, { go }) {
   const actionNote = h('p', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
   const undoBtn = h('button', { type: 'button', class: 'btn quiet', disabled: true, title: 'Undo (Ctrl+Z)', onclick: () => undo() }, 'Undo');
   const redoBtn = h('button', { type: 'button', class: 'btn quiet', disabled: true, title: 'Redo (Ctrl+Y)', onclick: () => redo() }, 'Redo');
+  // Colour play: the panel builds the spec; the preview and the video follow it.
+  const play = playPanel({
+    stops: () => stopList(),
+    palettes: () => startChoices().map((c) => ({ name: c.name, stops: c.stops })),
+    onChange: () => { renderPlayLine(); schedule(); },
+    onApply: (list) => { setStops(list.map((st) => [st.pos, rgbToHex(st.rgb)])); actionNote.textContent = 'The rolled colours are now the stops.'; },
+  });
+  // Playing the colours: the preview's picture stays, its colours move through
+  // the video's time.
+  let playing = false;
+  let playStart = 0;
+  let playK = null; // the video frame whose colours are shown while playing
+  const playBtn = h('button', { type: 'button', class: 'btn', 'aria-pressed': 'false', onclick: () => togglePlay() }, '▶ Play the colours');
+  const playLine = h('div', { class: 'row', style: { gap: '10px', alignItems: 'center' } });
+  function renderPlayLine() {
+    clear(playLine);
+    if (isPlain(play.spec())) { if (playing) togglePlay(); return; }
+    playLine.append(playBtn, h('span', { class: 'hint' }, 'Shows the colours changing over the video, on this picture.'));
+  }
+  function togglePlay() {
+    playing = !playing;
+    playBtn.textContent = playing ? '❚❚ Stop' : '▶ Play the colours';
+    playBtn.setAttribute('aria-pressed', String(playing));
+    playStart = performance.now();
+    if (!playing) { playK = null; schedule(); return; }
+    const tick = () => {
+      if (!playing || !alive) return;
+      const { frames, fps } = videoTiming();
+      playK = Math.floor(((performance.now() - playStart) / 1000) * fps) % Math.max(frames, 1);
+      draw();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
   const editor = h('section', { class: 'col-main' },
     h('fieldset', { class: 'box' }, h('legend', null, 'Start from'), swatches),
     h('fieldset', { class: 'box' }, h('legend', null, 'Colour stops'),
@@ -103,6 +140,7 @@ export function mount(root, params, { go }) {
         h('span', null, 'Click the bar to add a stop; drag a stop, or focus it and use the arrow keys, to move it. Delete removes the focused stop.'),
         h('label', { class: 'check' }, 'Inside the set', insideInput),
         h('span', { class: 'row', style: { gap: '8px' } }, undoBtn, redoBtn))),
+    play.el,
     speedBox,
     h('div', { class: 'row', style: { gap: '12px' } }, makeBtn, saveBtn,
       h('span', { class: 'hint' }, 'No rendering, only assembling and encoding: much quicker than the render. The old video is kept.')),
@@ -111,7 +149,7 @@ export function mount(root, params, { go }) {
     h('section', { class: 'col-side follow', style: { flex: '1 1 420px', gap: '12px' } },
       title,
       h('label', { class: 'field' }, 'Run', runSelect),
-      empty, canvas, caption, framePicker,
+      empty, canvas, caption, framePicker, playLine,
       h('p', { class: 'hint' }, 'The preview changes as you edit: it is coloured in the browser from the finished render, so nothing is rendered again.')),
     editor));
 
@@ -123,10 +161,29 @@ export function mount(root, params, { go }) {
     if (!raf) raf = requestAnimationFrame(draw);
   }
 
+  // The new video's length in frames and its fps, and which of its frames
+  // shows the preview's frame: the run's own when the speed is unchanged,
+  // else worked out from the zoom's depth.
+  function videoTiming() {
+    const fps = vidFps;
+    const z = ZOOM_FACTORS[speedStep - 1];
+    if (!run) return { frames: 1, fps, k: 0 };
+    const k0 = values ? values.k : 0;
+    if (z === nearestZoom(run) || !(run.start_span > 0 && run.end_span > 0)) return { frames: Math.max(run.frames || 1, 1), fps, k: k0 };
+    const zr = run.zoom_factor ?? z;
+    const frames = Math.floor(Math.log(run.end_span / run.start_span) / Math.log(z)) + 1;
+    return { frames, fps, k: Math.min(frames - 1, Math.round(k0 * Math.log(zr) / Math.log(z))) };
+  }
+
+  // The base palette, as the video job sends it (positions rounded the same).
+  function playBase() {
+    return { lut, stops: stopList().map(([p, c]) => ({ pos: p, rgb: hexToRgb(c) })), inside: hexToRgb(inside) };
+  }
+
   function draw() {
     raf = 0;
     if (!alive || stops.length === 0) return;
-    lut = lutFromStops(stops.map((s) => [s.p, s.c]));
+    lut = lutFromStops(stopList());
     // the ramp
     const rctx = rampCanvas.getContext('2d');
     const row = rctx.createImageData(1024, 1);
@@ -141,7 +198,14 @@ export function mount(root, params, { go }) {
         canvas.height = values.height;
         imageData = canvas.getContext('2d').createImageData(values.width, values.height);
       }
-      recolour(values, lut, inside, imageData.data);
+      const spec = play.spec();
+      if (isPlain(spec)) {
+        recolour(values, lut, inside, imageData.data);
+      } else {
+        const t = videoTiming();
+        const p = framePalette(spec, playBase(), playK ?? t.k, t.frames, t.fps);
+        recolour(values, p.lut, p.inside, imageData.data);
+      }
       canvas.getContext('2d').putImageData(imageData, 0, 0);
     }
   }
@@ -261,6 +325,7 @@ export function mount(root, params, { go }) {
   }
 
   function renderSwatches() {
+    play.refresh();
     clear(swatches);
     for (const ch of startChoices()) {
       swatches.append(h('button', { type: 'button', class: 'swatch', 'aria-pressed': 'false', dataset: { key: ch.key },
@@ -584,6 +649,7 @@ export function mount(root, params, { go }) {
     try {
       await post('/api/jobs', {
         kind: 'assemble', run_id: run.id, palette: null, stops: stopList(), inside,
+        play: isPlain(play.spec()) ? null : play.spec(),
         fps: vidFps, zoom_factor: ZOOM_FACTORS[speedStep - 1] === nearestZoom(run) ? null : ZOOM_FACTORS[speedStep - 1], width: null, height: null,
         format: settings.format || 'mp4', bars: settings.bars ?? null,
       });
@@ -628,6 +694,7 @@ export function mount(root, params, { go }) {
       if (!alive) return;
       runs = (Array.isArray(list) ? list : []).sort((a, b) => (b.created || 0) - (a.created || 0));
       builtins = Array.isArray(pals) ? pals : [];
+      setBuiltins(builtins.map((p) => ({ lut: Uint8Array.from(p.lut || []) })));
       favs = f;
       renderSwatches();
       const usable = runs.filter((r) => USABLE.has(r.status) && (r.frames || 0) > 0);
@@ -649,6 +716,7 @@ export function mount(root, params, { go }) {
   load();
   return () => {
     alive = false;
+    playing = false;
     if (raf) cancelAnimationFrame(raf);
     if (waitOff) waitOff();
     clearTimeout(commitTimer);

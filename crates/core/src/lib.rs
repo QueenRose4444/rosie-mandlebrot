@@ -16,6 +16,7 @@
 // the size and wrong about the trade here.
 #![allow(clippy::result_large_err)]
 
+pub mod colour_play;
 pub mod config;
 pub mod cpu_governor;
 pub mod encode;

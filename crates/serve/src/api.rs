@@ -279,7 +279,10 @@ async fn palettes() -> Json<serde_json::Value> {
         .map(|s| {
             let stops: Vec<(f64, String)> = s.stops().iter().map(|st| (st.pos, to_hex(st.rgb))).collect();
             let lut = s.lut_1024();
-            serde_json::json!({ "name": s.name(), "stops": stops, "inside": to_hex(lut[1023]) })
+            // The exact 1024 entries too: a formula palette (hot, grayscale,
+            // electric, ember) is up to one level off its own stops.
+            let entries: Vec<u8> = lut.iter().flatten().copied().collect();
+            serde_json::json!({ "name": s.name(), "stops": stops, "inside": to_hex(lut[1023]), "lut": entries })
         })
         .collect();
     Json(serde_json::Value::Array(list))
@@ -367,6 +370,7 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
             };
             b.chunk_size = b.chunk_size.or(Some(settings.chunk_size.clone()));
             b.tone = b.tone.or(Some(settings.tone.clone()));
+            b.colouring = b.colouring.or(Some(settings.colouring.clone()));
             b.format = b.format.or(Some(settings.video_format.clone()));
             // Checked before the run folder exists.
             jobs::render_args(&b, std::path::Path::new("x"), false, 0).map_err(bad)?;
@@ -380,6 +384,7 @@ async fn new_job(State(c): State<Ctx>, Json(body): Json<JobBody>) -> ApiResult<J
         JobBody::Assemble(mut b) => {
             let settings: Settings = store::load(&app.data.join("settings.json"));
             b.tone = b.tone.or(Some(settings.tone.clone()));
+            b.colouring = b.colouring.or(Some(settings.colouring.clone()));
             b.format = b.format.or(Some(settings.video_format.clone()));
             let meta = meta_of(app, &b.run_id)?;
             let size = (meta.settings.width, meta.settings.height);

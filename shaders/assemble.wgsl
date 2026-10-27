@@ -96,6 +96,11 @@ fn lut_rgb(t: f32) -> vec3<f32> {
     return vec3<f32>(f32(p & 255u), f32((p >> 8u) & 255u), f32((p >> 16u) & 255u));
 }
 
+fn rgb_u(i: u32) -> vec3<u32> {
+    let p = lut[min(i, INSIDE)];
+    return vec3<u32>(p & 255u, (p >> 8u) & 255u, (p >> 16u) & 255u);
+}
+
 fn rgb_at(i: u32) -> vec3<f32> {
     let p = lut[i];
     return vec3<f32>(f32(p & 255u), f32((p >> 8u) & 255u), f32((p >> 16u) & 255u));
@@ -215,9 +220,14 @@ fn lut_index(t: f32) -> u32 {
     return min(u32(t * 1023.0), 1023u);
 }
 
-@compute @workgroup_size(8, 8, 1)
-fn weights_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= U.out_w || gid.y >= U.out_h) { return; }
+// A pixel's palette entries and their weights, as weights_main records them.
+struct Slots {
+    idx  : array<u32, 16>,
+    q    : array<i32, 16>,
+    used : u32,
+}
+
+fn pixel_slots(gid: vec3<u32>) -> Slots {
     let n = f32(U.sub);
     let c = pixel_centre(gid.x, gid.y);
     var idx : array<u32, 16>;
@@ -286,12 +296,43 @@ fn weights_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (wt[j] > wt[big]) { big = j; }
     }
     q[big] = q[big] + (total - sum);
+    var out : Slots;
+    out.idx = idx;
+    out.q = q;
+    out.used = used;
+    return out;
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn weights_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= U.out_w || gid.y >= U.out_h) { return; }
+    let sl = pixel_slots(gid);
     let o = (gid.y * U.out_w + gid.x) * WEIGHT_SLOTS;
     for (var j = 0u; j < WEIGHT_SLOTS; j = j + 1u) {
-        if (j < used && q[j] > 0) {
-            out_wt[o + j] = (idx[j] << 16u) | u32(q[j]);
+        if (j < sl.used && sl.q[j] > 0) {
+            out_wt[o + j] = (sl.idx[j] << 16u) | u32(sl.q[j]);
         } else {
             out_wt[o + j] = 0xffffffffu;
         }
     }
 }
+
+// cs_main's frame coloured from exactly the entries and weights weights_main
+// records, in integers: colour = floor(sum(weight * rgb) / total + 0.5), the
+// rule a values file is recoloured by. So a page that recolours a values file
+// shows this frame to the pixel, in any palette.
+@compute @workgroup_size(8, 8, 1)
+fn exact_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= U.out_w || gid.y >= U.out_h) { return; }
+    let sl = pixel_slots(gid);
+    var acc = vec3<u32>(0u);
+    for (var j = 0u; j < sl.used; j = j + 1u) {
+        if (sl.q[j] > 0) {
+            acc = acc + u32(sl.q[j]) * rgb_u(sl.idx[j]);
+        }
+    }
+    let total = 8192u * U.sub * U.sub;
+    let rgb = (acc + vec3<u32>(total / 2u)) / total;
+    out_px[gid.y * U.out_w + gid.x] = rgb.x | (rgb.y << 8u) | (rgb.z << 16u) | (255u << 24u);
+}
+

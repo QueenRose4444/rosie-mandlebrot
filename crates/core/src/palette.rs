@@ -208,6 +208,14 @@ pub enum Palette {
 }
 
 impl Palette {
+    /// The palette as stops (a built-in formula palette's own corners).
+    pub fn stops(&self) -> Vec<Stop> {
+        match self {
+            Palette::Builtin(s) => s.stops(),
+            Palette::Stops(stops) => stops.clone(),
+        }
+    }
+
     /// 1024 entries, the form the renderer and the assembler use.
     pub fn lut_1024(&self) -> [[u8; 3]; 1024] {
         match self {

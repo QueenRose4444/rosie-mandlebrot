@@ -15,6 +15,7 @@ rosie_mandlebrot --preset seahorse_deep --probe-span 1e-25 --res 1080p   # one f
 rosie_mandlebrot --run-dir runs/deep --assemble --palette electric  # remake the video, new colours
 rosie_mandlebrot --preset seahorse --res 1080p --per-frame          # every frame as a PNG (the 0.1 way)
 rosie_mandlebrot --preset seahorse_spiral --julia preset --res 1080p --zoom-end 1e-30   # its Julia set
+rosie_mandlebrot --run-dir runs/deep --assemble --colour-cycle 0.3 --random-colours 7     # colour play
 rosie_mandlebrot serve --open                                       # the web UI, in your browser
 ```
 
@@ -150,6 +151,30 @@ Otherwise two featureless checks in a row end it.
 | `--tone` | `location` | `location`: every point keeps its colour from frame to frame; `per-frame`: each frame stretches its own range across the palette, as 0.1 did (it pumps brighter and darker during a zoom; `--tone-smoothing` eases it) |
 | `--per-frame` | | render and save every frame as a PNG, then stitch them |
 | `--encode-only --run ID` | | `--per-frame`: make the video for an existing run |
+
+### Colour play
+
+All of these change only the colours, frame by frame, when the video is assembled (with a render or
+with `--assemble`); nothing is rendered again. The app's Colours page has the same choices under
+"Play with the colours", with a preview that matches the video to the pixel.
+
+| option | default | |
+|---|---|---|
+| `--colour-stretch X` | 1 | how many times the palette repeats over the values (below 1 spreads it) |
+| `--colour-offset X` | 0 | where in the palette the values start, 0–1 |
+| `--colour-wrap` | | repeats start again at the beginning instead of going there and back (which has no seam) |
+| `--colour-cycle X` | | the palette slides along X palette lengths per second (negative: backwards) |
+| `--colour-cycle-per-video` | | count `--colour-cycle` over the whole video instead of per second |
+| `--colour-keys "0=hot,0.5=neon,1=aurora"` | | palettes at points in the video (0 = first frame, 1 = last) |
+| `--colour-fade S` | 1 | seconds a change between key palettes takes, ending at the key; 0 cuts |
+| `--random-colours SEED` | | random colours; the same seed always gives the same colours |
+| `--random-style` | `together` | `together` (hues that go together, dark to bright), `any`, `shuffle` (a built-in palette's colours, shuffled) |
+| `--random-mode` | `once` | `once` (one roll), `over-time` (a new roll every `--random-every` seconds, faded like keys), `drift` (each stop drifts to and fro, `--random-drift` trips a second) |
+| `--random-every S`, `--random-drift X` | 4, 0.1 | |
+| `--random-range LO,HI` | `0,1` | only stops with positions in this range change |
+| `--random-lock 0,3` | | these stops (0 = the first) keep their colour |
+| `--colour-play JSON` | | all of the above as JSON (what the app sends); the single options change it |
+| `--colouring` | `exact` | `exact`: each pixel blends its colours with the same rounded weights the app's previews use, so they match to the pixel; `float`: 0.4's blend (one level off on about 1 pixel in 2,000) |
 
 The video needs `ffmpeg` on `PATH`. Each output pixel of a keyframe video averages 2×2 samples of
 the strip, so it is antialiased; making it takes up to 512 MB of GPU memory (120 MB at 1080×1080)

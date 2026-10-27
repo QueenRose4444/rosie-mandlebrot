@@ -86,6 +86,10 @@ export function mount(root) {
         ['location', 'By location (recommended: a point keeps its colour)'],
         ['per-frame', 'Per frame (the older look: each frame stretches its own colours, so brightness pumps)'],
       ], 'Used for new videos; recolouring a run keeps whatever you choose then.'),
+      choice('Colour blending', 'colouring', [
+        ['exact', 'Exact (recommended: videos match the Colours page\'s preview to the pixel)'],
+        ['float', 'As in 0.4 (one colour level off on about 1 pixel in 2,000)'],
+      ], 'How each video pixel blends the colours of the points it covers. Exact costs about half a millisecond of GPU time a frame at 1080p.'),
       choice('Video format', 'video_format', [
         ['mp4', 'MP4 (recommended: plays in the browser)'],
         ['mkv', 'MKV'],
