@@ -656,8 +656,11 @@ struct EstimateQuery {
     videos: Option<String>,
 }
 
+/// A video's frame and the picture inside it (the same without bars).
+type VideoSize = ((u32, u32), (u32, u32));
+
 /// "1920x1080/1080x1080,1080x1080" into (frame, picture) pairs.
-fn parse_videos(s: &str) -> Option<Vec<((u32, u32), (u32, u32))>> {
+fn parse_videos(s: &str) -> Option<Vec<VideoSize>> {
     let size = |t: &str| t.split_once('x').and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
     let list: Option<Vec<_>> = s.split(',').map(|v| match v.split_once('/') {
         Some((f, p)) => Some((size(f)?, size(p)?)),

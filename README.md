@@ -51,7 +51,8 @@ and [CHANGELOG.md](https://github.com/QueenRose4444/rosie-mandlebrot/blob/main/C
    choose **More info → Run anyway**.
 3. In **Library**, press **Make pictures** once to draw a card for every place (a few seconds), then
    **Render…** on one, for example `seahorse`. In **New render** pick a shape (square, wide or phone) and a
-   resolution (more under **Advanced**), and press **Start**.
+   resolution (more under **Advanced**), add more videos from the same render if you like
+   (**+ Add another video**), and press **Start**.
    The **What it will take** box estimates the time, disk and memory before you start.
 4. **Runs** shows the render live, with a snapshot each time it gets deeper (drag the slider or
    press **Play** to look back), then the finished video: **Watch video**, **Download**, or

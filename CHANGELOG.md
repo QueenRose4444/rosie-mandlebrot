@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.2 — 2026-10-28
+
+- **Several videos from one render.** On New render, **+ Add another video** adds more videos to
+  make from the same render, each with its own shape, resolution and fill or bars (for example 1:1,
+  16:9 filled and 16:9 with blurred bars). The zoom is rendered once, big enough for all of them,
+  and each extra video is made from it when the render is done; the estimate counts them all.
+- **Your own resolutions and shapes.** Under **Advanced**, type a resolution in pixels (the short
+  side) or a shape such as 3:4 and see the video's size straight away; save either to have it
+  offered beside the built-in ones (also in **Settings → Video sizes**). The shape row has no
+  Custom button any more. Sizes saved in 0.5.1 as width × height are not carried over.
+- **The mouse wheel moves sliders** (zoom speed, memory, frames and the rest): one notch is about
+  1% of the slider, with Shift one step; at either end the page scrolls as usual.
+- Pressing Enter in a box on New render applies the value instead of starting the render.
+
 ## 0.5.1 — 2026-10-27
 
 - **Zoom speed, finely.** The speed is set in "times closer each second" with a fine slider and a box
