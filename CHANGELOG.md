@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Zoom speed, finely.** The speed is set in "times closer each second" with a fine slider and a box
+  to type an exact value (1.05× to 50×), on New render and on the Colours page; it no longer changes
+  when the fps does. New renders start at **1.8×** (was 3.4×), and **Settings → Zoom speed for new
+  renders** changes that. New render's time and disk estimate now counts the chosen speed.
+
 ## 0.5.0 — 2026-10-27
 
 - **Julia sets.** Any place as a Julia set: **As a Julia set…** on a Library card, a **Julia set**

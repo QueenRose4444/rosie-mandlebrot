@@ -4,7 +4,7 @@ import { h, clear, picture, debounce, keepFocus } from '../dom.js';
 import { bytes, duration, span as fmtSpan, kindName } from '../format.js';
 import { lutFromStops, recolour, cssGradient } from '../palette.js';
 import { parseRmw } from '../rmw.js';
-import { ZOOM_FACTORS, speedLabel, zoomPreview } from '../speed.js';
+import { DEFAULT_RATE, speedControl, zoomFactorFor, zoomPreview } from '../speed.js';
 import { showCode } from '../share.js';
 
 const SIZES = [
@@ -35,7 +35,7 @@ export function mount(root, params, { go }) {
     fit: 'fill', barStyle: 'blur', barColour: '#000000',
     depthMode: 'end', depthValue: '', seconds: 20,
     colour: '', // 'b:<name>' or 'm:<index>'
-    speed: 4, fps: 60, memory: MEMORY_STEPS.length - 1,
+    rate: DEFAULT_RATE, fps: 60, memory: MEMORY_STEPS.length - 1, // rate: times closer each second
     julia: params.get('julia') === '1', // the place's Julia set instead
   };
   let juliaAsked = false; // a Julia picture job was started from here
@@ -307,23 +307,15 @@ export function mount(root, params, { go }) {
       builtins.map((p) => choice(`b:${p.name}`, p.name, p.stops, preset && p.name === preset.palette)),
       mine.map((p, i) => choice(`m:${i}`, `${p.name || `Palette ${i + 1}`} (mine)`, p.stops, false)));
 
-    const speedText = h('span', { class: 'value' });
-    const fpsSel = h('select', { class: 'input', 'data-k': 'fps', onchange: (e) => { f.fps = Number(e.target.value); updateSpeed(); } },
+    const fpsSel = h('select', { class: 'input', 'data-k': 'fps', onchange: (e) => { f.fps = Number(e.target.value); refreshEstimate(); } },
       [60, 30, 24].map((v) => h('option', { value: String(v), selected: f.fps === v }, String(v))));
-    const speed = h('input', { type: 'range', min: '1', max: String(ZOOM_FACTORS.length), step: '1', value: String(f.speed),
-      'aria-label': 'Zoom speed', oninput: (e) => { f.speed = Number(e.target.value); updateSpeed(); } });
-    function updateSpeed() {
-      speedText.textContent = speedLabel(ZOOM_FACTORS[f.speed - 1], f.fps);
-      speed.setAttribute('aria-valuetext', speedText.textContent);
-    }
-    updateSpeed();
+    const speed = speedControl({ rate: f.rate, onChange: (r) => { f.rate = r; refreshEstimate(); } });
     // The place's picture zooming at the chosen speed (follows the slider live).
-    const preview = zoomPreview(() => heroEl, () => Math.pow(1 / ZOOM_FACTORS[f.speed - 1], f.fps),
-      'The place zooming in at the chosen speed');
+    const preview = zoomPreview(() => heroEl, () => f.rate, 'The place zooming in at the chosen speed');
 
     zoomBox.append(juliaBox, depthField,
       h('div', { class: 'field full' }, h('span', null, 'Colours'), colourSel),
-      h('label', { class: 'field' }, h('span', null, 'Zoom speed · ', speedText), speed),
+      speed.el,
       h('label', { class: 'field' }, 'Frames per second', fpsSel),
       h('div', { class: 'field full speed-row' }, preview.el,
         h('p', { class: 'hint' }, 'The picture zooms in at this speed, over and over: about how the video will move. Faster renders no slower; it only makes a shorter video.')),
@@ -377,6 +369,7 @@ export function mount(root, params, { go }) {
       return;
     }
     if (ze !== null) q.set('zoom_end', String(ze));
+    q.set('zoom_factor', String(zoomFactorFor(f.rate, f.fps))); // the speed sets how many frames the video has
     const mb = MEMORY_STEPS[f.memory];
     if (mb !== null) q.set('memory_limit_mb', String(mb));
     const seq = ++estimateSeq;
@@ -434,7 +427,7 @@ export function mount(root, params, { go }) {
     const body = {
       kind: 'render', preset: preset.name, center: null, width: w, height: hh,
       zoom_end: ze, max_frames: f.depthMode === 'seconds' ? Math.round(f.seconds * f.fps) : null,
-      zoom_factor: ZOOM_FACTORS[f.speed - 1], fps: f.fps, palette, stops, inside,
+      zoom_factor: zoomFactorFor(f.rate, f.fps), fps: f.fps, palette, stops, inside,
       // Without transparent bars the Settings' video format applies.
       format: transparent ? 'webm' : null, memory_limit_mb: MEMORY_STEPS[f.memory],
       bars: barsOn() ? { style: f.barStyle, colour: f.barStyle === 'solid' ? f.barColour : '#000000', picture_w: pd.w, picture_h: pd.h } : null,
@@ -467,9 +460,11 @@ export function mount(root, params, { go }) {
   async function load() {
     renderAll();
     try {
-      const [list, pals, favs] = await Promise.all([
-        get('/api/presets'), loadPalettes().catch(() => []), get('/api/favourites').catch(() => null)]);
+      const [list, pals, favs, settings] = await Promise.all([
+        get('/api/presets'), loadPalettes().catch(() => []), get('/api/favourites').catch(() => null),
+        get('/api/settings').catch(() => null)]);
       if (!alive) return;
+      if (Number(settings?.zoom_speed) > 0) f.rate = Number(settings.zoom_speed);
       presets = Array.isArray(list) ? list : [];
       builtins = Array.isArray(pals) ? pals : [];
       mine = Array.isArray(favs?.palettes) ? favs.palettes.filter((p) => Array.isArray(p?.stops) && p.stops.length) : [];

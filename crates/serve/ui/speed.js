@@ -2,23 +2,55 @@
 // into a picture at that speed, so a speed can be felt before a video is made.
 import { h } from './dom.js';
 
-// Slider positions 1..10 -> zoom factor per frame (smaller = faster).
-export const ZOOM_FACTORS = [0.995, 0.99, 0.985, 0.98, 0.975, 0.97, 0.965, 0.96, 0.95, 0.94];
+// Speed is chosen as "times closer each second", so it stays put when the fps
+// changes; a video job takes it as the zoom factor per frame.
+export const DEFAULT_RATE = 1.8;
+export const RATE_MIN = 1.05;
+export const RATE_MAX = 50;
+const SLIDER_STEPS = 1000; // the slider runs on a log scale between the two
 
 export function closerPerSecond(zoomFactor, fps) {
   return Math.pow(1 / zoomFactor, fps);
 }
 
-export function speedLabel(zoomFactor, fps) {
-  const x = closerPerSecond(zoomFactor, fps);
-  return `${x < 10 ? x.toFixed(1) : Math.round(x)}× closer each second`;
+export function zoomFactorFor(rate, fps) {
+  return Math.min(0.9999, Math.max(0.5, Math.pow(rate, -1 / fps)));
 }
 
-// The slider step nearest a zoom factor (for a run made at any speed).
-export function nearestStep(zoomFactor) {
-  let best = 0;
-  ZOOM_FACTORS.forEach((z, i) => { if (Math.abs(z - zoomFactor) < Math.abs(ZOOM_FACTORS[best] - zoomFactor)) best = i; });
-  return best + 1;
+export function speedLabel(rate) {
+  return `${rate < 10 ? rate.toFixed(2) : rate.toFixed(1)}× closer each second`;
+}
+
+const clampRate = (r) => Math.min(RATE_MAX, Math.max(RATE_MIN, r));
+const toSlider = (r) => Math.round(Math.log(r / RATE_MIN) / Math.log(RATE_MAX / RATE_MIN) * SLIDER_STEPS);
+const fromSlider = (v) => RATE_MIN * Math.pow(RATE_MAX / RATE_MIN, v / SLIDER_STEPS);
+
+// A zoom-speed field: a fine slider plus a box to type an exact speed.
+// Returns { el, rate(), set(rate) }; onChange(rate) after each change.
+// set() keeps the rate exactly as given (a run's own speed), only the shown
+// numbers are rounded.
+export function speedControl({ rate = DEFAULT_RATE, label = 'Zoom speed', onChange = () => {} } = {}) {
+  let r = clampRate(rate);
+  const text = h('span', { class: 'value' });
+  const slider = h('input', { type: 'range', min: '0', max: String(SLIDER_STEPS), step: '1', 'aria-label': label, 'data-k': 'speed',
+    oninput: (e) => { r = Math.round(fromSlider(Number(e.target.value)) * 100) / 100; show(false); onChange(r); } });
+  const box = h('input', { class: 'input mono speed-box', type: 'number', min: String(RATE_MIN), max: String(RATE_MAX), step: '0.05',
+    inputmode: 'decimal', 'aria-label': `${label}, times closer each second`, 'data-k': 'speed-value',
+    onchange: (e) => {
+      const v = Number(e.target.value);
+      if (Number.isFinite(v) && v > 0) { r = clampRate(v); onChange(r); }
+      show(true);
+    } });
+  function show(updateSlider) {
+    text.textContent = speedLabel(r);
+    slider.setAttribute('aria-valuetext', text.textContent);
+    if (updateSlider) slider.value = String(toSlider(r));
+    if (document.activeElement !== box) box.value = String(Math.round(r * 100) / 100);
+  }
+  show(true);
+  const el = h('div', { class: 'field' }, h('span', null, `${label} · `, text),
+    h('div', { class: 'speed-input' }, slider, box, h('span', { class: 'muted small' }, '×/s')));
+  return { el, rate: () => r, set: (v) => { r = clampRate(v); show(true); } };
 }
 
 // A small canvas that zooms into the middle of `source()` (an image or a

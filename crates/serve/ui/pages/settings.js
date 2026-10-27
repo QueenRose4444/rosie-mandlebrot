@@ -1,6 +1,7 @@
 // Settings: bound to GET/PUT /api/settings. Each change is saved straight away.
 import { get, put, latestState, on } from '../api.js';
-import { h, clear } from '../dom.js';
+import { h, clear, debounce } from '../dom.js';
+import { speedControl, speedLabel } from '../speed.js';
 
 export function mount(root) {
   root.classList.add('narrow');
@@ -68,7 +69,11 @@ export function mount(root) {
         options.map(([value, text]) => h('option', { value, selected: String(s[key] ?? '') === value }, text)));
       return h('label', { class: 'field' }, label, sel, hint ? h('span', { class: 'hint' }, hint) : null);
     };
+    const saveSpeed = debounce((r) => { s.zoom_speed = r; save(`new renders start at ${speedLabel(r)}`); }, 400);
+    const speed = speedControl({ rate: Number(s.zoom_speed) > 0 ? Number(s.zoom_speed) : 1.8, label: 'Zoom speed for new renders', onChange: saveSpeed });
     const rendering = h('fieldset', { class: 'box' }, h('legend', null, 'Rendering'),
+      h('div', { class: 'stack', style: { gap: '6px' } }, speed.el,
+        h('span', { class: 'hint' }, 'Where New render\'s speed starts (recommended 1.8×). Each render can still pick its own, and a video\'s speed can be changed later without rendering again.')),
       choice('How much is rendered at a time', 'chunk_size', [
         ['octave', 'Each time the view halves in width (recommended: fastest)'],
         ['half', 'Half of that (exactly what earlier versions made)'],

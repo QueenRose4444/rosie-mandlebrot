@@ -77,7 +77,13 @@ pub struct Settings {
     pub community_url: String,
     /// Video quality (CRF) for new videos; None = the codec's default (18).
     pub video_crf: Option<u32>,
+    /// New render's starting zoom speed, times closer each second.
+    pub zoom_speed: f64,
 }
+
+/// New render's zoom speed unless the settings say otherwise: Rose's pick
+/// (1.4× felt too slow, 0.4's 3.4× too fast).
+pub const ZOOM_SPEED: f64 = 1.8;
 
 /// The finder's picture size unless the settings say otherwise. Picturing a
 /// place takes about 0.9 s at 160 pixels and 1.0 s at 384 (measured), so the
@@ -99,6 +105,7 @@ impl Default for Settings {
             colouring: "exact".into(),
             community_url: crate::community::DEFAULT_INDEX.into(),
             video_crf: None,
+            zoom_speed: ZOOM_SPEED,
         }
     }
 }
@@ -111,6 +118,9 @@ impl Settings {
         let p = &self.notify.ping;
         if !(p.is_empty() || p == "here" || p == "everyone" || (p.len() <= 25 && p.bytes().all(|b| b.is_ascii_digit()))) {
             return Err("ping: nobody, here, everyone or a role's id (digits)".into());
+        }
+        if !(1.05..=50.0).contains(&self.zoom_speed) {
+            return Err(format!("zoom_speed {}: must be 1.05 to 50 times closer each second", self.zoom_speed));
         }
         if self.video_crf.is_some_and(|c| c > 51) {
             return Err("video quality (CRF) is 0 to 51".into());
@@ -253,6 +263,8 @@ mod tests {
         save(&p, &s).unwrap();
         assert_eq!(load::<Settings>(&p), s);
         assert!(Settings { cpu_percent: Some(0), ..Default::default() }.check().is_err());
+        assert!(Settings { zoom_speed: 1.0, ..Default::default() }.check().is_err());
+        assert!(Settings { zoom_speed: 1.6, ..Default::default() }.check().is_ok());
         let bad = Settings { notify: Notify { discord_webhook: "http://x".into(), ..Default::default() }, ..Default::default() };
         assert!(bad.check().is_err());
         let n = Notify { upload_fields: "root_folder_id = abc\n\ndrive_path={run}\n".into(), ..Default::default() };

@@ -5,7 +5,7 @@ import { h, clear, keepFocus } from '../dom.js';
 import { lutFromStops, recolour, sampleLut, rgbToHex, hexToRgb } from '../palette.js';
 import { parseRmw } from '../rmw.js';
 import { span as fmtSpan, when, size } from '../format.js';
-import { ZOOM_FACTORS, speedLabel, nearestStep, zoomPreview } from '../speed.js';
+import { closerPerSecond, speedControl, zoomFactorFor, zoomPreview } from '../speed.js';
 import { framePalette, isPlain, setBuiltins } from '../play.js';
 import { playPanel } from '../playpanel.js';
 import { showCode, askCode } from '../share.js';
@@ -68,22 +68,19 @@ export function mount(root, params, { go }) {
   const makeBtn = h('button', { type: 'button', class: 'btn primary big', onclick: makeVideo }, 'Make the video in these colours');
   // The new video's speed: the run's own to start with; changing it only
   // re-makes the video from the strip, nothing is rendered again.
-  let speedStep = 4;
   let vidFps = 60;
-  const speedText = h('span', { class: 'value' });
-  const speedSlider = h('input', { type: 'range', min: '1', max: String(ZOOM_FACTORS.length), step: '1', value: '4', 'aria-label': 'Zoom speed of the new video',
-    oninput: (e) => { speedStep = Number(e.target.value); showSpeed(); } });
-  const fpsSel = h('select', { class: 'input', 'aria-label': 'Frames per second of the new video', onchange: (e) => { vidFps = Number(e.target.value); showSpeed(); } },
+  const speed = speedControl({ label: 'Zoom speed of the new video', onChange: () => schedule() });
+  const fpsSel = h('select', { class: 'input', 'aria-label': 'Frames per second of the new video', onchange: (e) => { vidFps = Number(e.target.value); schedule(); } },
     [60, 30, 24].map((v) => h('option', { value: String(v) }, String(v))));
-  function showSpeed() {
-    speedText.textContent = speedLabel(ZOOM_FACTORS[speedStep - 1], vidFps);
-    speedSlider.setAttribute('aria-valuetext', speedText.textContent);
-  }
-  const speedPreview = zoomPreview(() => (canvas.hidden ? null : canvas), () => Math.pow(1 / ZOOM_FACTORS[speedStep - 1], vidFps),
+  // The new video's zoom factor per frame, and whether it is the run's own.
+  const chosenZoom = () => zoomFactorFor(speed.rate(), vidFps);
+  const runZoom = (r) => r.zoom_factor ?? 0.98;
+  const ownSpeed = () => !!run && Math.abs(chosenZoom() - runZoom(run)) < 1e-9;
+  const speedPreview = zoomPreview(() => (canvas.hidden ? null : canvas), () => speed.rate(),
     'The preview zooming in at the chosen speed');
   const speedBox = h('fieldset', { class: 'box' }, h('legend', null, 'Speed of the new video'),
     h('div', { class: 'grid-2' },
-      h('label', { class: 'field' }, h('span', null, 'Zoom speed · ', speedText), speedSlider),
+      speed.el,
       h('label', { class: 'field' }, 'Frames per second', fpsSel),
       h('div', { class: 'field full speed-row' }, speedPreview.el,
         h('p', { class: 'hint' }, 'The preview zooms in at this speed, over and over. A different speed only re-makes the video: nothing is rendered again.'))));
@@ -171,10 +168,10 @@ export function mount(root, params, { go }) {
   // else worked out from the zoom's depth.
   function videoTiming() {
     const fps = vidFps;
-    const z = ZOOM_FACTORS[speedStep - 1];
+    const z = chosenZoom();
     if (!run) return { frames: 1, fps, k: 0 };
     const k0 = values ? values.k : 0;
-    if (z === nearestZoom(run) || !(run.start_span > 0 && run.end_span > 0)) return { frames: Math.max(run.frames || 1, 1), fps, k: k0 };
+    if (ownSpeed() || !(run.start_span > 0 && run.end_span > 0)) return { frames: Math.max(run.frames || 1, 1), fps, k: k0 };
     const zr = run.zoom_factor ?? z;
     const frames = Math.floor(Math.log(run.end_span / run.start_span) / Math.log(z)) + 1;
     return { frames, fps, k: Math.min(frames - 1, Math.round(k0 * Math.log(zr) / Math.log(z))) };
@@ -553,11 +550,9 @@ export function mount(root, params, { go }) {
     }
     insideInput.value = inside;
     resetHistory();
-    speedStep = nearestStep(r.zoom_factor ?? 0.98);
-    speedSlider.value = String(speedStep);
     vidFps = [60, 30, 24].includes(r.fps) ? r.fps : 60;
     fpsSel.value = String(vidFps);
-    showSpeed();
+    speed.set(closerPerSecond(runZoom(r), vidFps)); // the run's own speed, exactly
     frameK = null;
     frameSlider.max = String(Math.max(0, (r.frames || 1) - 1));
     frameSlider.disabled = !(r.frames > 1);
@@ -643,9 +638,6 @@ export function mount(root, params, { go }) {
   }
 
   // ---- actions -----------------------------------------------------------
-  // The run's own speed, as the slider step it sits nearest.
-  function nearestZoom(r) { return ZOOM_FACTORS[nearestStep(r.zoom_factor ?? 0.98) - 1]; }
-
   async function makeVideo() {
     if (!run) return;
     makeBtn.disabled = true;
@@ -655,7 +647,7 @@ export function mount(root, params, { go }) {
       await post('/api/jobs', {
         kind: 'assemble', run_id: run.id, palette: null, stops: stopList(), inside,
         play: isPlain(play.spec()) ? null : play.spec(),
-        fps: vidFps, zoom_factor: ZOOM_FACTORS[speedStep - 1] === nearestZoom(run) ? null : ZOOM_FACTORS[speedStep - 1], width: null, height: null,
+        fps: vidFps, zoom_factor: ownSpeed() ? null : chosenZoom(), width: null, height: null,
         format: settings.format || 'mp4', bars: settings.bars ?? null,
       });
       go('#/runs');
