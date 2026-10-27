@@ -1,11 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 — 2026-10-27
 
 - **Zoom speed, finely.** The speed is set in "times closer each second" with a fine slider and a box
   to type an exact value (1.05× to 50×), on New render and on the Colours page; it no longer changes
   when the fps does. New renders start at **1.8×** (was 3.4×), and **Settings → Zoom speed for new
   renders** changes that. New render's time and disk estimate now counts the chosen speed.
+- **Video sizes as resolution × aspect.** Pick 1:1 square, 16:9 wide or 9:16 phone, then a
+  resolution: 360p, 1080p, 1440p (2K) and 4K as buttons; 480p, 720p, 8K and 16K under **Advanced**,
+  with any width × height and sizes you save. **Settings → Video sizes** chooses which resolutions
+  show as buttons and keeps your saved sizes.
 
 ## 0.5.0 — 2026-10-27
 

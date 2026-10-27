@@ -2,6 +2,7 @@
 import { get, put, latestState, on } from '../api.js';
 import { h, clear, debounce } from '../dom.js';
 import { speedControl, speedLabel } from '../speed.js';
+import { RESOLUTIONS, SIDE_MIN, SIDE_MAX, evenClamp, sizeText, favouritesOf, customSizesOf } from '../sizes.js';
 
 export function mount(root) {
   root.classList.add('narrow');
@@ -112,8 +113,45 @@ export function mount(root) {
         ['768', 'Very large (768 pixels)'],
       ], 'The pictures down each place the Finder finds. 384 pixels measured about 15% slower to make than 160, so big enough to judge a place by costs little.', Number));
 
+    // Video sizes: which resolutions New render shows as buttons, and saved sizes.
+    const favs = favouritesOf(s);
+    const favBoxes = RESOLUTIONS.map((r) => h('label', { class: 'check' },
+      h('input', { type: 'checkbox', checked: favs.includes(r.key), 'data-k': `fav-${r.key}`,
+        onchange: (e) => {
+          const now = favouritesOf(s).filter((k) => k !== r.key);
+          if (e.target.checked) now.push(r.key);
+          s.size_favourites = RESOLUTIONS.filter((x) => now.includes(x.key)).map((x) => x.key);
+          save(`${r.label} ${e.target.checked ? 'shown' : 'moved to Advanced'} on New render`);
+        } }), r.label));
+    const saved = customSizesOf(s);
+    let addW = 2560;
+    let addH = 1080;
+    const sizeNum = (label, get, set) => h('label', { class: 'field', style: { width: '130px' } }, label,
+      h('input', { class: 'input mono', type: 'number', min: String(SIDE_MIN), max: String(SIDE_MAX), step: '2', value: String(get()), inputmode: 'numeric',
+        onchange: (e) => { set(evenClamp(e.target.value)); e.target.value = String(get()); } }));
+    const sizes = h('fieldset', { class: 'box' }, h('legend', null, 'Video sizes'),
+      h('div', { class: 'field' }, 'Resolutions shown on New render',
+        h('div', { class: 'row', style: { gap: '4px 18px' } }, favBoxes),
+        h('span', { class: 'hint' }, 'The rest stay under Advanced there. Recommended: 360p (a quick test), 1080p, 1440p and 4K. 1080p means 1080 × 1080 square, 1920 × 1080 wide or 1080 × 1920 phone.')),
+      h('div', { class: 'field' }, 'Your sizes',
+        saved.length
+          ? h('div', { class: 'row' }, saved.map((c) => h('span', { class: 'saved-size' }, h('span', { class: 'ro mono' }, sizeText(c.w, c.h)),
+            h('button', { type: 'button', class: 'btn quiet small', 'aria-label': `Forget ${sizeText(c.w, c.h)}`, title: 'Forget this size',
+              onclick: () => { s.custom_sizes = saved.filter((x) => x !== c); save(`forgot ${sizeText(c.w, c.h)}`).then(render); } }, '×'))))
+          : h('span', { class: 'hint' }, 'None saved yet.'),
+        h('div', { class: 'row', style: { alignItems: 'flex-end' } },
+          sizeNum('Width', () => addW, (v) => { addW = v; }), sizeNum('Height', () => addH, (v) => { addH = v; }),
+          h('button', { type: 'button', class: 'btn', 'data-k': 'add-size', disabled: saved.length >= 24,
+            onclick: () => {
+              if (saved.some((c) => c.w === addW && c.h === addH)) return;
+              s.custom_sizes = [...saved, { w: addW, h: addH }];
+              save(`saved ${sizeText(addW, addH)}`).then(render);
+            } }, 'Save this size')),
+        h('span', { class: 'hint' }, 'Offered under Advanced on New render. Even numbers, 64 to 16384 pixels a side.')));
+
     body.append(
       rendering,
+      sizes,
       h('fieldset', { class: 'box' }, h('legend', null, 'Sharing this computer'),
         h('label', { class: 'check-line' },
           h('span', null, 'Pause rendering while a game is full screen', h('br'),

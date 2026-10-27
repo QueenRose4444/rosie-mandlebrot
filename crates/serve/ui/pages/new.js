@@ -1,27 +1,14 @@
 // New render: size, fit and bars, how deep, colours, speed, fps, the estimate, and Start.
-import { get, getBytes, post, on, jobsOf, latestState, palettes as loadPalettes } from '../api.js';
+import { get, getBytes, post, put, on, jobsOf, latestState, palettes as loadPalettes } from '../api.js';
 import { h, clear, picture, debounce, keepFocus } from '../dom.js';
 import { bytes, duration, span as fmtSpan, kindName } from '../format.js';
 import { lutFromStops, recolour, cssGradient } from '../palette.js';
 import { parseRmw } from '../rmw.js';
 import { DEFAULT_RATE, speedControl, zoomFactorFor, zoomPreview } from '../speed.js';
 import { showCode } from '../share.js';
+import { RESOLUTIONS, ASPECTS, SIDE_MIN, SIDE_MAX, dimsFor, evenClamp, sizeText, favouritesOf, customSizesOf } from '../sizes.js';
 
-const SIZES = [
-  { w: 1080, h: 1080, label: '1080 × 1080 square' },
-  { w: 1920, h: 1080, label: '1920 × 1080 wide' },
-  { w: 1080, h: 1920, label: '1080 × 1920 phone' },
-  { w: 3840, h: 2160, label: '3840 × 2160 4K' },
-  { w: 320, h: 320, label: '320 × 320 quick test' },
-];
 const MEMORY_STEPS = [256, 512, 1024, 2048, null];
-
-function evenClamp(v, lo, hi) {
-  let n = Math.round(Number(v));
-  if (!Number.isFinite(n)) n = lo;
-  n = Math.max(lo, Math.min(hi, n));
-  return n - (n % 2);
-}
 
 export function mount(root, params, { go }) {
   let alive = true;
@@ -29,8 +16,10 @@ export function mount(root, params, { go }) {
   let preset = null;
   let builtins = [];
   let mine = [];
+  let settings = null; // the app's settings: favourite sizes, saved sizes, starting speed
   const f = {
-    size: 0, // index into SIZES, or 'custom'
+    size: 'res', // 'res' (a resolution at an aspect) or 'custom' (width × height)
+    res: '1080', aspect: '1:1', advanced: false,
     customW: 2560, customH: 1440,
     fit: 'fill', barStyle: 'blur', barColour: '#000000',
     depthMode: 'end', depthValue: '', seconds: 20,
@@ -178,8 +167,8 @@ export function mount(root, params, { go }) {
   }
 
   // ---- right column: the form --------------------------------------------
-  const sizeButtons = h('div', { class: 'row', role: 'group', 'aria-label': 'Video size' });
-  const customRow = h('div', { class: 'row' });
+  const sizeButtons = h('div', { class: 'stack', style: { gap: '10px' } });
+  const customRow = h('div');
   const fitRow = h('div', { class: 'stack' });
   const zoomBox = h('div', { class: 'grid-2' });
   const estimateStats = h('div', { class: 'stats' });
@@ -206,8 +195,8 @@ export function mount(root, params, { go }) {
   function rerender(...fns) { keepFocus(form, () => fns.forEach((fn) => fn())); }
 
   function dims() {
-    if (f.size === 'custom') return { w: evenClamp(f.customW, 64, 15360), h: evenClamp(f.customH, 64, 15360) };
-    return { w: SIZES[f.size].w, h: SIZES[f.size].h };
+    if (f.size === 'custom') return { w: evenClamp(f.customW), h: evenClamp(f.customH) };
+    return dimsFor(f.res, f.aspect);
   }
   function barsOn() {
     const { w, h: hh } = dims();
@@ -222,19 +211,65 @@ export function mount(root, params, { go }) {
 
   function renderSize() {
     clear(sizeButtons);
-    SIZES.forEach((s, i) => sizeButtons.append(h('button', { type: 'button', class: 'choice', 'aria-pressed': String(f.size === i), 'data-k': `size-${i}`,
-      onclick: () => { f.size = i; rerender(renderSize, renderFit, renderSubmit); refreshEstimate(); } }, s.label)));
-    sizeButtons.append(h('button', { type: 'button', class: 'choice', 'aria-pressed': String(f.size === 'custom'), 'data-k': 'size-custom',
-      onclick: () => { f.size = 'custom'; rerender(renderSize, renderFit, renderSubmit); refreshEstimate(); } }, 'Custom…'));
     clear(customRow);
-    customRow.hidden = f.size !== 'custom';
-    if (f.size === 'custom') {
-      const num = (label, key) => h('label', { class: 'field', style: { width: '150px' } }, label,
-        h('input', { class: 'input mono', type: 'number', min: '64', max: '15360', step: '2', value: String(f[key]), inputmode: 'numeric', 'data-k': key,
-          onchange: (e) => { f[key] = evenClamp(e.target.value, 64, 15360); e.target.value = String(f[key]); rerender(renderFit, renderSubmit); refreshEstimate(); } }));
-      customRow.append(num('Width', 'customW'), num('Height', 'customH'),
-        h('span', { class: 'hint' }, 'Even numbers: video encoders need them.'));
+    // Removing a focused box fires its change event mid-redraw: skip that one.
+    const changed = () => {
+      if (sizeRedrawing) return;
+      sizeRedrawing = true;
+      try { rerender(renderSize, renderFit, renderSubmit); } finally { sizeRedrawing = false; }
+      refreshEstimate();
+    };
+    const choice = (pressed, dataK, onclick, ...label) => h('button', { type: 'button', class: 'choice', 'aria-pressed': String(pressed), 'data-k': dataK, onclick }, ...label);
+    const resButton = (r) => {
+      const d = dimsFor(r.key, f.aspect);
+      return choice(f.size === 'res' && f.res === r.key, `res-${r.key}`, () => { f.size = 'res'; f.res = r.key; changed(); },
+        r.label, h('span', { class: 'muted small' }, ` ${sizeText(d.w, d.h)}`));
+    };
+    const favs = favouritesOf(settings);
+    sizeButtons.append(
+      h('div', { class: 'row', role: 'group', 'aria-label': 'Aspect' },
+        ASPECTS.map((a) => choice(f.size === 'res' && f.aspect === a.key, `aspect-${a.key}`, () => { f.size = 'res'; f.aspect = a.key; changed(); }, a.label)),
+        choice(f.size === 'custom', 'size-custom', () => { f.size = 'custom'; f.advanced = true; changed(); }, 'Custom…')),
+      h('div', { class: 'row', role: 'group', 'aria-label': 'Resolution' },
+        RESOLUTIONS.filter((r) => favs.includes(r.key)).map(resButton)));
+
+    // Advanced: the other resolutions, saved sizes, and any width × height.
+    const saved = customSizesOf(settings);
+    const isSaved = (w, hh) => saved.some((c) => c.w === w && c.h === hh);
+    const others = RESOLUTIONS.filter((r) => !favs.includes(r.key));
+    const num = (label, key) => h('label', { class: 'field', style: { width: '130px' } }, label,
+      h('input', { class: 'input mono', type: 'number', min: String(SIDE_MIN), max: String(SIDE_MAX), step: '2', value: String(f[key]), inputmode: 'numeric', 'data-k': key,
+        onchange: (e) => { f[key] = evenClamp(e.target.value); e.target.value = String(f[key]); f.size = 'custom'; changed(); } }));
+    const cw = evenClamp(f.customW);
+    const ch = evenClamp(f.customH);
+    const details = h('details', { class: 'advanced', open: f.advanced, ontoggle: (e) => { f.advanced = e.target.open; } },
+      h('summary', { 'data-k': 'advanced' }, 'Advanced: more sizes'),
+      h('div', { class: 'stack', style: { gap: '10px', marginTop: '10px' } },
+        others.length ? h('div', { class: 'row', role: 'group', 'aria-label': 'More resolutions' }, others.map(resButton)) : null,
+        saved.length ? h('div', { class: 'row', role: 'group', 'aria-label': 'Your sizes' },
+          saved.map((c) => h('span', { class: 'saved-size' },
+            choice(f.size === 'custom' && cw === c.w && ch === c.h, `saved-${c.w}x${c.h}`, () => { f.size = 'custom'; f.customW = c.w; f.customH = c.h; changed(); }, sizeText(c.w, c.h)),
+            h('button', { type: 'button', class: 'btn quiet small', 'aria-label': `Forget ${sizeText(c.w, c.h)}`, title: 'Forget this size',
+              onclick: () => saveSizes(saved.filter((x) => x !== c), `forgot ${sizeText(c.w, c.h)}`) }, '×')))) : null,
+        h('div', { class: 'row', style: { alignItems: 'flex-end' } }, num('Width', 'customW'), num('Height', 'customH'),
+          h('button', { type: 'button', class: 'btn', 'data-k': 'save-size', disabled: isSaved(cw, ch) || saved.length >= 24,
+            onclick: () => { f.size = 'custom'; saveSizes([...saved, { w: cw, h: ch }], `saved ${sizeText(cw, ch)}`); } },
+            isSaved(cw, ch) ? 'Saved' : 'Save this size')),
+        h('span', { class: 'hint' }, 'Even numbers, 64 to 16384 pixels a side (video encoders need them even). Which resolutions show above, and your saved sizes, are also in Settings.'),
+        sizeNote));
+    customRow.append(details);
+  }
+  let sizeRedrawing = false;
+  const sizeNote = h('p', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
+  async function saveSizes(list, what) {
+    try {
+      const next = { ...(settings || await get('/api/settings')), custom_sizes: list };
+      settings = await put('/api/settings', next);
+      sizeNote.textContent = `Settings: ${what}.`;
+    } catch (err) {
+      sizeNote.textContent = `Not saved: ${err.message}`;
     }
+    if (alive) rerender(renderSize, renderFit, renderSubmit);
   }
 
   function renderFit() {
@@ -460,11 +495,14 @@ export function mount(root, params, { go }) {
   async function load() {
     renderAll();
     try {
-      const [list, pals, favs, settings] = await Promise.all([
+      const [list, pals, favs, sets] = await Promise.all([
         get('/api/presets'), loadPalettes().catch(() => []), get('/api/favourites').catch(() => null),
         get('/api/settings').catch(() => null)]);
       if (!alive) return;
+      settings = sets;
       if (Number(settings?.zoom_speed) > 0) f.rate = Number(settings.zoom_speed);
+      const favRes = favouritesOf(settings);
+      if (!favRes.includes(f.res) && favRes.length) f.res = favRes[0];
       presets = Array.isArray(list) ? list : [];
       builtins = Array.isArray(pals) ? pals : [];
       mine = Array.isArray(favs?.palettes) ? favs.palettes.filter((p) => Array.isArray(p?.stops) && p.stops.length) : [];

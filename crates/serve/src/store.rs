@@ -79,7 +79,24 @@ pub struct Settings {
     pub video_crf: Option<u32>,
     /// New render's starting zoom speed, times closer each second.
     pub zoom_speed: f64,
+    /// The resolutions New render shows as buttons (short side in pixels);
+    /// the rest sit under Advanced.
+    pub size_favourites: Vec<String>,
+    /// Video sizes the viewer saved, offered under Advanced.
+    pub custom_sizes: Vec<CustomSize>,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomSize {
+    pub w: u32,
+    pub h: u32,
+}
+
+/// The resolutions New render offers (the short side); 8640 is 16K.
+pub const RESOLUTIONS: [&str; 8] = ["360", "480", "720", "1080", "1440", "2160", "4320", "8640"];
+/// Shown as buttons unless the settings say otherwise: a quick test, then
+/// the three sizes videos are mostly made at (Rose's pick).
+pub const SIZE_FAVOURITES: [&str; 4] = ["360", "1080", "1440", "2160"];
 
 /// New render's zoom speed unless the settings say otherwise: Rose's pick
 /// (1.4× felt too slow, 0.4's 3.4× too fast).
@@ -106,6 +123,8 @@ impl Default for Settings {
             community_url: crate::community::DEFAULT_INDEX.into(),
             video_crf: None,
             zoom_speed: ZOOM_SPEED,
+            size_favourites: SIZE_FAVOURITES.iter().map(|s| s.to_string()).collect(),
+            custom_sizes: Vec::new(),
         }
     }
 }
@@ -121,6 +140,15 @@ impl Settings {
         }
         if !(1.05..=50.0).contains(&self.zoom_speed) {
             return Err(format!("zoom_speed {}: must be 1.05 to 50 times closer each second", self.zoom_speed));
+        }
+        if let Some(r) = self.size_favourites.iter().find(|r| !RESOLUTIONS.contains(&r.as_str())) {
+            return Err(format!("size_favourites: {r:?} is not one of {}", RESOLUTIONS.join(", ")));
+        }
+        if self.custom_sizes.len() > 24 {
+            return Err("custom_sizes: at most 24 saved sizes".into());
+        }
+        if let Some(c) = self.custom_sizes.iter().find(|c| !(64..=16384).contains(&c.w) || !(64..=16384).contains(&c.h) || c.w % 2 == 1 || c.h % 2 == 1) {
+            return Err(format!("custom size {}x{}: each side even, 64 to 16384 pixels", c.w, c.h));
         }
         if self.video_crf.is_some_and(|c| c > 51) {
             return Err("video quality (CRF) is 0 to 51".into());
@@ -265,6 +293,11 @@ mod tests {
         assert!(Settings { cpu_percent: Some(0), ..Default::default() }.check().is_err());
         assert!(Settings { zoom_speed: 1.0, ..Default::default() }.check().is_err());
         assert!(Settings { zoom_speed: 1.6, ..Default::default() }.check().is_ok());
+        assert!(Settings { size_favourites: vec!["1080".into(), "8640".into()], ..Default::default() }.check().is_ok());
+        assert!(Settings { size_favourites: vec!["1000".into()], ..Default::default() }.check().is_err());
+        assert!(Settings { custom_sizes: vec![CustomSize { w: 2560, h: 1080 }], ..Default::default() }.check().is_ok());
+        assert!(Settings { custom_sizes: vec![CustomSize { w: 2561, h: 1080 }], ..Default::default() }.check().is_err());
+        assert!(Settings { custom_sizes: vec![CustomSize { w: 32, h: 1080 }], ..Default::default() }.check().is_err());
         let bad = Settings { notify: Notify { discord_webhook: "http://x".into(), ..Default::default() }, ..Default::default() };
         assert!(bad.check().is_err());
         let n = Notify { upload_fields: "root_folder_id = abc\n\ndrive_path={run}\n".into(), ..Default::default() };
