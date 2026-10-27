@@ -50,6 +50,8 @@ pub struct Settings {
     /// How video frames are coloured: exact (as the page previews them) or
     /// float (0.4's blend, one level off on about 0.05% of pixels).
     pub colouring: String,
+    /// The community list's signed index ("" turns the list off).
+    pub community_url: String,
 }
 
 /// The finder's picture size unless the settings say otherwise. Picturing a
@@ -70,6 +72,7 @@ impl Default for Settings {
             video_format: "mp4".into(),
             finder_picture_size: FINDER_PICTURE_SIZE,
             colouring: "exact".into(),
+            community_url: crate::community::DEFAULT_INDEX.into(),
         }
     }
 }
@@ -78,6 +81,9 @@ impl Settings {
     pub fn check(&self) -> Result<(), String> {
         if !matches!(self.chunk_size.as_str(), "octave" | "half" | "quarter" | "eighth") {
             return Err(format!("chunk_size {:?}: expected octave, half, quarter or eighth", self.chunk_size));
+        }
+        if !(self.community_url.is_empty() || self.community_url.starts_with("https://")) {
+            return Err("the community list's address must start https://".into());
         }
         if !matches!(self.colouring.as_str(), "exact" | "float") {
             return Err(format!("colouring {:?}: expected exact or float", self.colouring));

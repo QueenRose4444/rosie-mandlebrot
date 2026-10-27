@@ -9,6 +9,7 @@ import { ZOOM_FACTORS, speedLabel, nearestStep, zoomPreview } from '../speed.js'
 import { framePalette, isPlain, setBuiltins } from '../play.js';
 import { playPanel } from '../playpanel.js';
 import { showCode, askCode } from '../share.js';
+import { PENDING_COLOURS } from '../community.js';
 
 const LONG_SIDE = 640;
 const USABLE = new Set(['done', 'stopped', 'incomplete']);
@@ -681,14 +682,18 @@ export function mount(root, params, { go }) {
     askCode('Import colours', 'Paste a colours code (rmc1.…). It replaces the stops, the inside colour and the colour play here; nothing is saved until you make a video or save the palette.', async (code) => {
       const r = await post('/api/share/decode', { code });
       if (r.kind !== 'colours') throw new Error('That is a place code: import it in the Library.');
-      const c = r.colours;
-      setStops(c.stops);
-      if (c.inside) { inside = normHex(c.inside); insideInput.value = inside; }
-      play.load(c.play || null);
-      saveName.value = c.name || '';
-      edited();
-      return `Using ${c.name}.`;
+      return applyColours(r.colours);
     });
+  }
+
+  // A colour scheme from a code or the community list: stops, inside, play.
+  function applyColours(c) {
+    setStops(c.stops);
+    if (c.inside) { inside = normHex(c.inside); insideInput.value = inside; }
+    play.load(c.play || null);
+    saveName.value = c.name || '';
+    edited();
+    return `Using ${c.name}.`;
   }
 
   function openSave(open) {
@@ -733,6 +738,10 @@ export function mount(root, params, { go }) {
       run = r;
       renderRunSelect();
       if (r) useRun(r);
+      // Colours chosen in the Library's community list.
+      let pending = null;
+      try { pending = JSON.parse(sessionStorage.getItem(PENDING_COLOURS) || 'null'); sessionStorage.removeItem(PENDING_COLOURS); } catch { /* none */ }
+      if (pending && r) actionNote.textContent = applyColours(pending);
       else {
         setStops(builtins[0]?.stops);
         showEmpty(h('span', null, 'There is no finished run to recolour yet. ', h('a', { href: '#/library' }, 'Start one from the Library.')));

@@ -23,6 +23,7 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "io-util", "time", "fs", "net", "signal"] }
 tower-http = { version = "0.6", features = ["fs"] }
 ureq = "3"
+minisign-verify = "0.3.0"
 
 [target.'cfg(windows)'.dependencies]
 # The tray icon, full-screen check and console detection in desktop.rs.

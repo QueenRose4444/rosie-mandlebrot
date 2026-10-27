@@ -7,6 +7,7 @@
 
 mod api;
 mod app;
+mod community;
 pub mod desktop;
 mod estimate;
 mod found;

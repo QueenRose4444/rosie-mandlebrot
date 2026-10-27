@@ -68,6 +68,8 @@ pub fn router(app: Arc<App>, previews: u32) -> Router {
         .route("/api/share/colours", post(share_colours))
         .route("/api/share/decode", post(share_decode))
         .route("/api/share/import", post(share_import))
+        .route("/api/community", get(community_list))
+        .route("/api/community/get", post(community_get))
         .nest_service("/files/runs", tower_http::services::ServeDir::new(runs::runs_dir(&data)))
         .nest_service("/files/finds", tower_http::services::ServeDir::new(data.join("finds")))
         .nest_service("/files/found", tower_http::services::ServeDir::new(found::dir(&data)))
@@ -322,6 +324,42 @@ struct ShareCode {
 
 async fn share_decode(Json(b): Json<ShareCode>) -> ApiResult<Json<serde_json::Value>> {
     crate::share::decode(&b.code).map(Json).map_err(bad)
+}
+
+fn community_url(app: &App) -> ApiResult<String> {
+    let settings: Settings = store::load(&app.data.join("settings.json"));
+    if settings.community_url.is_empty() {
+        return Err(ApiError(StatusCode::NOT_FOUND, "the community list is turned off in Settings".into()));
+    }
+    Ok(settings.community_url)
+}
+
+async fn community_list(State(c): State<Ctx>) -> ApiResult<Json<crate::community::Listing>> {
+    let url = community_url(&c.app)?;
+    let data = c.app.data.clone();
+    let listing = tokio::task::spawn_blocking(move || crate::community::listing(&data, &url))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(listing))
+}
+
+#[derive(Deserialize)]
+struct CommunityGet {
+    id: u64,
+}
+
+/// Get an entry: its file is downloaded from the list (so it counts) and,
+/// once it checks out, used like a pasted code.
+async fn community_get(State(c): State<Ctx>, Json(b): Json<CommunityGet>) -> ApiResult<Json<serde_json::Value>> {
+    let url = community_url(&c.app)?;
+    let data = c.app.data.clone();
+    let shared = tokio::task::spawn_blocking(move || crate::community::get(&data, &url, b.id))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    let code = shared.encode().map_err(bad)?;
+    share_import(State(c), Json(ShareCode { code })).await
 }
 
 /// A pasted place code joins the Library (and gets its card picture); a

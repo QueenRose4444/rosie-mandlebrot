@@ -3,8 +3,9 @@ import { get, put, post, del, on, jobsOf, latestState } from '../api.js';
 import { h, clear, picture } from '../dom.js';
 import { kindName, KIND_CHIPS, span as fmtSpan } from '../format.js';
 import { showCode, askCode } from '../share.js';
+import { communityView } from '../community.js';
 
-export function mount(root) {
+export function mount(root, params, { go }) {
   let presets = [];
   let favs = { presets: [], palettes: [], lists: [] };
   let search = '';
@@ -22,6 +23,14 @@ export function mount(root) {
   const chips = h('div', { class: 'row', role: 'group', 'aria-label': 'Filter the places' });
   const heroBar = h('div', { class: 'row' });
   const grid = h('div', { class: 'cards' });
+  // The community list, shown instead of the cards when its chip is on.
+  const communityBox = h('div', { class: 'stack', hidden: true });
+  const community = communityView({
+    presets: () => presets,
+    status: (t) => { status.textContent = t; },
+    reloadLibrary: () => loadPresets(),
+    go,
+  });
   const footer = h('p', { class: 'hint' });
 
   root.append(
@@ -35,6 +44,7 @@ export function mount(root) {
     h('div', { class: 'row' }, heroBar, status,
       h('button', { type: 'button', class: 'btn quiet', 'data-k': 'import-code', onclick: importCode }, 'Import a code…')),
     grid,
+    communityBox,
     footer,
   );
 
@@ -65,6 +75,7 @@ export function mount(root) {
     chips.append(
       chip('All', collection === 'all', () => { collection = 'all'; renderAll(); }, presets.length),
       chip('★ Favourites', collection === 'favourites', () => { collection = 'favourites'; renderAll(); }, favs.presets.length),
+      chip('Community', collection === 'community', () => { collection = 'community'; renderAll(); }),
       ...favs.lists.map((l) => chip(l.name, collection === `list:${l.name}`,
         () => { collection = `list:${l.name}`; renderAll(); }, l.presets.length)),
       h('span', { class: 'chip-sep', 'aria-hidden': 'true' }),
@@ -219,6 +230,14 @@ export function mount(root) {
   }
 
   function renderCards(keepFocus) {
+    const inCommunity = collection === 'community';
+    grid.hidden = inCommunity;
+    communityBox.hidden = !inCommunity;
+    if (inCommunity) {
+      footer.textContent = '';
+      community.render(communityBox, search);
+      return;
+    }
     // Keep keyboard focus on the same control when cards are rebuilt.
     const active = document.activeElement;
     const focusKey = keepFocus && active && grid.contains(active)
