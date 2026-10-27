@@ -2,7 +2,7 @@
 import { get, put, latestState, on } from '../api.js';
 import { h, clear, debounce } from '../dom.js';
 import { speedControl, speedLabel } from '../speed.js';
-import { RESOLUTIONS, SIDE_MIN, SIDE_MAX, evenClamp, sizeText, favouritesOf, customSizesOf } from '../sizes.js';
+import { SIDE_MIN, SIDE_MAX, evenClamp, favouritesOf, resolutionsOf, aspectsOf, parseAspect } from '../sizes.js';
 
 export function mount(root) {
   root.classList.add('narrow');
@@ -113,41 +113,58 @@ export function mount(root) {
         ['768', 'Very large (768 pixels)'],
       ], 'The pictures down each place the Finder finds. 384 pixels measured about 15% slower to make than 160, so big enough to judge a place by costs little.', Number));
 
-    // Video sizes: which resolutions New render shows as buttons, and saved sizes.
+    // Video sizes: which resolutions New render shows as buttons, and the
+    // viewer's own resolutions and shapes.
+    const allRes = resolutionsOf(s);
     const favs = favouritesOf(s);
-    const favBoxes = RESOLUTIONS.map((r) => h('label', { class: 'check' },
+    const favBoxes = allRes.map((r) => h('label', { class: 'check' },
       h('input', { type: 'checkbox', checked: favs.includes(r.key), 'data-k': `fav-${r.key}`,
         onchange: (e) => {
           const now = favouritesOf(s).filter((k) => k !== r.key);
           if (e.target.checked) now.push(r.key);
-          s.size_favourites = RESOLUTIONS.filter((x) => now.includes(x.key)).map((x) => x.key);
+          s.size_favourites = allRes.filter((x) => now.includes(x.key)).map((x) => x.key);
           save(`${r.label} ${e.target.checked ? 'shown' : 'moved to Advanced'} on New render`);
         } }), r.label));
-    const saved = customSizesOf(s);
-    let addW = 2560;
-    let addH = 1080;
-    const sizeNum = (label, get, set) => h('label', { class: 'field', style: { width: '130px' } }, label,
-      h('input', { class: 'input mono', type: 'number', min: String(SIDE_MIN), max: String(SIDE_MAX), step: '2', value: String(get()), inputmode: 'numeric',
-        onchange: (e) => { set(evenClamp(e.target.value)); e.target.value = String(get()); } }));
+    const ownRes = allRes.filter((r) => r.own);
+    const ownShapes = aspectsOf(s).filter((a) => a.own);
+    let addRes = 1200;
+    let addShape = '3:4';
+    const forget = (label, apply) => h('button', { type: 'button', class: 'btn quiet small', 'aria-label': `Forget ${label}`, title: 'Forget this',
+      onclick: () => { apply(); save(`forgot ${label}`).then(render); } }, '×');
+    const saved = (items) => (items.length ? h('div', { class: 'row' }, items) : h('span', { class: 'hint' }, 'None saved yet.'));
     const sizes = h('fieldset', { class: 'box' }, h('legend', null, 'Video sizes'),
       h('div', { class: 'field' }, 'Resolutions shown on New render',
         h('div', { class: 'row', style: { gap: '4px 18px' } }, favBoxes),
-        h('span', { class: 'hint' }, 'The rest stay under Advanced there. Recommended: 360p (a quick test), 1080p, 1440p and 4K. 1080p means 1080 × 1080 square, 1920 × 1080 wide or 1080 × 1920 phone.')),
-      h('div', { class: 'field' }, 'Your sizes',
-        saved.length
-          ? h('div', { class: 'row' }, saved.map((c) => h('span', { class: 'saved-size' }, h('span', { class: 'ro mono' }, sizeText(c.w, c.h)),
-            h('button', { type: 'button', class: 'btn quiet small', 'aria-label': `Forget ${sizeText(c.w, c.h)}`, title: 'Forget this size',
-              onclick: () => { s.custom_sizes = saved.filter((x) => x !== c); save(`forgot ${sizeText(c.w, c.h)}`).then(render); } }, '×'))))
-          : h('span', { class: 'hint' }, 'None saved yet.'),
+        h('span', { class: 'hint' }, 'The rest stay under Advanced there. Recommended: 360p (a quick test), 1080p, 1440p and 4K. A resolution is the short side: 1080p is 1080 × 1080 square, 1920 × 1080 wide or 1080 × 1920 phone.')),
+      h('div', { class: 'field' }, 'Your resolutions',
+        saved(ownRes.map((r) => h('span', { class: 'saved-size' }, h('span', { class: 'ro mono' }, r.label),
+          forget(r.label, () => { s.custom_resolutions = ownRes.filter((x) => x !== r).map((x) => x.side); s.size_favourites = favouritesOf(s).filter((k) => k !== r.key); })))),
         h('div', { class: 'row', style: { alignItems: 'flex-end' } },
-          sizeNum('Width', () => addW, (v) => { addW = v; }), sizeNum('Height', () => addH, (v) => { addH = v; }),
-          h('button', { type: 'button', class: 'btn', 'data-k': 'add-size', disabled: saved.length >= 24,
+          h('label', { class: 'field', style: { width: '150px' } }, 'Pixels (short side)',
+            h('input', { class: 'input mono', type: 'number', min: String(SIDE_MIN), max: String(SIDE_MAX), step: '2', value: String(addRes), inputmode: 'numeric', 'data-k': 'new-res',
+              onchange: (e) => { addRes = evenClamp(e.target.value); e.target.value = String(addRes); } })),
+          h('button', { type: 'button', class: 'btn', 'data-k': 'add-res', disabled: ownRes.length >= 24,
             onclick: () => {
-              if (saved.some((c) => c.w === addW && c.h === addH)) return;
-              s.custom_sizes = [...saved, { w: addW, h: addH }];
-              save(`saved ${sizeText(addW, addH)}`).then(render);
-            } }, 'Save this size')),
-        h('span', { class: 'hint' }, 'Offered under Advanced on New render. Even numbers, 64 to 16384 pixels a side.')));
+              if (allRes.some((r) => r.side === addRes)) { status.textContent = `${addRes}p is already in the list.`; return; }
+              s.custom_resolutions = [...ownRes.map((r) => r.side), addRes];
+              save(`saved ${addRes}p`).then(render);
+            } }, 'Save this resolution'))),
+      h('div', { class: 'field' }, 'Your shapes',
+        saved(ownShapes.map((a) => h('span', { class: 'saved-size' }, h('span', { class: 'ro mono' }, a.label),
+          forget(`the shape ${a.label}`, () => { s.custom_aspects = ownShapes.filter((x) => x !== a).map((x) => ({ w: x.w, h: x.h })); })))),
+        h('div', { class: 'row', style: { alignItems: 'flex-end' } },
+          h('label', { class: 'field', style: { width: '150px' } }, 'Width : height',
+            h('input', { class: 'input mono', type: 'text', value: addShape, 'data-k': 'new-shape', placeholder: '3:4', spellcheck: 'false',
+              onchange: (e) => { addShape = e.target.value.trim(); } })),
+          h('button', { type: 'button', class: 'btn', 'data-k': 'add-shape', disabled: ownShapes.length >= 24,
+            onclick: () => {
+              const a = parseAspect(addShape);
+              if (!a) { status.textContent = 'A shape is two numbers like 3:4, at most 8 times as long as it is wide.'; return; }
+              if (aspectsOf(s).some((x) => x.key === `${a.w}:${a.h}`)) { status.textContent = `${a.w}:${a.h} is already in the list.`; return; }
+              s.custom_aspects = [...ownShapes.map((x) => ({ w: x.w, h: x.h })), a];
+              save(`saved the shape ${a.w}:${a.h}`).then(render);
+            } }, 'Save this shape'))),
+      h('span', { class: 'hint' }, 'Saved resolutions and shapes appear on New render beside the built-in ones; they can be saved there too.'));
 
     body.append(
       rendering,

@@ -100,6 +100,38 @@ pub struct BarsBody {
     pub picture_h: u32,
 }
 
+/// Another video made from a render once it is done: its frame, and the
+/// picture inside it when it has bars.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct VideoOut {
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub bars: Option<BarsBody>,
+}
+
+impl VideoOut {
+    fn picture(&self) -> (u32, u32) {
+        self.bars.as_ref().map_or((self.width, self.height), |b| (b.picture_w, b.picture_h))
+    }
+}
+
+/// Most videos one render may make (its own plus these).
+pub const MAX_EXTRA_VIDEOS: usize = 7;
+
+/// The strip that serves every picture: as many pixels tall as the tallest
+/// (frames spans are vertical, so that is the sharpest) and reaching out as
+/// far as the widest one's corners. A picture W x H shows span x W/H by span;
+/// its corners are hypot(W/H, 1) / 2 spans from the centre.
+pub fn strip_for(pictures: &[(u32, u32)]) -> (u32, u32) {
+    let h = pictures.iter().map(|p| p.1).max().unwrap_or(16);
+    let reach = pictures.iter().map(|&(w, ph)| f64::from(w).hypot(f64::from(ph)) / f64::from(ph)).fold(1.0, f64::max);
+    // (less a hair, so float error does not add a pixel to an exact fit)
+    let w = (f64::from(h) * (reach * reach - 1.0).max(0.0).sqrt() - 1e-6).ceil() as u32;
+    let even = |n: u32| n + n % 2;
+    (even(w.max(16)).min(16384), h)
+}
+
 /// A new render. Also stored as the run's `settings`, and reused to resume it.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RenderBody {
@@ -152,6 +184,48 @@ pub struct RenderBody {
     /// Video quality (CRF); filled from the settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_crf: Option<u32>,
+    /// More videos from this render, made once it is done; the strip is
+    /// drawn big enough for all of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub videos: Vec<VideoOut>,
+}
+
+impl RenderBody {
+    /// The picture of the render's own video.
+    fn picture(&self) -> (u32, u32) {
+        self.bars.as_ref().map_or((self.width, self.height), |b| (b.picture_w, b.picture_h))
+    }
+
+    /// The strip's size when it must be bigger than the render's own picture.
+    pub fn strip_size(&self) -> Option<(u32, u32)> {
+        if self.videos.is_empty() {
+            return None;
+        }
+        let mut pictures = vec![self.picture()];
+        pictures.extend(self.videos.iter().map(VideoOut::picture));
+        let s = strip_for(&pictures);
+        (s != self.picture()).then_some(s)
+    }
+
+    /// The new-video job for one of [`RenderBody::videos`], in the render's colours, speed and format.
+    pub fn video_job(&self, run_id: &str, v: &VideoOut) -> AssembleBody {
+        AssembleBody {
+            run_id: run_id.to_string(),
+            palette: self.palette.clone(),
+            stops: self.stops.clone(),
+            inside: self.inside.clone(),
+            fps: self.fps,
+            zoom_factor: self.zoom_factor,
+            width: Some(v.width),
+            height: Some(v.height),
+            format: self.format.clone(),
+            bars: v.bars.clone(),
+            tone: self.tone.clone(),
+            play: None,
+            colouring: self.colouring.clone(),
+            video_crf: self.video_crf,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -458,6 +532,16 @@ pub fn render_args(b: &RenderBody, run_dir: &Path, resume: bool, previews: u32) 
         a.extend(["--memory-limit".into(), format!("{mb}MiB")]);
     }
     a.extend(bars_args(&b.bars, b.width, b.height, format)?);
+    if b.videos.len() > MAX_EXTRA_VIDEOS {
+        return Err(format!("at most {} videos from one render", MAX_EXTRA_VIDEOS + 1));
+    }
+    for v in &b.videos {
+        check_size(v.width, v.height, "video")?;
+        bars_args(&v.bars, v.width, v.height, format)?;
+    }
+    if let Some((w, h)) = b.strip_size() {
+        a.extend(["--strip-size".into(), format!("{w}x{h}")]);
+    }
     if let Some(c) = &b.chunk_size {
         if !matches!(c.as_str(), "octave" | "half" | "quarter" | "eighth") {
             return Err(format!("chunk_size {c:?}: expected octave, half, quarter or eighth"));
@@ -500,10 +584,9 @@ pub fn assemble_args(b: &AssembleBody, run_dir: &Path, strip_size: (u32, u32)) -
         (Some(w), Some(h), _) => (w, h),
         _ => strip_size,
     };
-    if b.width.is_some() || b.bars.is_some() {
-        check_size(w, h, "video")?;
-        a.extend(["--width".into(), w.to_string(), "--height".into(), h.to_string()]);
-    }
+    // Always the size: a run's strip can be bigger than its video (more videos from one render).
+    check_size(w, h, "video")?;
+    a.extend(["--width".into(), w.to_string(), "--height".into(), h.to_string()]);
     a.extend(["--video-container".into(), format.into()]);
     a.extend(bars_args(&b.bars, w, h, format)?);
     a.extend(tone_args(&b.tone)?);
@@ -614,7 +697,33 @@ mod tests {
             as_julia: false,
             colouring: None,
             video_crf: None,
+            videos: Vec::new(),
         }
+    }
+
+    #[test]
+    fn one_strip_serves_every_video_from_a_render() {
+        // A wide frame covers a square one of the same height.
+        assert_eq!(strip_for(&[(1080, 1080), (1920, 1080)]), (1920, 1080));
+        // The tallest sets the pixels, the widest how far out: a phone frame and a wide one.
+        assert_eq!(strip_for(&[(1080, 1920), (1920, 1080)]), (3414, 1920));
+        let mut b = body();
+        assert_eq!(b.strip_size(), None);
+        // Bars keep the picture square, so a square render already covers them.
+        let bars = BarsBody { style: "blur".into(), colour: None, picture_w: 1080, picture_h: 1080 };
+        b.videos = vec![VideoOut { width: 1920, height: 1080, bars: Some(bars) }];
+        assert_eq!(b.strip_size(), None);
+        b.videos.push(VideoOut { width: 1920, height: 1080, bars: None });
+        assert_eq!(b.strip_size(), Some((1920, 1080)));
+        let a = render_args(&b, Path::new("r"), false, 0).unwrap();
+        assert!(a.windows(2).any(|w| w == ["--strip-size", "1920x1080"]));
+        assert!(a.windows(2).any(|w| w == ["--width", "1080"]));
+        let job = b.video_job("run1", &b.videos[1]);
+        assert_eq!((job.width, job.height, job.zoom_factor, job.palette.as_deref()), (Some(1920), Some(1080), Some(0.98), Some("hot")));
+        b.videos = vec![VideoOut { width: 1921, height: 1080, bars: None }];
+        assert!(render_args(&b, Path::new("r"), false, 0).is_err());
+        b.videos = vec![VideoOut { width: 1920, height: 1080, bars: None }; MAX_EXTRA_VIDEOS + 1];
+        assert!(render_args(&b, Path::new("r"), false, 0).is_err());
     }
 
     #[test]

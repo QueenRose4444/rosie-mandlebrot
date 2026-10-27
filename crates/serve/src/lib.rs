@@ -341,7 +341,9 @@ pub(crate) fn after_job(app: &Arc<App>, job: &jobs::Job) {
     if job.pausing {
         return;
     }
-    let strip_kept = !(store::load::<store::Settings>(&app.data.join("settings.json")).delete_strip_after_video && job.result.video.is_some());
+    // A render with more videos to make keeps its strip until they are made.
+    let extra = job.run_id.as_ref().and_then(|run| runs::read_meta(&app.data, run)).filter(|m| !m.settings.videos.is_empty());
+    let strip_kept = extra.is_some() || !(store::load::<store::Settings>(&app.data.join("settings.json")).delete_strip_after_video && job.result.video.is_some());
     if job.kind == "render" && job.state != jobs::JobState::Failed && strip_kept {
         if let Some(run) = &job.run_id {
             let body = jobs::ValuesBody { run_id: run.clone(), k: None, width: Some(640), height: None };
@@ -350,9 +352,30 @@ pub(crate) fn after_job(app: &Arc<App>, job: &jobs::Job) {
         }
     }
     let settings: store::Settings = store::load(&app.data.join("settings.json"));
+    // More videos from this render: one new-video job each, made from the strip.
+    if job.kind == "render" && job.state == jobs::JobState::Done {
+        if let Some(meta) = &extra {
+            let dir = runs::run_dir(&app.data, &meta.id);
+            for v in &meta.settings.videos {
+                let body = meta.settings.video_job(&meta.id, v);
+                match jobs::assemble_args(&body, &dir, (meta.settings.width, meta.settings.height)) {
+                    Ok(args) => {
+                        let shape = if v.bars.is_some() { " with bars" } else { "" };
+                        app.enqueue("assemble", Some(meta.id.clone()), format!("{} × {}{shape} video of {}", v.width, v.height, meta.label), args, false, jobs::Progress::default());
+                    }
+                    Err(e) => tracing::warn!("{}: a {}x{} video was not queued: {e}", meta.id, v.width, v.height),
+                }
+            }
+        }
+    }
+    // With more videos to make, the strip is deleted after the last of them.
+    let last_video = job.kind == "assemble"
+        && extra.is_some()
+        && !app.jobs().iter().any(|j| j.id != job.id && j.state.is_active() && j.run_id == job.run_id);
     // "Delete a run's render data once its video is made": the strip goes,
     // the videos and snapshots stay (the run can no longer be recoloured).
-    if job.kind == "render" && job.state == jobs::JobState::Done && settings.delete_strip_after_video && job.result.video.is_some() {
+    let render_done = job.kind == "render" && extra.is_none() && job.result.video.is_some();
+    if (render_done || last_video) && job.state == jobs::JobState::Done && settings.delete_strip_after_video {
         if let Some(run) = &job.run_id {
             let strip = runs::run_dir(&app.data, run).join("out").join("keyframes");
             match std::fs::remove_dir_all(&strip) {

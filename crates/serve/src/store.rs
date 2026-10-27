@@ -82,12 +82,14 @@ pub struct Settings {
     /// The resolutions New render shows as buttons (short side in pixels);
     /// the rest sit under Advanced.
     pub size_favourites: Vec<String>,
-    /// Video sizes the viewer saved, offered under Advanced.
-    pub custom_sizes: Vec<CustomSize>,
+    /// Resolutions the viewer saved (the short side in pixels), offered beside the built-in ones.
+    pub custom_resolutions: Vec<u32>,
+    /// Shapes the viewer saved (3:4 is w 3, h 4), offered beside 1:1, 16:9 and 9:16.
+    pub custom_aspects: Vec<Aspect>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CustomSize {
+pub struct Aspect {
     pub w: u32,
     pub h: u32,
 }
@@ -124,7 +126,8 @@ impl Default for Settings {
             video_crf: None,
             zoom_speed: ZOOM_SPEED,
             size_favourites: SIZE_FAVOURITES.iter().map(|s| s.to_string()).collect(),
-            custom_sizes: Vec::new(),
+            custom_resolutions: Vec::new(),
+            custom_aspects: Vec::new(),
         }
     }
 }
@@ -141,14 +144,18 @@ impl Settings {
         if !(1.05..=50.0).contains(&self.zoom_speed) {
             return Err(format!("zoom_speed {}: must be 1.05 to 50 times closer each second", self.zoom_speed));
         }
-        if let Some(r) = self.size_favourites.iter().find(|r| !RESOLUTIONS.contains(&r.as_str())) {
-            return Err(format!("size_favourites: {r:?} is not one of {}", RESOLUTIONS.join(", ")));
+        if self.custom_resolutions.len() > 24 || self.custom_aspects.len() > 24 {
+            return Err("at most 24 saved resolutions and 24 saved shapes".into());
         }
-        if self.custom_sizes.len() > 24 {
-            return Err("custom_sizes: at most 24 saved sizes".into());
+        if let Some(r) = self.custom_resolutions.iter().find(|&&r| !(64..=16384).contains(&r) || r % 2 == 1) {
+            return Err(format!("resolution {r}: even, 64 to 16384 pixels"));
         }
-        if let Some(c) = self.custom_sizes.iter().find(|c| !(64..=16384).contains(&c.w) || !(64..=16384).contains(&c.h) || c.w % 2 == 1 || c.h % 2 == 1) {
-            return Err(format!("custom size {}x{}: each side even, 64 to 16384 pixels", c.w, c.h));
+        if let Some(a) = self.custom_aspects.iter().find(|a| !(1..=64).contains(&a.w) || !(1..=64).contains(&a.h) || a.w.max(a.h) > 8 * a.w.min(a.h)) {
+            return Err(format!("shape {}:{}: each side 1 to 64, at most 8 times as long as wide", a.w, a.h));
+        }
+        let known = |r: &str| RESOLUTIONS.contains(&r) || r.parse::<u32>().is_ok_and(|n| self.custom_resolutions.contains(&n));
+        if let Some(r) = self.size_favourites.iter().find(|r| !known(r)) {
+            return Err(format!("size_favourites: {r:?} is not a built-in or saved resolution"));
         }
         if self.video_crf.is_some_and(|c| c > 51) {
             return Err("video quality (CRF) is 0 to 51".into());
@@ -295,9 +302,12 @@ mod tests {
         assert!(Settings { zoom_speed: 1.6, ..Default::default() }.check().is_ok());
         assert!(Settings { size_favourites: vec!["1080".into(), "8640".into()], ..Default::default() }.check().is_ok());
         assert!(Settings { size_favourites: vec!["1000".into()], ..Default::default() }.check().is_err());
-        assert!(Settings { custom_sizes: vec![CustomSize { w: 2560, h: 1080 }], ..Default::default() }.check().is_ok());
-        assert!(Settings { custom_sizes: vec![CustomSize { w: 2561, h: 1080 }], ..Default::default() }.check().is_err());
-        assert!(Settings { custom_sizes: vec![CustomSize { w: 32, h: 1080 }], ..Default::default() }.check().is_err());
+        assert!(Settings { custom_resolutions: vec![1200], size_favourites: vec!["1200".into()], ..Default::default() }.check().is_ok());
+        assert!(Settings { size_favourites: vec!["1200".into()], ..Default::default() }.check().is_err());
+        assert!(Settings { custom_resolutions: vec![1201], ..Default::default() }.check().is_err());
+        assert!(Settings { custom_aspects: vec![Aspect { w: 3, h: 4 }, Aspect { w: 21, h: 9 }], ..Default::default() }.check().is_ok());
+        assert!(Settings { custom_aspects: vec![Aspect { w: 0, h: 4 }], ..Default::default() }.check().is_err());
+        assert!(Settings { custom_aspects: vec![Aspect { w: 1, h: 9 }], ..Default::default() }.check().is_err());
         let bad = Settings { notify: Notify { discord_webhook: "http://x".into(), ..Default::default() }, ..Default::default() };
         assert!(bad.check().is_err());
         let n = Notify { upload_fields: "root_folder_id = abc\n\ndrive_path={run}\n".into(), ..Default::default() };

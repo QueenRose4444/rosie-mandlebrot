@@ -6,7 +6,7 @@ import { lutFromStops, recolour, cssGradient } from '../palette.js';
 import { parseRmw } from '../rmw.js';
 import { DEFAULT_RATE, speedControl, zoomFactorFor, zoomPreview } from '../speed.js';
 import { showCode } from '../share.js';
-import { RESOLUTIONS, ASPECTS, SIDE_MIN, SIDE_MAX, dimsFor, evenClamp, sizeText, favouritesOf, customSizesOf } from '../sizes.js';
+import { SIDE_MIN, SIDE_MAX, aspectsOf, resolutionsOf, resolutionLabel, favouritesOf, dimsFor, evenClamp, sizeText, parseAspect } from '../sizes.js';
 
 const MEMORY_STEPS = [256, 512, 1024, 2048, null];
 
@@ -18,9 +18,9 @@ export function mount(root, params, { go }) {
   let mine = [];
   let settings = null; // the app's settings: favourite sizes, saved sizes, starting speed
   const f = {
-    size: 'res', // 'res' (a resolution at an aspect) or 'custom' (width × height)
-    res: '1080', aspect: '1:1', advanced: false,
-    customW: 2560, customH: 1440,
+    res: '1080', aspect: '1:1', // the short side in pixels, and the shape
+    advanced: false, shapeW: 3, shapeH: 4,
+    extras: [], // more videos from this render: { aspect, res, fit: 'fill' | 'blur' | 'solid' }
     fit: 'fill', barStyle: 'blur', barColour: '#000000',
     depthMode: 'end', depthValue: '', seconds: 20,
     colour: '', // 'b:<name>' or 'm:<index>'
@@ -169,6 +169,7 @@ export function mount(root, params, { go }) {
   // ---- right column: the form --------------------------------------------
   const sizeButtons = h('div', { class: 'stack', style: { gap: '10px' } });
   const customRow = h('div');
+  const videosRow = h('div', { class: 'stack', style: { gap: '10px' } });
   const fitRow = h('div', { class: 'stack' });
   const zoomBox = h('div', { class: 'grid-2' });
   const estimateStats = h('div', { class: 'stats' });
@@ -181,8 +182,14 @@ export function mount(root, params, { go }) {
   const submitNote = h('span', { class: 'hint' });
   const formError = h('div', { class: 'notice error', role: 'alert', hidden: true });
 
-  const form = h('form', { class: 'stack', style: { gap: '22px' }, onsubmit: (e) => { e.preventDefault(); submit(); } },
-    h('fieldset', { class: 'box' }, h('legend', null, 'Video size'), sizeButtons, customRow, fitRow),
+  // Enter in a box applies what was typed; only Start starts a render.
+  const enterApplies = (e) => {
+    if (e.key !== 'Enter' || !(e.target instanceof HTMLInputElement) || e.target.type === 'submit') return;
+    e.preventDefault();
+    e.target.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const form = h('form', { class: 'stack', style: { gap: '22px' }, onkeydown: enterApplies, onsubmit: (e) => { e.preventDefault(); submit(); } },
+    h('fieldset', { class: 'box' }, h('legend', null, 'Video size'), sizeButtons, customRow, fitRow, videosRow),
     h('fieldset', { class: 'box' }, h('legend', null, 'The zoom'), zoomBox),
     h('fieldset', { class: 'box' }, h('legend', null, 'What it will take'),
       estimateStats,
@@ -195,8 +202,7 @@ export function mount(root, params, { go }) {
   function rerender(...fns) { keepFocus(form, () => fns.forEach((fn) => fn())); }
 
   function dims() {
-    if (f.size === 'custom') return { w: evenClamp(f.customW), h: evenClamp(f.customH) };
-    return dimsFor(f.res, f.aspect);
+    return dimsFor(Number(f.res), f.aspect);
   }
   function barsOn() {
     const { w, h: hh } = dims();
@@ -212,64 +218,156 @@ export function mount(root, params, { go }) {
   function renderSize() {
     clear(sizeButtons);
     clear(customRow);
-    // Removing a focused box fires its change event mid-redraw: skip that one.
-    const changed = () => {
-      if (sizeRedrawing) return;
-      sizeRedrawing = true;
-      try { rerender(renderSize, renderFit, renderSubmit); } finally { sizeRedrawing = false; }
-      refreshEstimate();
-    };
     const choice = (pressed, dataK, onclick, ...label) => h('button', { type: 'button', class: 'choice', 'aria-pressed': String(pressed), 'data-k': dataK, onclick }, ...label);
+    const shapes = aspectsOf(settings);
+    const all = resolutionsOf(settings);
+    const favs = favouritesOf(settings);
+    const side = Number(f.res);
     const resButton = (r) => {
-      const d = dimsFor(r.key, f.aspect);
-      return choice(f.size === 'res' && f.res === r.key, `res-${r.key}`, () => { f.size = 'res'; f.res = r.key; changed(); },
+      const d = dimsFor(r.side, f.aspect);
+      return choice(side === r.side, `res-${r.key}`, () => { f.res = r.key; sizeChanged(); },
         r.label, h('span', { class: 'muted small' }, ` ${sizeText(d.w, d.h)}`));
     };
-    const favs = favouritesOf(settings);
+    const shown = all.filter((r) => favs.includes(r.key));
+    // A resolution or shape picked under Advanced shows up top too, pressed.
+    if (!shown.some((r) => r.side === side)) shown.push({ side, key: String(side), label: resolutionLabel(side, settings) });
+    const shapeRow = shapes.map((a) => choice(f.aspect === a.key, `aspect-${a.key}`, () => { f.aspect = a.key; sizeChanged(); }, a.label));
+    if (!shapes.some((a) => a.key === f.aspect)) shapeRow.push(choice(true, `aspect-${f.aspect}`, () => {}, f.aspect));
     sizeButtons.append(
-      h('div', { class: 'row', role: 'group', 'aria-label': 'Aspect' },
-        ASPECTS.map((a) => choice(f.size === 'res' && f.aspect === a.key, `aspect-${a.key}`, () => { f.size = 'res'; f.aspect = a.key; changed(); }, a.label)),
-        choice(f.size === 'custom', 'size-custom', () => { f.size = 'custom'; f.advanced = true; changed(); }, 'Custom…')),
-      h('div', { class: 'row', role: 'group', 'aria-label': 'Resolution' },
-        RESOLUTIONS.filter((r) => favs.includes(r.key)).map(resButton)));
+      h('div', { class: 'row', role: 'group', 'aria-label': 'Shape' }, shapeRow),
+      h('div', { class: 'row', role: 'group', 'aria-label': 'Resolution' }, shown.map(resButton)));
 
-    // Advanced: the other resolutions, saved sizes, and any width × height.
-    const saved = customSizesOf(settings);
-    const isSaved = (w, hh) => saved.some((c) => c.w === w && c.h === hh);
-    const others = RESOLUTIONS.filter((r) => !favs.includes(r.key));
-    const num = (label, key) => h('label', { class: 'field', style: { width: '130px' } }, label,
-      h('input', { class: 'input mono', type: 'number', min: String(SIDE_MIN), max: String(SIDE_MAX), step: '2', value: String(f[key]), inputmode: 'numeric', 'data-k': key,
-        onchange: (e) => { f[key] = evenClamp(e.target.value); e.target.value = String(f[key]); f.size = 'custom'; changed(); } }));
-    const cw = evenClamp(f.customW);
-    const ch = evenClamp(f.customH);
+    // Advanced: the other resolutions; any resolution or shape, saved if wanted.
+    const others = all.filter((r) => !favs.includes(r.key));
+    const own = all.filter((r) => r.own);
+    const ownShapes = shapes.filter((a) => a.own);
+    const d = dims();
+    const resBox = h('input', { class: 'input mono', type: 'number', min: String(SIDE_MIN), max: String(SIDE_MAX), step: '2', value: String(side), inputmode: 'numeric',
+      'data-k': 'typed-res', 'aria-label': 'Resolution in pixels (the short side)',
+      onchange: (e) => { f.res = String(evenClamp(e.target.value)); e.target.value = f.res; sizeChanged(); } });
+    const shapeBox = (key, label) => h('input', { class: 'input mono', type: 'number', min: '1', max: '64', step: '1', value: String(f[key]), inputmode: 'numeric',
+      'data-k': `shape-${key === 'shapeW' ? 'w' : 'h'}`, 'aria-label': label, style: { width: '76px' },
+      onchange: (e) => {
+        f[key] = Math.max(1, Math.min(64, Math.round(Number(e.target.value)) || 1));
+        e.target.value = String(f[key]);
+        const a = parseAspect(`${f.shapeW}:${f.shapeH}`);
+        if (a) { f.aspect = `${a.w}:${a.h}`; sizeChanged(); } else { sizeNote.textContent = 'A shape can be at most 8 times as long as it is wide.'; }
+      } });
+    const typedShape = `${f.shapeW}:${f.shapeH}`;
+    const forget = (label, patch, what) => h('button', { type: 'button', class: 'btn quiet small', 'aria-label': `Forget ${label}`, title: 'Forget this', onclick: () => saveSettings(patch, what) }, '×');
     const details = h('details', { class: 'advanced', open: f.advanced, ontoggle: (e) => { f.advanced = e.target.open; } },
-      h('summary', { 'data-k': 'advanced' }, 'Advanced: more sizes'),
-      h('div', { class: 'stack', style: { gap: '10px', marginTop: '10px' } },
+      h('summary', { 'data-k': 'advanced' }, 'Advanced: more resolutions, or your own'),
+      h('div', { class: 'stack', style: { gap: '12px', marginTop: '10px' } },
         others.length ? h('div', { class: 'row', role: 'group', 'aria-label': 'More resolutions' }, others.map(resButton)) : null,
-        saved.length ? h('div', { class: 'row', role: 'group', 'aria-label': 'Your sizes' },
-          saved.map((c) => h('span', { class: 'saved-size' },
-            choice(f.size === 'custom' && cw === c.w && ch === c.h, `saved-${c.w}x${c.h}`, () => { f.size = 'custom'; f.customW = c.w; f.customH = c.h; changed(); }, sizeText(c.w, c.h)),
-            h('button', { type: 'button', class: 'btn quiet small', 'aria-label': `Forget ${sizeText(c.w, c.h)}`, title: 'Forget this size',
-              onclick: () => saveSizes(saved.filter((x) => x !== c), `forgot ${sizeText(c.w, c.h)}`) }, '×')))) : null,
-        h('div', { class: 'row', style: { alignItems: 'flex-end' } }, num('Width', 'customW'), num('Height', 'customH'),
-          h('button', { type: 'button', class: 'btn', 'data-k': 'save-size', disabled: isSaved(cw, ch) || saved.length >= 24,
-            onclick: () => { f.size = 'custom'; saveSizes([...saved, { w: cw, h: ch }], `saved ${sizeText(cw, ch)}`); } },
-            isSaved(cw, ch) ? 'Saved' : 'Save this size')),
-        h('span', { class: 'hint' }, 'Even numbers, 64 to 16384 pixels a side (video encoders need them even). Which resolutions show above, and your saved sizes, are also in Settings.'),
+        h('div', { class: 'row', style: { alignItems: 'flex-end' } },
+          h('label', { class: 'field', style: { width: '150px' } }, 'Resolution (pixels)', resBox),
+          h('span', { class: 'value', style: { paddingBottom: '10px' } }, `→ ${sizeText(d.w, d.h)} at ${f.aspect}`),
+          h('button', { type: 'button', class: 'btn', 'data-k': 'save-res', disabled: all.some((r) => r.side === side) || own.length >= 24,
+            onclick: () => saveSettings({ custom_resolutions: [...own.map((r) => r.side), side] }, `saved ${side}p`) },
+            all.some((r) => r.side === side) ? 'In the list' : 'Save this resolution')),
+        h('div', { class: 'row', style: { alignItems: 'flex-end' } },
+          h('div', { class: 'field' }, 'Your own shape', h('div', { class: 'row', style: { gap: '6px', alignItems: 'center' } },
+            shapeBox('shapeW', 'Shape width'), h('span', null, ':'), shapeBox('shapeH', 'Shape height'))),
+          h('span', { class: 'value', style: { paddingBottom: '10px' } }, (() => { const t = dimsFor(side, typedShape); return `→ ${sizeText(t.w, t.h)} at ${resolutionLabel(side, settings)}`; })()),
+          h('button', { type: 'button', class: 'btn', 'data-k': 'use-shape', onclick: () => { f.aspect = typedShape; sizeChanged(); } }, 'Use'),
+          h('button', { type: 'button', class: 'btn', 'data-k': 'save-shape', disabled: shapes.some((a) => a.key === typedShape) || ownShapes.length >= 24 || !parseAspect(typedShape),
+            onclick: () => { f.aspect = typedShape; saveSettings({ custom_aspects: [...ownShapes.map((a) => ({ w: a.w, h: a.h })), { w: f.shapeW, h: f.shapeH }] }, `saved the shape ${typedShape}`); } },
+            shapes.some((a) => a.key === typedShape) ? 'In the list' : 'Save this shape')),
+        own.length || ownShapes.length ? h('div', { class: 'row', role: 'group', 'aria-label': 'Your saved sizes' },
+          own.map((r) => h('span', { class: 'saved-size' }, h('span', { class: 'ro mono' }, r.label),
+            forget(r.label, { custom_resolutions: own.filter((x) => x !== r).map((x) => x.side), size_favourites: (settings?.size_favourites || []).filter((k) => k !== r.key) }, `forgot ${r.label}`))),
+          ownShapes.map((a) => h('span', { class: 'saved-size' }, h('span', { class: 'ro mono' }, a.label),
+            forget(a.label, { custom_aspects: ownShapes.filter((x) => x !== a).map((x) => ({ w: x.w, h: x.h })) }, `forgot the shape ${a.label}`)))) : null,
+        h('span', { class: 'hint' }, 'A resolution is the short side: 1080 makes 1080 × 1080, 1920 × 1080 or 1080 × 1920. Saved ones join the lists above; Settings chooses which resolutions show as buttons.'),
         sizeNote));
     customRow.append(details);
   }
+  // Removing a focused box fires its change event mid-redraw: skip that one.
   let sizeRedrawing = false;
+  function sizeChanged() {
+    if (sizeRedrawing) return;
+    sizeRedrawing = true;
+    try { rerender(renderSize, renderFit, renderVideos, renderSubmit); } finally { sizeRedrawing = false; }
+    refreshEstimate();
+  }
   const sizeNote = h('p', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
-  async function saveSizes(list, what) {
+  async function saveSettings(patch, what) {
     try {
-      const next = { ...(settings || await get('/api/settings')), custom_sizes: list };
+      const next = { ...(settings || await get('/api/settings')), ...patch };
       settings = await put('/api/settings', next);
       sizeNote.textContent = `Settings: ${what}.`;
     } catch (err) {
       sizeNote.textContent = `Not saved: ${err.message}`;
     }
-    if (alive) rerender(renderSize, renderFit, renderSubmit);
+    if (alive) sizeChanged();
+  }
+
+  // ---- more videos from the same render ------------------------------------
+  const FITS = [['fill', 'Fill the frame'], ['blur', 'Square picture, blurred bars'], ['solid', 'Square picture, solid bars']];
+  function extraDims(e) { return dimsFor(Number(e.res), e.aspect); }
+  function extraBars(e) {
+    const d = extraDims(e);
+    if (e.fit === 'fill' || d.w === d.h) return null;
+    const s = Math.min(d.w, d.h);
+    return { style: e.fit, colour: e.fit === 'solid' ? f.barColour : '#000000', picture_w: s, picture_h: s };
+  }
+  // Every video: { w, h, pw, ph } (frame, and the picture inside it).
+  function videoList() {
+    const { w, h: hh } = dims();
+    const pd = pictureDims();
+    return [{ w, h: hh, pw: pd.w, ph: pd.h }, ...f.extras.map((e) => {
+      const d = extraDims(e);
+      const b = extraBars(e);
+      return { w: d.w, h: d.h, pw: b ? b.picture_w : d.w, ph: b ? b.picture_h : d.h };
+    })];
+  }
+  // The render's size for all of them (as the server works it out).
+  function stripDims() {
+    const v = videoList();
+    const ph = Math.max(...v.map((x) => x.ph));
+    const reach = Math.max(1, ...v.map((x) => Math.hypot(x.pw, x.ph) / x.ph));
+    const w = Math.ceil(ph * Math.sqrt(Math.max(0, reach * reach - 1)) - 1e-6);
+    return { w: Math.min(16384, Math.max(16, w + (w % 2))), h: ph };
+  }
+  function renderVideos() {
+    clear(videosRow);
+    const shapes = aspectsOf(settings);
+    const all = resolutionsOf(settings);
+    const changedExtras = () => { rerender(renderVideos, renderSubmit); refreshEstimate(); };
+    const select = (label, dataK, options, value, onchange, disabled) => h('select', { class: 'input', 'aria-label': label, 'data-k': dataK, disabled,
+      onchange: (e) => { onchange(e.target.value); changedExtras(); } },
+      options.map(([v, t]) => h('option', { value: v, selected: v === value }, t)));
+    const rows = f.extras.map((e, i) => {
+      const d = extraDims(e);
+      const shapeOpts = shapes.map((a) => [a.key, a.label]);
+      if (!shapes.some((a) => a.key === e.aspect)) shapeOpts.push([e.aspect, e.aspect]);
+      const resOpts = all.map((r) => [r.key, r.label]);
+      if (!all.some((r) => r.key === e.res)) resOpts.push([e.res, `${e.res}p`]);
+      return h('div', { class: 'row extra-video', style: { alignItems: 'center' }, 'data-k': `extra-${i}` },
+        h('span', { class: 'muted' }, `${i + 2}.`),
+        select('Shape', `extra-${i}-shape`, shapeOpts, e.aspect, (v) => { e.aspect = v; }),
+        select('Resolution', `extra-${i}-res`, resOpts, e.res, (v) => { e.res = v; }),
+        select('Fill or bars', `extra-${i}-fit`, FITS, d.w === d.h ? 'fill' : e.fit, (v) => { e.fit = v; }, d.w === d.h),
+        h('span', { class: 'value mono' }, sizeText(d.w, d.h)),
+        h('button', { type: 'button', class: 'btn quiet small', 'aria-label': `Remove video ${i + 2}`, 'data-k': `extra-${i}-remove`,
+          onclick: () => { f.extras.splice(i, 1); changedExtras(); } }, '×'));
+    });
+    const add = h('button', { type: 'button', class: 'btn', 'data-k': 'add-video', disabled: f.extras.length >= 7,
+      onclick: () => {
+        const used = [f.aspect, ...f.extras.map((x) => x.aspect)];
+        const next = shapes.find((a) => !used.includes(a.key)) || shapes[0];
+        f.extras.push({ aspect: next.key, res: f.res, fit: 'fill' });
+        changedExtras();
+      } }, '+ Add another video');
+    const { w, h: hh } = dims();
+    const main = `1. ${f.aspect} · ${resolutionLabel(Number(f.res), settings)} · ${sizeText(w, hh)}${barsOn() ? ' · square picture with bars' : ''}`;
+    let note = 'Each extra video is cut from the same render once it is done: only its encoding repeats.';
+    if (f.extras.length) {
+      const sd = stripDims();
+      note = `Rendered once at ${sizeText(sd.w, sd.h)} (enough for every video), then ${f.extras.length + 1} videos. ${note}`;
+    }
+    videosRow.append(h('div', { class: 'field' }, 'Videos from this render',
+      h('span', { class: 'value' }, main), rows, h('div', { class: 'row' }, add), h('span', { class: 'hint' }, note)));
   }
 
   function renderFit() {
@@ -278,12 +376,12 @@ export function mount(root, params, { go }) {
     const square = w === hh;
     const radio = (value, text, disabled) => h('label', { class: 'check' },
       h('input', { type: 'radio', name: 'fit', value, checked: f.fit === value, disabled, 'data-k': `fit-${value}`,
-        onchange: () => { f.fit = value; rerender(renderFit, renderSubmit); refreshEstimate(); } }), text);
+        onchange: () => { f.fit = value; rerender(renderFit, renderVideos, renderSubmit); refreshEstimate(); } }), text);
     fitRow.append(h('div', { class: 'row', style: { gap: '4px 18px' } },
       radio('fill', 'Fill the whole frame'),
       radio('bars', square ? 'Keep the picture square and add bars (the video is already square)' : 'Keep the picture square and add bars', square)));
     if (!barsOn()) return;
-    const styleSel = h('select', { class: 'input', 'data-k': 'bar-style', onchange: (e) => { f.barStyle = e.target.value; rerender(renderFit, renderSubmit); } },
+    const styleSel = h('select', { class: 'input', 'data-k': 'bar-style', onchange: (e) => { f.barStyle = e.target.value; rerender(renderFit, renderVideos, renderSubmit); refreshEstimate(); } },
       ['blur', 'solid', 'transparent'].map((v) => h('option', { value: v, selected: f.barStyle === v },
         { blur: 'Blurred backdrop', solid: 'Solid colour', transparent: 'Truly transparent' }[v])));
     const row = h('div', { class: 'row', style: { alignItems: 'flex-end' } },
@@ -394,6 +492,8 @@ export function mount(root, params, { go }) {
     if (!preset) return;
     const pd = pictureDims();
     const q = new URLSearchParams({ preset: preset.name, width: String(pd.w), height: String(pd.h) });
+    // Every video it makes: the render covers them all, and each is encoded.
+    q.set('videos', videoList().map((v) => (v.pw === v.w && v.ph === v.h ? `${v.w}x${v.h}` : `${v.w}x${v.h}/${v.pw}x${v.ph}`)).join(','));
     let ze = zoomEnd();
     // A Julia set's zoom ends near the square root of the place's depth.
     if (ze === null && f.julia) ze = juliaDepth();
@@ -467,6 +567,7 @@ export function mount(root, params, { go }) {
       format: transparent ? 'webm' : null, memory_limit_mb: MEMORY_STEPS[f.memory],
       bars: barsOn() ? { style: f.barStyle, colour: f.barStyle === 'solid' ? f.barColour : '#000000', picture_w: pd.w, picture_h: pd.h } : null,
       as_julia: f.julia,
+      videos: f.extras.map((e) => { const d = extraDims(e); return { width: d.w, height: d.h, bars: extraBars(e) }; }),
     };
     busySubmitting = true;
     renderSubmit();
@@ -486,6 +587,7 @@ export function mount(root, params, { go }) {
     renderPlace();
     renderSize();
     renderFit();
+    renderVideos();
     renderZoom();
     renderMemoryLabel();
     renderEstimate();

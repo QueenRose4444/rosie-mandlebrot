@@ -267,6 +267,13 @@ pub struct Cli {
     #[arg(long)]
     pub picture: Option<String>,
 
+    /// Render the strip for a WxH frame instead of the video's own, so other
+    /// videos can be made from it later (`--assemble --width --height`) up to
+    /// that height in pixels and out to that frame's corners; the video is
+    /// still --width x --height.
+    #[arg(long)]
+    pub strip_size: Option<String>,
+
     /// The engine for deep frames. Leave it at gpu-ds: it switches to gpu-fe
     /// below 1e-24 by itself. The others exist for testing.
     #[arg(long, value_enum, default_value_t = DeepEngine::GpuDs)]

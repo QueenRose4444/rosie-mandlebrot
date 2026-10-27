@@ -112,7 +112,14 @@ fn assembly_ram_bytes(w: u32, h: u32) -> f64 {
 /// `w`×`h` from span `start` to `end` at `zoom` per frame, with strip chunks of
 /// `chunk_octaves` (made smaller if `memory_limit_mb` needs it).
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn estimate(data: &Path, w: u32, h: u32, start: f64, end: f64, zoom: f64, chunk_octaves: f64, memory_limit_mb: Option<u32>) -> Estimate {
+    estimate_videos(data, w, h, &[(w, h)], start, end, zoom, chunk_octaves, memory_limit_mb)
+}
+
+/// [`estimate`] for a strip of `w`×`h` that makes several videos (their frame sizes).
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_videos(data: &Path, w: u32, h: u32, videos: &[(u32, u32)], start: f64, end: f64, zoom: f64, chunk_octaves: f64, memory_limit_mb: Option<u32>) -> Estimate {
     let rho = f64::from(w).hypot(f64::from(h)) / 2.0;
     let g = StripGeometry::new(w, h, (rho * start / f64::from(h)).ln());
     let d = g.d();
@@ -144,15 +151,16 @@ pub fn estimate(data: &Path, w: u32, h: u32, start: f64, end: f64, zoom: f64, ch
     }
     let samples = rows * f64::from(g.cols);
     let frames = ((end / start).ln() / zoom.ln()).floor().max(0.0) as u64 + 1;
-    let px = f64::from(w) * f64::from(h);
+    let px: f64 = videos.iter().map(|&(vw, vh)| f64::from(vw) * f64::from(vh)).sum();
     let (video_scale, video_bpp) = local_videos(data).unwrap_or((1.0, VIDEO_BYTES_PER_PIXEL));
-    let assemble = frames as f64 * (ASSEMBLE_SECS_PER_FRAME + px * ASSEMBLE_NS_PER_PIXEL * 1e-9) * video_scale;
+    let assemble = frames as f64 * (videos.len() as f64 * ASSEMBLE_SECS_PER_FRAME + px * ASSEMBLE_NS_PER_PIXEL * 1e-9) * video_scale;
     let secs = STARTUP_SECS + us_total * 1e-6 + assemble;
     let half_diag = rho;
     let window = rosie_mandlebrot_run::assemble::window_bytes_for(&g, half_diag, rosie_mandlebrot_run::assemble::WINDOW_BUDGET);
     // A strip chunk on the GPU: half an octave of rows, 8 bytes per sample out.
     let chunk = (g.rows_per_octave() * 0.5) * f64::from(g.cols) * 12.0;
-    let ram = strip_peak_bytes(&g, octaves).max(assembly_ram_bytes(w, h)) as u64;
+    let assembly_ram = videos.iter().map(|&(vw, vh)| assembly_ram_bytes(vw, vh)).fold(0.0, f64::max);
+    let ram = strip_peak_bytes(&g, octaves).max(assembly_ram) as u64;
     // What the memory limit costs: the smaller chunks it forces, against the
     // chunk size asked for (measured at 4K).
     let slowdown_pct = ((chunk_time_factor(octaves) / chunk_time_factor(chunk_octaves) - 1.0) * 100.0).max(0.0).round();

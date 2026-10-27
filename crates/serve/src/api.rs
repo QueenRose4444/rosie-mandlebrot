@@ -651,6 +651,19 @@ struct EstimateQuery {
     zoom_end: Option<f64>,
     zoom_factor: Option<f64>,
     memory_limit_mb: Option<u32>,
+    /// Every video the render makes, "WxH" or "WxH/PWxPH" (frame / picture
+    /// inside it with bars), comma-separated; width and height are then ignored.
+    videos: Option<String>,
+}
+
+/// "1920x1080/1080x1080,1080x1080" into (frame, picture) pairs.
+fn parse_videos(s: &str) -> Option<Vec<((u32, u32), (u32, u32))>> {
+    let size = |t: &str| t.split_once('x').and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
+    let list: Option<Vec<_>> = s.split(',').map(|v| match v.split_once('/') {
+        Some((f, p)) => Some((size(f)?, size(p)?)),
+        None => size(v).map(|f| (f, f)),
+    }).collect();
+    list.filter(|l| !l.is_empty() && l.len() <= jobs::MAX_EXTRA_VIDEOS + 1 && l.iter().all(|&((w, h), (pw, ph))| [w, h, pw, ph].iter().all(|n| (16..=16384).contains(n))))
 }
 
 async fn estimate(State(c): State<Ctx>, Query(q): Query<EstimateQuery>) -> ApiResult<Json<crate::estimate::Estimate>> {
@@ -672,7 +685,14 @@ async fn estimate(State(c): State<Ctx>, Query(q): Query<EstimateQuery>) -> ApiRe
         "eighth" => 0.125,
         _ => 1.0,
     };
-    let e = tokio::task::spawn_blocking(move || crate::estimate::estimate(&data, q.width, q.height, start, end, zoom, octaves, q.memory_limit_mb))
+    let videos = match q.videos.as_deref() {
+        Some(v) => parse_videos(v).ok_or_else(|| bad("videos: WxH or WxH/WxH, comma-separated, 16 to 16384 a side"))?,
+        None => vec![((q.width, q.height), (q.width, q.height))],
+    };
+    let pictures: Vec<(u32, u32)> = videos.iter().map(|v| v.1).collect();
+    let (sw, sh) = if videos.len() > 1 { jobs::strip_for(&pictures) } else { pictures[0] };
+    let frames: Vec<(u32, u32)> = videos.iter().map(|v| v.0).collect();
+    let e = tokio::task::spawn_blocking(move || crate::estimate::estimate_videos(&data, sw, sh, &frames, start, end, zoom, octaves, q.memory_limit_mb))
         .await
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(e))

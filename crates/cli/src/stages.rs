@@ -210,10 +210,16 @@ pub fn keyframes(cli: &Cli, cfg: &RunConfig, shader_dir: Option<&Path>, stop: Ar
     // Checked before anything renders, so a bad colour or bar setting fails fast.
     let opt = assemble_options(cli, cfg)?;
     // With bars the strip only has to cover the picture; the video is the full frame.
-    let video_size = opt.bars.map(|_| (cfg.width, cfg.height));
-    let strip_cfg = match opt.bars {
-        Some(b) => RunConfig { width: b.picture.0, height: b.picture.1, ..cfg.clone() },
-        None => cfg.clone(),
+    // --strip-size draws it for a bigger frame, for more videos from one render.
+    let strip_size = match cli.strip_size.as_deref() {
+        Some(s) => Some(parse_size(s).ok_or_else(|| MbError::InvalidArg { flag: "--strip-size", reason: format!("{s:?}: expected WxH") })?),
+        None => None,
+    };
+    let video_size = (opt.bars.is_some() || strip_size.is_some()).then_some((cfg.width, cfg.height));
+    let strip_cfg = match (strip_size, opt.bars) {
+        (Some((w, h)), _) => RunConfig { width: w, height: h, ..cfg.clone() },
+        (None, Some(b)) => RunConfig { width: b.picture.0, height: b.picture.1, ..cfg.clone() },
+        (None, None) => cfg.clone(),
     };
     let octaves = match cli.chunk_size.as_str() {
         "octave" => 1.0,

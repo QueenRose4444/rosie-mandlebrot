@@ -421,3 +421,5 @@ details.times summary { cursor: pointer; color: var(--accent-text); min-height: 
 details.advanced summary { cursor: pointer; color: var(--accent-text); min-height: 32px; display: flex; align-items: center; }
 .saved-size { display: inline-flex; align-items: center; gap: 2px; }
 .saved-size .btn.small { min-height: 32px; padding: 0 10px; }
+.extra-video { gap: 8px; flex-wrap: wrap; }
+.extra-video .input { width: auto; flex: 0 1 auto; min-width: 0; }
