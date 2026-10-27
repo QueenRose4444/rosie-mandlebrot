@@ -31,6 +31,41 @@ pub fn file(path: &str) -> Option<(&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
+    /// Every module the page loads parses as JavaScript (a stray quote in one
+    /// leaves the whole page blank). Needs node; without it, says so and passes.
+    #[test]
+    fn every_ui_module_parses() {
+        use std::io::Write;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        let mut bad = Vec::new();
+        for dir in [root.clone(), root.join("pages")] {
+            for e in std::fs::read_dir(&dir).unwrap().filter_map(Result::ok) {
+                let p = e.path();
+                if p.extension().is_none_or(|x| x != "js") {
+                    continue;
+                }
+                let child = std::process::Command::new("node")
+                    .args(["--input-type=module", "--check"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn();
+                let Ok(mut child) = child else {
+                    eprintln!("no node: the page's modules were not parsed");
+                    return;
+                };
+                child.stdin.take().unwrap().write_all(&std::fs::read(&p).unwrap()).unwrap();
+                let out = child.wait_with_output().unwrap();
+                if !out.status.success() {
+                    bad.push(format!("{}: {}", p.display(), String::from_utf8_lossy(&out.stderr).lines().take(3).collect::<Vec<_>>().join(" | ")));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "modules that do not parse:
+{}", bad.join("
+"));
+    }
+
     #[test]
     fn every_ui_file_is_embedded() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");

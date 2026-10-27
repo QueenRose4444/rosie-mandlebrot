@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Notify {
     /// A Discord webhook URL: a message when a run finishes.
@@ -15,6 +15,29 @@ pub struct Notify {
     /// More form fields sent with the upload, one `name=value` a line; `{run}`
     /// becomes the run's name (e.g. `drive_path={run}` for a folder per run).
     pub upload_fields: String,
+    /// While a render or a video runs, one Discord message edited with its
+    /// progress every this many seconds (0: no live message).
+    pub live_every_secs: u32,
+    /// Who the finished message pings: "" nobody, "here", "everyone", or a
+    /// role's id.
+    pub ping: String,
+    /// Upload the run's pictures (snapshots down the zoom, each video's
+    /// picture) with the video, into the same folder.
+    pub upload_pictures: bool,
+}
+
+impl Default for Notify {
+    fn default() -> Self {
+        Notify {
+            discord_webhook: String::new(),
+            upload_url: String::new(),
+            upload_api_key: String::new(),
+            upload_fields: String::new(),
+            live_every_secs: 30,
+            ping: String::new(),
+            upload_pictures: false,
+        }
+    }
 }
 
 impl Notify {
@@ -84,6 +107,10 @@ impl Settings {
     pub fn check(&self) -> Result<(), String> {
         if !matches!(self.chunk_size.as_str(), "octave" | "half" | "quarter" | "eighth") {
             return Err(format!("chunk_size {:?}: expected octave, half, quarter or eighth", self.chunk_size));
+        }
+        let p = &self.notify.ping;
+        if !(p.is_empty() || p == "here" || p == "everyone" || (p.len() <= 25 && p.bytes().all(|b| b.is_ascii_digit()))) {
+            return Err("ping: nobody, here, everyone or a role's id (digits)".into());
         }
         if self.video_crf.is_some_and(|c| c > 51) {
             return Err("video quality (CRF) is 0 to 51".into());

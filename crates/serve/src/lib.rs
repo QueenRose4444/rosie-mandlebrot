@@ -278,6 +278,65 @@ pub fn open_browser(url: &str) {
 
 /// What happens when a job ends: a finished render gets its colour-editor
 /// values made straight away, and notifications go out.
+/// A run's pictures, for uploading beside its video: the snapshots down the
+/// zoom, then each video's picture.
+fn run_pictures(out: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let jpgs = |dir: &std::path::Path, prefix: &str| -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(dir)
+            .map(|d| d.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "jpg") && p.file_name().is_some_and(|f| f.to_string_lossy().starts_with(prefix))).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    };
+    let mut all = jpgs(&rosie_mandlebrot_run::strip::previews_dir(out), "");
+    all.extend(jpgs(out, "zoom"));
+    all
+}
+
+/// While a render or a video is made, one Discord message that says how far
+/// it has got, edited every `live_every_secs` and closed with the outcome.
+pub(crate) fn start_live(app: &Arc<App>, job: &jobs::Job) {
+    if !matches!(job.kind, "render" | "assemble") || job.pausing {
+        return;
+    }
+    let n = store::load::<store::Settings>(&app.data.join("settings.json")).notify;
+    if n.discord_webhook.is_empty() || n.live_every_secs == 0 {
+        return;
+    }
+    let (app, id, every) = (Arc::clone(app), job.id, std::time::Duration::from_secs(u64::from(n.live_every_secs)));
+    std::thread::spawn(move || {
+        let current = || app.jobs().into_iter().find(|j| j.id == id);
+        let Some(j) = current() else { return };
+        let msg = match notify::post_message(&n.discord_webhook, &notify::progress_text(&j)) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("job {id}: live message: {e:#}");
+                return;
+            }
+        };
+        let mut last = std::time::Instant::now();
+        let mut shown = String::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let Some(j) = current() else { break };
+            if !j.state.is_active() {
+                let _ = notify::edit_message(&n.discord_webhook, &msg, &notify::summary(&j));
+                break;
+            }
+            if last.elapsed() >= every {
+                last = std::time::Instant::now();
+                let text = notify::progress_text(&j);
+                if text != shown {
+                    if let Err(e) = notify::edit_message(&n.discord_webhook, &msg, &text) {
+                        tracing::warn!("job {id}: live message: {e:#}");
+                    }
+                    shown = text;
+                }
+            }
+        }
+    });
+}
+
 pub(crate) fn after_job(app: &Arc<App>, job: &jobs::Job) {
     if job.pausing {
         return;
@@ -310,9 +369,10 @@ pub(crate) fn after_job(app: &Arc<App>, job: &jobs::Job) {
         }
         // The video file, from its /files/… URL.
         let video = job.result.video.as_deref().and_then(|u| u.strip_prefix("/files/")).map(|rel| app.data.join(rel)).filter(|p| p.exists());
+        let pictures = job.run_id.as_ref().map_or_else(Vec::new, |run| run_pictures(&runs::run_dir(&app.data, run).join("out")));
         let job = job.clone();
         tokio::task::spawn_blocking(move || {
-            for line in notify::send(&n, &job, video.as_deref()) {
+            for line in notify::send(&n, &job, video.as_deref(), &pictures) {
                 tracing::info!("job {}: {line}", job.id);
             }
         });

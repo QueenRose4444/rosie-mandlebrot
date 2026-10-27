@@ -1,5 +1,8 @@
-//! Messages when a job ends: a Discord webhook, and an upload of the finished
-//! video to a URL of your own (multipart, field `file`, optional `X-Api-Key`).
+//! Messages about jobs: a Discord webhook (a live message edited as a render
+//! goes, a finished message that can ping, a message when uploads are done),
+//! and an upload of the finished video (and, if asked, the run's pictures) to a
+//! URL of your own (multipart, field `file`, optional `X-Api-Key`). Webhooks
+//! can edit the messages they posted, so none of this needs a bot.
 
 use crate::jobs::{Job, JobState};
 use crate::store::Notify;
@@ -40,25 +43,133 @@ fn human_secs(s: i64) -> String {
     }
 }
 
+/// The mention a message starts with and the `allowed_mentions` that lets it
+/// ping (and nothing else).
+pub fn mention(ping: &str) -> (String, serde_json::Value) {
+    match ping {
+        "" => (String::new(), serde_json::json!({ "parse": [] })),
+        "here" => ("@here ".into(), serde_json::json!({ "parse": ["everyone"] })),
+        "everyone" => ("@everyone ".into(), serde_json::json!({ "parse": ["everyone"] })),
+        role => (format!("<@&{role}> "), serde_json::json!({ "parse": [], "roles": [role] })),
+    }
+}
+
 /// Send what the settings ask for. Blocking; run it off the async runtime.
+/// `pictures` are uploaded after the video when the settings ask for them.
 /// Returns one line per destination for the log.
-pub fn send(n: &Notify, job: &Job, video: Option<&Path>) -> Vec<String> {
+pub fn send(n: &Notify, job: &Job, video: Option<&Path>, pictures: &[std::path::PathBuf]) -> Vec<String> {
     let mut report = Vec::new();
     if !n.discord_webhook.is_empty() {
         let attach = video.filter(|v| std::fs::metadata(v).is_ok_and(|m| m.len() <= DISCORD_FILE_LIMIT));
-        report.push(match discord(&n.discord_webhook, &summary(job), attach) {
+        let (at, allowed) = mention(&n.ping);
+        report.push(match discord(&n.discord_webhook, &format!("{at}{}", summary(job)), &allowed, attach) {
             Ok(()) => format!("Discord: sent{}", if attach.is_some() { " with the video" } else { "" }),
             Err(e) => format!("Discord: failed: {e:#}"),
         });
     }
     if let (false, Some(v)) = (n.upload_url.is_empty(), video) {
         let run = job.run_id.clone().unwrap_or_else(|| job.label.clone());
-        report.push(match upload(&n.upload_url, &n.upload_api_key, &n.fields(&run), v) {
-            Ok(code) => format!("upload: {} answered {code}", n.upload_url),
-            Err(e) => format!("upload: failed: {e:#}"),
-        });
+        let mut sent = Vec::new();
+        let mut failed = 0;
+        let files: Vec<&Path> = std::iter::once(v).chain(pictures.iter().filter(|_| n.upload_pictures).map(|p| p.as_path())).collect();
+        for f in &files {
+            match upload(&n.upload_url, &n.upload_api_key, &n.fields(&run), f) {
+                Ok(code) if (200..300).contains(&code) => sent.push(*f),
+                Ok(code) => {
+                    failed += 1;
+                    report.push(format!("upload: {} answered {code} for {}", n.upload_url, f.display()));
+                }
+                Err(e) => {
+                    failed += 1;
+                    report.push(format!("upload: failed for {}: {e:#}", f.display()));
+                }
+            }
+        }
+        report.push(format!("upload: {} of {} files sent to {}", sent.len(), files.len(), n.upload_url));
+        // The second message: the uploads are done.
+        if !n.discord_webhook.is_empty() && !sent.is_empty() {
+            let pics = sent.len().saturating_sub(1);
+            let text = format!(
+                "Rosie_Mandlebrot: {} uploaded — the video{}{}{}.",
+                job.label,
+                if pics > 0 { format!(" and {pics} picture{}", if pics == 1 { "" } else { "s" }) } else { String::new() },
+                if failed > 0 { format!(" ({failed} failed)") } else { String::new() },
+                n.fields(&run).iter().find(|(k, _)| k.contains("path") || k.contains("folder")).map_or(String::new(), |(_, v)| format!(", in {v}")),
+            );
+            let (at, allowed) = mention(&n.ping);
+            report.push(match discord(&n.discord_webhook, &format!("{at}{text}"), &allowed, None) {
+                Ok(()) => "Discord: upload message sent".into(),
+                Err(e) => format!("Discord: upload message failed: {e:#}"),
+            });
+        }
     }
     report
+}
+
+/// The live message's text: what the job is doing and how far it has got.
+pub fn progress_text(job: &Job) -> String {
+    let p = &job.progress;
+    let mut parts = Vec::new();
+    if let Some(f) = p.fraction {
+        parts.push(format!("{:.0}%", f * 100.0));
+    }
+    if let Some(s) = p.span {
+        parts.push(format!("{s:.1e} deep"));
+    }
+    if let Some(n) = p.frames {
+        parts.push(match p.frames_total {
+            Some(t) => format!("frame {n} of {t}"),
+            None => format!("{n} frames"),
+        });
+    }
+    if let Some(e) = p.eta_secs {
+        parts.push(format!("about {} left", human_secs(e.round() as i64)));
+    }
+    let doing = match (job.kind, job.stage.as_deref()) {
+        (_, Some("assemble")) => "making the video",
+        ("render", _) => "rendering",
+        _ => "working",
+    };
+    let parts = if parts.is_empty() { String::new() } else { format!(" — {}", parts.join(", ")) };
+    format!("Rosie_Mandlebrot: {doing} {}{parts}", job.label)
+}
+
+/// Post a message and return its id (`?wait=true` makes Discord answer with it).
+pub fn post_message(webhook: &str, text: &str) -> anyhow::Result<String> {
+    let url = with_query(webhook, "wait=true");
+    let body = serde_json::json!({ "content": text, "allowed_mentions": { "parse": [] } });
+    let v: serde_json::Value = serde_json::from_slice(&send_json("POST", &url, &body)?)?;
+    v["id"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!("Discord did not say which message it posted"))
+}
+
+/// Replace a message this webhook posted.
+pub fn edit_message(webhook: &str, id: &str, text: &str) -> anyhow::Result<()> {
+    let (base, query) = webhook.split_once('?').map_or((webhook, None), |(b, q)| (b, Some(q)));
+    let url = format!("{}/messages/{id}{}", base.trim_end_matches('/'), query.map_or(String::new(), |q| format!("?{q}")));
+    send_json("PATCH", &url, &serde_json::json!({ "content": text, "allowed_mentions": { "parse": [] } }))?;
+    Ok(())
+}
+
+fn with_query(url: &str, q: &str) -> String {
+    format!("{url}{}{q}", if url.contains('?') { "&" } else { "?" })
+}
+
+/// A JSON request, IPv4 first and then any address (some networks offer IPv6
+/// that goes nowhere, which stalled each request for about a minute).
+fn send_json(method: &str, url: &str, body: &serde_json::Value) -> anyhow::Result<Vec<u8>> {
+    let go = |a: ureq::Agent| -> anyhow::Result<Vec<u8>> {
+        let req = match method {
+            "PATCH" => a.patch(url),
+            _ => a.post(url),
+        };
+        let resp = req.header("Content-Type", "application/json").send(body.to_string())?;
+        Ok(resp.into_body().with_config().limit(1 << 20).read_to_vec()?)
+    };
+    go(agent_for(ureq::config::IpFamily::Ipv4Only, 20)).or_else(|_| go(agent_for(ureq::config::IpFamily::Any, 60)))
+}
+
+fn agent_for(family: ureq::config::IpFamily, secs: u64) -> ureq::Agent {
+    ureq::Agent::config_builder().ip_family(family).timeout_global(Some(std::time::Duration::from_secs(secs))).build().into()
 }
 
 fn agent() -> ureq::Agent {
@@ -120,8 +231,12 @@ impl Multipart {
     }
 }
 
-fn discord(url: &str, text: &str, video: Option<&Path>) -> anyhow::Result<()> {
-    let payload = serde_json::json!({ "content": text, "allowed_mentions": { "parse": [] } }).to_string();
+fn discord(url: &str, text: &str, allowed: &serde_json::Value, video: Option<&Path>) -> anyhow::Result<()> {
+    if video.is_none() {
+        send_json("POST", url, &serde_json::json!({ "content": text, "allowed_mentions": allowed }))?;
+        return Ok(());
+    }
+    let payload = serde_json::json!({ "content": text, "allowed_mentions": allowed }).to_string();
     let mp = Multipart::new(&[("payload_json", &payload)], video.map(|v| ("files[0]", v)))?;
     let (ct, len) = (mp.content_type(), mp.len());
     agent().post(url).header("Content-Type", &ct).header("Content-Length", len.to_string()).send(ureq::SendBody::from_owned_reader(mp.reader()))?;
@@ -187,6 +302,55 @@ mod tests {
             head + &String::from_utf8_lossy(&body)
         });
         (url, h)
+    }
+
+    #[test]
+    fn mentions_ping_only_whom_they_say() {
+        assert_eq!(mention(""), (String::new(), serde_json::json!({ "parse": [] })));
+        assert_eq!(mention("here").0, "@here ");
+        assert_eq!(mention("everyone").1, serde_json::json!({ "parse": ["everyone"] }));
+        assert_eq!(mention("1234567890"), ("<@&1234567890> ".into(), serde_json::json!({ "parse": [], "roles": ["1234567890"] })));
+    }
+
+    #[test]
+    fn a_live_message_is_posted_then_edited_in_place() {
+        // Post: ?wait=true, and the id comes back.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/api/webhooks/1/tok", l.local_addr().unwrap());
+        let h = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let (mut s, _) = l.accept().unwrap();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut head = String::new();
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    r.read_line(&mut line).unwrap();
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap();
+                    }
+                    head.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = vec![0u8; len];
+                r.read_exact(&mut body).unwrap();
+                let reply = r#"{"id":"987654321"}"#;
+                s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}", reply.len()).as_bytes()).unwrap();
+                seen.push(head.lines().next().unwrap().to_string() + " " + &String::from_utf8_lossy(&body));
+            }
+            seen
+        });
+        let id = post_message(&base, "rendering seahorse — 0%").unwrap();
+        assert_eq!(id, "987654321");
+        edit_message(&base, &id, "rendering seahorse — 50%").unwrap();
+        let seen = h.join().unwrap();
+        assert!(seen[0].starts_with("POST /api/webhooks/1/tok?wait=true "), "{}", seen[0]);
+        assert!(seen[0].contains("0%"));
+        assert!(seen[1].starts_with("PATCH /api/webhooks/1/tok/messages/987654321 "), "{}", seen[1]);
+        assert!(seen[1].contains("50%"));
     }
 
     #[test]

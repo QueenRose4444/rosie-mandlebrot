@@ -234,6 +234,7 @@ impl App {
                 continue;
             };
             self.bump(true);
+            crate::start_live(&self, &job);
             let outcome = self.run_child(&job).await;
             let finished = {
                 let mut inner = self.inner.lock().unwrap();
